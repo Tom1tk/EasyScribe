@@ -59,16 +59,33 @@ def list_gpus() -> list[dict[str, str | int]]:
       - index (int): CUDA device index
       - name  (str): GPU display name
 
-    Returns an empty list if CUDA is unavailable or torch is not installed.
+    Tries torch first (gives proper GPU names); falls back to ctranslate2
+    so the app works without torch installed (as in the pre-built release).
+    Returns an empty list if no CUDA GPUs are available.
     """
     gpus: list[dict[str, str | int]] = []
+
+    # ── Primary: torch (provides GPU names) ──────────────────────────────────
     try:
         import torch  # type: ignore
         if torch.cuda.is_available():
             for i in range(torch.cuda.device_count()):
                 gpus.append({"index": i, "name": torch.cuda.get_device_name(i)})
-    except Exception:
-        pass
+            return gpus
+    except ImportError:
+        pass  # torch not installed — use ctranslate2 fallback
+    except Exception as exc:
+        logger.debug(f"torch GPU enumeration failed: {exc}")
+
+    # ── Fallback: ctranslate2 (always present, no GPU names) ─────────────────
+    try:
+        import ctranslate2  # type: ignore
+        count = ctranslate2.get_cuda_device_count()
+        for i in range(count):
+            gpus.append({"index": i, "name": f"CUDA GPU {i}"})
+    except Exception as exc:
+        logger.debug(f"ctranslate2 GPU enumeration failed: {exc}")
+
     return gpus
 
 
@@ -84,42 +101,33 @@ def _detect_device(gpu_index: int | None = None) -> tuple[str, str, int | None]:
         or -1 to force CPU.
 
     Returns (device, compute_type, resolved_device_index):
-      - ("cuda", "float16", N)  if a CUDA-capable NVIDIA GPU is available
+      - ("cuda", "float16", N)  if a CUDA-capable GPU is available
       - ("cpu", "int8", None)   otherwise
+
+    Works with or without torch installed; ctranslate2 is the fallback.
     """
     if gpu_index == -1:
         logger.info("CPU explicitly selected by user")
         return "cpu", "int8", None
 
-    try:
-        import torch  # type: ignore
-        if torch.cuda.is_available():
-            count = torch.cuda.device_count()
-            # If a specific index was requested, validate it
-            if gpu_index is not None:
-                if 0 <= gpu_index < count:
-                    name = torch.cuda.get_device_name(gpu_index)
-                    logger.info(f"Using GPU {gpu_index}: {name} — float16")
-                    return "cuda", "float16", gpu_index
-                else:
-                    logger.warning(
-                        f"Requested GPU index {gpu_index} is out of range "
-                        f"(only {count} GPU(s) available) — falling back to GPU 0"
-                    )
-                    gpu_index = 0
-            else:
-                gpu_index = 0
+    gpus = list_gpus()
 
-            name = torch.cuda.get_device_name(gpu_index)
-            logger.info(f"Auto-selected GPU {gpu_index}: {name} — float16")
-            return "cuda", "float16", gpu_index
-        else:
-            logger.info("torch available but no CUDA GPU — falling back to CPU int8")
-    except ImportError:
-        logger.info("torch not importable — using CPU int8")
-    except Exception as exc:
-        logger.warning(f"CUDA detection error ({exc}) — using CPU int8")
+    if gpus:
+        count = len(gpus)
+        if gpu_index is not None and not (0 <= gpu_index < count):
+            logger.warning(
+                f"Requested GPU index {gpu_index} out of range "
+                f"({count} GPU(s) found) — falling back to GPU 0"
+            )
+            gpu_index = 0
+        elif gpu_index is None:
+            gpu_index = 0
 
+        name = gpus[gpu_index]["name"]
+        logger.info(f"Using GPU {gpu_index}: {name} — float16")
+        return "cuda", "float16", gpu_index
+
+    logger.info("No CUDA GPUs found — using CPU int8")
     return "cpu", "int8", None
 
 

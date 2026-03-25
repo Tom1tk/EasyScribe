@@ -63,7 +63,8 @@ a = Analysis(
         # huggingface_hub is imported by faster-whisper internally
         "huggingface_hub",
         "huggingface_hub.utils",
-        # torch (optional — present on CUDA builds)
+        # torch is optional — included when present, skipped when not installed
+        # (ctranslate2 handles GPU detection without torch)
         "torch",
         "torch.cuda",
         # tkinterdnd2
