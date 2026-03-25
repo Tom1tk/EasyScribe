@@ -1,19 +1,18 @@
 name: Build and Publish Release
 
 # Trigger manually from the GitHub Actions tab.
-# Provide a tag like "v1.0.0" — a GitHub Release is created automatically.
-# Two ZIP assets are published per release:
-#   - Transcriber7-<tag>-portable-with-model.zip  (~1.8 GB, extract and run)
-#   - Transcriber7-<tag>-portable-no-model.zip    (~300 MB, add your own model)
+# Provide a tag and CUDA version — a GitHub Release is created automatically.
 #
-# GPU note: the bundle uses CPU-only torch/ctranslate2 to stay under GitHub's
-# 2 GB asset limit (CUDA DLLs alone add ~700 MB, pushing past the limit with
-# the model included). At runtime, ctranslate2 auto-detects CUDA and uses the
-# GPU if CUDA Toolkit 12.x is installed on the host; otherwise falls back to CPU.
+# Two ZIP assets are published per release (both under GitHub's 2 GB limit):
+#   - Transcriber7-<tag>-app.zip    (~1.1 GB) — exe + CUDA DLLs + ffmpeg
+#   - Transcriber7-<tag>-model.zip  (~1.5 GB) — model files only
+#
+# First-time install: extract both ZIPs into the same folder.
+# App updates:        re-extract app.zip only (model never changes).
 #
 # Cache strategy (skips re-downloading on repeat builds):
-#   ffmpeg    ~70 MB   key: ffmpeg-win64-gpl-static-v1        (bump v1 to refresh)
-#   venv      ~1 GB    key: venv-win64-py3.11-cpu-v1           (bump v1 to refresh)
+#   ffmpeg    ~70 MB   key: ffmpeg-win64-gpl-static-v1              (bump v1 to refresh)
+#   venv      ~3-4 GB  key: venv-win64-py3.11-cu<VER>-v1            (bump v1 to refresh)
 #   model     ~1.5 GB  key: faster-whisper-large-v3-turbo-mobiuslabs-v1
 on:
   workflow_dispatch:
@@ -22,6 +21,10 @@ on:
         description: 'Release tag (e.g. v1.0.0)'
         required: true
         default: 'v1.0.0'
+      cuda_version:
+        description: 'CUDA version, e.g. 124 or 128 (required for GPU support)'
+        required: true
+        default: '128'
 
 permissions:
   contents: write   # required to create releases and upload assets
@@ -103,30 +106,31 @@ jobs:
 
           $script | python
 
-      # ── 5. Cache Python venv (~1 GB, CPU-only torch) ─────────────────────────
-      # Always CPU build — bundling CUDA DLLs (~700 MB) + model (~1.5 GB) would
-      # exceed GitHub's 2 GB release asset limit. ctranslate2 auto-uses CUDA at
-      # runtime if CUDA Toolkit 12.x is present on the host machine.
+      # ── 5. Cache Python venv (CUDA torch + all deps, ~3-4 GB) ────────────────
+      # Key includes cuda_version — different CUDA builds must not share a cache.
       # Bump v1 → v2 to force a clean reinstall (e.g. after adding a package).
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-cpu-v1
+          key: venv-win64-py3.11-cu${{ github.event.inputs.cuda_version }}-v1
 
       # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
         if: steps.venv-cache.outputs.cache-hit != 'true'
         shell: pwsh
+        env:
+          CUDA_VERSION: ${{ github.event.inputs.cuda_version }}
         run: |
           python -m venv venv
           & venv\Scripts\Activate.ps1
 
           python -m pip install --upgrade pip --quiet
 
-          Write-Host "Installing PyTorch CPU..."
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
+          $indexUrl = "https://download.pytorch.org/whl/cu$($env:CUDA_VERSION)"
+          Write-Host "Installing PyTorch CUDA $($env:CUDA_VERSION) from $indexUrl"
+          pip install torch torchaudio --index-url $indexUrl --quiet
 
           Write-Host "Installing core dependencies..."
           pip install faster-whisper customtkinter tkinterdnd2 pyinstaller --quiet
@@ -143,16 +147,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
-      # ── 7. Assemble portable output folder (with model) ──────────────────────
+      # ── 7. Assemble portable app folder (no model) ────────────────────────────
       - name: Assemble PortableTranscriber folder
         shell: pwsh
         run: |
           $dist = "dist\PortableTranscriber"
-
-          # Copy model files
-          $modelDst = "$dist\models\faster-whisper-large-v3-turbo"
-          New-Item -ItemType Directory -Force -Path $modelDst | Out-Null
-          Copy-Item "models\faster-whisper-large-v3-turbo\*" $modelDst -Recurse -Force
 
           # Copy ffmpeg
           $ffmpegDst = "$dist\ffmpeg"
@@ -163,44 +162,36 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$dist\logs" | Out-Null
           New-Item -ItemType Directory -Force -Path "$dist\temp" | Out-Null
 
+          # Placeholder so users know where to put the model
+          New-Item -ItemType Directory -Force -Path "$dist\models\faster-whisper-large-v3-turbo" | Out-Null
+          $placeholder = "Extract Transcriber7-*-model.zip into this same folder to install the model."
+          Set-Content -Path "$dist\models\faster-whisper-large-v3-turbo\EXTRACT_MODEL_ZIP_HERE.txt" -Value $placeholder -Encoding utf8
+
           # Summary
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
-          Write-Host "Total folder size: $([math]::Round($totalMB, 0)) MB"
+          Write-Host "App folder size: $([math]::Round($totalMB, 0)) MB"
           Get-ChildItem $dist | Select-Object Name
 
-      # ── 8. Create both release ZIPs ───────────────────────────────────────────
+      # ── 8. Create release ZIPs ────────────────────────────────────────────────
       - name: Create release ZIPs
         shell: pwsh
         run: |
           $tag = "${{ github.event.inputs.tag }}"
 
-          # ── ZIP 1: with model bundled ────────────────────────────────────────
-          $zipWithModel = "Transcriber7-${tag}-portable-with-model.zip"
-          Write-Host "Creating $zipWithModel ..."
-          Compress-Archive -Path "dist\PortableTranscriber\*" -DestinationPath $zipWithModel -CompressionLevel Optimal
-          $sz1 = [math]::Round((Get-Item $zipWithModel).Length / 1MB, 1)
+          # ── ZIP 1: app only (exe + CUDA DLLs + ffmpeg, no model) ─────────────
+          $zipApp = "Transcriber7-${tag}-app.zip"
+          Write-Host "Creating $zipApp ..."
+          Compress-Archive -Path "dist\PortableTranscriber\*" -DestinationPath $zipApp -CompressionLevel Optimal
+          $sz1 = [math]::Round((Get-Item $zipApp).Length / 1MB, 1)
           Write-Host "  Size: ${sz1} MB"
 
-          # ── ZIP 2: without model (app + ffmpeg only) ─────────────────────────
-          # Use robocopy to copy everything EXCEPT the models folder.
-          # Copy-Item -Recurse has a quirk where it can nest the source inside
-          # the destination, causing _internal and other top-level items to go
-          # missing. robocopy /XD is reliable and only excludes models/.
-          New-Item -ItemType Directory -Force -Path "dist\PortableTranscriber-NoModel" | Out-Null
-          # robocopy exit codes 0-7 are success; suppress error on those
-          robocopy "dist\PortableTranscriber" "dist\PortableTranscriber-NoModel" /E /XD "models" /NFL /NDL /NJH /NJS
-          if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
-          $LASTEXITCODE = 0   # robocopy 1 = "files copied OK" — reset so pwsh exits 0
-
-          # Add a placeholder inside models/ so the folder structure is clear
-          New-Item -ItemType Directory -Force -Path "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo" | Out-Null
-          $placeholder = "Place the 5 model files here:`n  config.json`n  model.bin`n  preprocessor_config.json`n  tokenizer.json`n  vocabulary.json`n`nDownload from:`nhttps://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo"
-          Set-Content -Path "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo\PUT_MODEL_FILES_HERE.txt" -Value $placeholder -Encoding utf8
-
-          $zipNoModel = "Transcriber7-${tag}-portable-no-model.zip"
-          Write-Host "Creating $zipNoModel ..."
-          Compress-Archive -Path "dist\PortableTranscriber-NoModel\*" -DestinationPath $zipNoModel -CompressionLevel Optimal
-          $sz2 = [math]::Round((Get-Item $zipNoModel).Length / 1MB, 1)
+          # ── ZIP 2: model only ─────────────────────────────────────────────────
+          # Zipped as models\faster-whisper-large-v3-turbo\* so extracting into
+          # the same folder as app.zip drops files in exactly the right place.
+          $zipModel = "Transcriber7-${tag}-model.zip"
+          Write-Host "Creating $zipModel ..."
+          Compress-Archive -Path "models" -DestinationPath $zipModel -CompressionLevel Optimal
+          $sz2 = [math]::Round((Get-Item $zipModel).Length / 1MB, 1)
           Write-Host "  Size: ${sz2} MB"
 
       # ── 9. Publish GitHub Release ────────────────────────────────────────────
@@ -212,26 +203,24 @@ jobs:
           body: |
             ## Transcriber7 — Portable Offline Speech-to-Text
 
-            Two downloads are provided — pick whichever suits you:
+            Two downloads — both required for a first-time install:
 
-            | Asset | Size | Description |
+            | Asset | Size | Contents |
             |---|---|---|
-            | `...-with-model.zip` | ~1.8 GB | **Everything included** — extract and run immediately |
-            | `...-no-model.zip` | ~300 MB | App + ffmpeg only — add your own model files |
+            | `...-app.zip` | ~1.1 GB | Exe + CUDA DLLs + ffmpeg (re-download on updates) |
+            | `...-model.zip` | ~1.5 GB | Model files only (download once, keep forever) |
 
             ---
 
-            ### Option A — with-model (recommended)
-            1. Download `Transcriber7-${{ github.event.inputs.tag }}-portable-with-model.zip`
-            2. Extract anywhere (Desktop, USB stick, etc.)
-            3. Double-click **PortableTranscriber.exe**
+            ### First-time install
+            1. Download both ZIPs
+            2. Create a folder anywhere (Desktop, USB stick, etc.)
+            3. Extract **app.zip** into that folder
+            4. Extract **model.zip** into the **same folder** — the `models\` directory will merge automatically
+            5. Double-click **PortableTranscriber.exe**
 
-            ### Option B — no-model
-            1. Download `Transcriber7-${{ github.event.inputs.tag }}-portable-no-model.zip`
-            2. Extract anywhere
-            3. Copy your `faster-whisper-large-v3-turbo` model files into `models\faster-whisper-large-v3-turbo\`
-               (needs: `config.json`, `model.bin`, `preprocessor_config.json`, `tokenizer.json`, `vocabulary.json`)
-            4. Double-click **PortableTranscriber.exe**
+            ### Updating the app
+            Only re-download and re-extract `...-app.zip` — your model folder stays untouched.
 
             ---
 
@@ -239,15 +228,15 @@ jobs:
             mp4, mkv, mov, avi, webm, mp3, wav, m4a, flac, ogg, opus, aac
 
             ### GPU acceleration
-            NVIDIA GPU is used automatically if **CUDA Toolkit 12.x** is installed on your machine.
-            Falls back to CPU silently if no CUDA runtime is found — transcription still works, just slower.
+            NVIDIA GPU is used automatically — CUDA ${{ github.event.inputs.cuda_version }} runtime DLLs are bundled.
+            Falls back to CPU if no compatible GPU is found.
 
             ### First launch note
             Windows Defender SmartScreen may show **"Windows protected your PC"** — click **More info → Run anyway**.
             This is expected for unsigned PyInstaller executables.
           files: |
-            Transcriber7-${{ github.event.inputs.tag }}-portable-with-model.zip
-            Transcriber7-${{ github.event.inputs.tag }}-portable-no-model.zip
+            Transcriber7-${{ github.event.inputs.tag }}-app.zip
+            Transcriber7-${{ github.event.inputs.tag }}-model.zip
           draft: false
           prerelease: false
         env:
