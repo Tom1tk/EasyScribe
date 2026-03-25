@@ -164,17 +164,8 @@ jobs:
 
           # Add a placeholder inside models/ so the folder structure is clear
           New-Item -ItemType Directory -Force -Path "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo" | Out-Null
-          @"
-Place the 5 model files here:
-  config.json
-  model.bin
-  preprocessor_config.json
-  tokenizer.json
-  vocabulary.json
-
-Download from:
-https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
-"@ | Out-File "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo\PUT_MODEL_FILES_HERE.txt" -Encoding utf8
+          $placeholder = "Place the 5 model files here:`n  config.json`n  model.bin`n  preprocessor_config.json`n  tokenizer.json`n  vocabulary.json`n`nDownload from:`nhttps://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo"
+          Set-Content -Path "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo\PUT_MODEL_FILES_HERE.txt" -Value $placeholder -Encoding utf8
 
           $zipNoModel = "Transcriber7-${tag}-portable-no-model.zip"
           Write-Host "Creating $zipNoModel ..."
