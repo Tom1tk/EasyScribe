@@ -1,19 +1,20 @@
 name: Build and Publish Release
 
 # Trigger manually from the GitHub Actions tab.
-# Provide a tag and CUDA version — a GitHub Release is created automatically.
+# Provide a tag — a GitHub Release (draft) is created automatically.
 #
 # Two ZIP assets are published per release (both under GitHub's 2 GB limit):
-#   - Transcriber7-<tag>-app.zip    (~1.1 GB) — exe + CUDA DLLs + ffmpeg
-#   - Transcriber7-<tag>-model.zip  (~1.5 GB) — model files only
+#   - Transcriber7-<tag>-app.zip    (~1.1 GB) — exe + nvidia CUDA DLLs + ffmpeg
+#   - Transcriber7-<tag>-model.zip  (~1.5 GB) — Whisper model + pyannote models
 #
 # First-time install: extract both ZIPs into the same folder.
-# App updates:        re-extract app.zip only (model never changes).
+# App updates:        re-extract app.zip only (model folder is unchanged).
 #
 # Cache strategy (skips re-downloading on repeat builds):
-#   ffmpeg    ~70 MB   key: ffmpeg-win64-gpl-static-v1              (bump v1 to refresh)
-#   venv      ~3-4 GB  key: venv-win64-py3.11-cu<VER>-v1            (bump v1 to refresh)
-#   model     ~1.5 GB  key: faster-whisper-large-v3-turbo-mobiuslabs-v1
+#   ffmpeg          ~70 MB    key: ffmpeg-win64-gpl-static-v1
+#   venv            ~2-3 GB   key: venv-win64-py3.11-v2              (bump v2 to refresh)
+#   whisper model   ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
+#   pyannote models ~200 MB   key: pyannote-speaker-diarization-3.1-v1
 on:
   workflow_dispatch:
     inputs:
@@ -21,10 +22,6 @@ on:
         description: 'Release tag (e.g. v1.0.0)'
         required: true
         default: 'v1.0.0'
-      cuda_version:
-        description: 'CUDA version, e.g. 124 or 128 (required for GPU support)'
-        required: true
-        default: '128'
 
 permissions:
   contents: write   # required to create releases and upload assets
@@ -106,34 +103,45 @@ jobs:
 
           $script | python
 
-      # ── 5. Cache Python venv (CUDA torch + all deps, ~3-4 GB) ────────────────
-      # Key includes cuda_version — different CUDA builds must not share a cache.
-      # Bump v1 → v2 to force a clean reinstall (e.g. after adding a package).
+      # ── 5. Cache Python venv (~2-3 GB) ────────────────────────────────────────
+      # CPU-only torch + separate nvidia-*-cu12 packages for CUDA DLLs.
+      # Bump v2 → v3 to force a clean reinstall (e.g. after adding a package).
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-cu${{ github.event.inputs.cuda_version }}-v1
+          key: venv-win64-py3.11-v2
 
       # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
         if: steps.venv-cache.outputs.cache-hit != 'true'
         shell: pwsh
-        env:
-          CUDA_VERSION: ${{ github.event.inputs.cuda_version }}
         run: |
           python -m venv venv
           & venv\Scripts\Activate.ps1
 
           python -m pip install --upgrade pip --quiet
 
-          $indexUrl = "https://download.pytorch.org/whl/cu$($env:CUDA_VERSION)"
-          Write-Host "Installing PyTorch CUDA $($env:CUDA_VERSION) from $indexUrl"
-          pip install torch torchaudio --index-url $indexUrl --quiet
+          # CPU-only torch — used by pyannote.audio for diarization inference.
+          # torch_cuda.dll (~1.5 GB) is NOT included this way, keeping app.zip small.
+          Write-Host "Installing CPU-only PyTorch..."
+          pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet
+
+          # Separate nvidia CUDA 12 packages — provide cublas/cudart/cudnn DLLs
+          # that ctranslate2 needs for GPU transcription inference.
+          # hook-nvidia.py collects these into nvidia/<pkg>/bin/ in the bundle;
+          # cuda_setup.py calls os.add_dll_directory() on them at startup.
+          Write-Host "Installing nvidia CUDA 12 runtime packages..."
+          pip install `
+            nvidia-cublas-cu12 `
+            nvidia-cuda-runtime-cu12 `
+            nvidia-cudnn-cu12 `
+            nvidia-cuda-nvrtc-cu12 `
+            --quiet
 
           Write-Host "Installing core dependencies..."
-          pip install faster-whisper customtkinter tkinterdnd2 pyinstaller --quiet
+          pip install faster-whisper pyannote.audio customtkinter tkinterdnd2 pyinstaller --quiet
 
           Write-Host "Installed packages:"
           pip list --format=columns
@@ -147,41 +155,55 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
-      # ── 6b. Copy CUDA runtime DLLs into _internal/ ────────────────────────────
-      # PyInstaller hooks are unreliable for placing DLLs where ctranslate2 can
-      # find them via Windows DLL search. We copy them explicitly instead.
-      # cublas/cublasLt/cudart/cudnn are all ctranslate2 needs for float16 GPU.
-      - name: Copy CUDA runtime DLLs
+      # ── 6b. Cache pyannote models (~200 MB) ──────────────────────────────────
+      - name: Cache pyannote models
+        id: pyannote-cache
+        uses: actions/cache@v4
+        with:
+          path: models/hf_cache/hub
+          key: pyannote-speaker-diarization-3.1-v1
+
+      # ── 6c. Download pyannote models (skipped on cache hit) ───────────────────
+      # Downloads speaker-diarization-3.1 and its sub-models (segmentation-3.0,
+      # wespeaker-voxceleb-resnet34-LM) into the HF hub cache format.
+      # At runtime, HF_HOME points here and HF_HUB_OFFLINE=1 ensures no network.
+      # Requires HF_TOKEN secret with access to pyannote gated models.
+      - name: Download pyannote models
+        if: steps.pyannote-cache.outputs.cache-hit != 'true'
         shell: pwsh
         env:
-          CUDA_VERSION: ${{ github.event.inputs.cuda_version }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HOME: ${{ github.workspace }}/models/hf_cache
         run: |
-          $torchLib   = "venv\Lib\site-packages\torch\lib"
-          $internalDir = "dist\PortableTranscriber\_internal"
+          & venv\Scripts\Activate.ps1
 
-          if (-not (Test-Path $torchLib)) {
-            throw "torch lib not found at $torchLib"
-          }
+          $script = @"
+          import os
+          from huggingface_hub import snapshot_download
 
-          $patterns = @("cublas64_*.dll", "cublasLt64_*.dll", "cudart64_*.dll", "cudnn_*.dll", "cudnn64_*.dll")
-          $copied = 0
-          foreach ($pat in $patterns) {
-            Get-ChildItem "$torchLib\$pat" -ErrorAction SilentlyContinue | ForEach-Object {
-              $sizeMB = [math]::Round($_.Length / 1MB, 1)
-              Copy-Item $_.FullName "$internalDir\" -Force
-              Write-Host "  Copied $($_.Name)  ($sizeMB MB)"
-              $copied++
-            }
-          }
+          token = os.environ.get('HF_TOKEN') or None
+          if not token:
+              raise RuntimeError('HF_TOKEN secret is required for pyannote gated models')
 
-          if ($copied -eq 0) { throw "No CUDA DLLs found in $torchLib — check cuda_version input" }
-          Write-Host "Total CUDA DLLs copied: $copied"
+          models = [
+              'pyannote/speaker-diarization-3.1',
+              'pyannote/segmentation-3.0',
+              'pyannote/wespeaker-voxceleb-resnet34-LM',
+          ]
 
-          # Show everything CUDA-related now in _internal/ for verification
-          Write-Host "`nCUDA DLLs in _internal/:"
-          Get-ChildItem "$internalDir\cu*.dll", "$internalDir\cudnn*.dll" -ErrorAction SilentlyContinue |
-            Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} |
-            Format-Table -AutoSize
+          for repo_id in models:
+              print(f'Downloading {repo_id} ...')
+              snapshot_download(
+                  repo_id=repo_id,
+                  token=token,
+                  ignore_patterns=['*.gitattributes', '*.md', '.git*'],
+              )
+              print(f'  Done: {repo_id}')
+
+          print('All pyannote models downloaded.')
+          "@
+
+          $script | python
 
       # ── 7. Assemble portable app folder (no model) ────────────────────────────
       - name: Assemble PortableTranscriber folder
@@ -198,10 +220,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$dist\logs" | Out-Null
           New-Item -ItemType Directory -Force -Path "$dist\temp" | Out-Null
 
-          # Placeholder so users know where to put the model
+          # Placeholder so users know where to put the models
           New-Item -ItemType Directory -Force -Path "$dist\models\faster-whisper-large-v3-turbo" | Out-Null
-          $placeholder = "Extract Transcriber7-*-model.zip into this same folder to install the model."
-          Set-Content -Path "$dist\models\faster-whisper-large-v3-turbo\EXTRACT_MODEL_ZIP_HERE.txt" -Value $placeholder -Encoding utf8
+          $placeholder = "Extract Transcriber7-*-model.zip into this same folder to install the Whisper and speaker diarization models."
+          Set-Content -Path "$dist\models\EXTRACT_MODEL_ZIP_HERE.txt" -Value $placeholder -Encoding utf8
 
           # Summary
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
@@ -222,8 +244,10 @@ jobs:
           Write-Host "  Size: ${sz1} MB"
 
           # ── ZIP 2: model only ─────────────────────────────────────────────────
-          # Zipped as models\faster-whisper-large-v3-turbo\* so extracting into
-          # the same folder as app.zip drops files in exactly the right place.
+          # Zipped as models\* so extracting into the same folder as app.zip
+          # drops files in exactly the right place:
+          #   models\faster-whisper-large-v3-turbo\     — Whisper model
+          #   models\hf_cache\hub\                      — pyannote models
           $zipModel = "Transcriber7-${tag}-model.zip"
           Write-Host "Creating $zipModel ..."
           Compress-Archive -Path "models" -DestinationPath $zipModel -CompressionLevel Optimal
@@ -243,8 +267,8 @@ jobs:
 
             | Asset | Size | Contents |
             |---|---|---|
-            | `...-app.zip` | ~1.1 GB | Exe + CUDA DLLs + ffmpeg (re-download on updates) |
-            | `...-model.zip` | ~1.5 GB | Model files only (download once, keep forever) |
+            | `...-app.zip` | ~1.1 GB | Exe + CUDA 12 DLLs + ffmpeg (re-download on updates) |
+            | `...-model.zip` | ~1.6 GB | Whisper model + speaker diarization models (download once) |
 
             ---
 
@@ -264,8 +288,12 @@ jobs:
             mp4, mkv, mov, avi, webm, mp3, wav, m4a, flac, ogg, opus, aac
 
             ### GPU acceleration
-            NVIDIA GPU is used automatically — CUDA ${{ github.event.inputs.cuda_version }} runtime DLLs are bundled.
+            NVIDIA GPU is used automatically — CUDA 12 runtime DLLs (cublas, cudart, cudnn) are bundled.
             Falls back to CPU if no compatible GPU is found.
+
+            ### Speaker identification
+            Tick the **Identify speakers** checkbox before transcribing to label each speaker (SPEAKER_00, SPEAKER_01, …).
+            Requires the model.zip to be extracted.
 
             ### First launch note
             Windows Defender SmartScreen may show **"Windows protected your PC"** — click **More info → Run anyway**.

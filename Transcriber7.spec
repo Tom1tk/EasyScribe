@@ -60,9 +60,19 @@ a = Analysis(
         # tokenizer backend
         "tokenizers",
         "tokenizers.models",
-        # huggingface_hub is imported by faster-whisper internally
+        # huggingface_hub is imported by faster-whisper and pyannote internally
         "huggingface_hub",
         "huggingface_hub.utils",
+        # pyannote.audio speaker diarization (optional feature)
+        "pyannote.audio",
+        "pyannote.audio.pipelines",
+        "pyannote.core",
+        "asteroid_filterbanks",
+        "speechbrain",
+        # torch is needed by pyannote (CPU inference only — torch_cuda.dll
+        # is excluded below to keep the bundle under 2 GB)
+        "torch",
+        "torch.nn",
         # tkinterdnd2
         "tkinterdnd2",
     ],
@@ -70,13 +80,10 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # torch is excluded from the bundle — torch_cuda.dll (~1.5 GB) and
-        # torch_cpu.dll (~500 MB) would blow the bundle past GitHub's 2 GB limit.
-        # transcriber.py wraps `import torch` in try/except so it degrades
-        # gracefully; ctranslate2 handles GPU detection and inference directly.
-        # The CUDA runtime DLLs ctranslate2 needs (cublas, cudart, cudnn) are
-        # collected selectively by hooks/hook-torch.py from the build venv.
-        "torch",
+        # torch_cuda.dll is ~1.5 GB — excluded to keep app.zip under 2 GB.
+        # ctranslate2 GPU inference uses the CUDA runtime DLLs from the
+        # separate nvidia-* packages collected by hooks/hook-nvidia.py.
+        # pyannote runs on CPU torch (torch_cpu.dll, ~300 MB) which is kept.
         "torchaudio",
         # Reduce size — things we never use
         "matplotlib",
@@ -95,6 +102,11 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# ── Strip torch_cuda.dll (~1.5 GB) — ctranslate2 uses CUDA via nvidia packages
+import re as _re
+_cuda_dll = _re.compile(r'torch_cuda.*\.dll', _re.IGNORECASE)
+a.binaries = TOC([b for b in a.binaries if not _cuda_dll.search(b[0])])
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
