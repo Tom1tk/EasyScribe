@@ -1,18 +1,41 @@
-# PyInstaller hook for torch
+# PyInstaller hook for torch — CUDA runtime DLLs only
 #
-# torch ships CUDA runtime DLLs in torch/lib/ — cublas64_12.dll,
-# cublasLt64_12.dll, cudart64_12.dll, cudnn*.dll, etc. — that ctranslate2
-# needs at runtime for GPU (float16) inference.  Without this hook they are
-# absent from the bundle and the model load fails with:
-#   "Library cublas64_12.dll is not found or cannot be loaded"
+# ctranslate2 needs these CUDA runtime DLLs from torch/lib/ at runtime:
+#   cublas64_*.dll      ~450 MB  (cuBLAS — matrix ops for float16 inference)
+#   cublasLt64_*.dll    ~250 MB  (cuBLASLt — used by cuBLAS)
+#   cudart64_*.dll      ~2 MB    (CUDA runtime)
+#   cudnn_*.dll         ~100 MB  (cuDNN — neural net primitives)
 #
-# The app.zip (~1.1 GB) has enough headroom for these DLLs.
-# The model is shipped separately in model.zip so the two ZIPs each stay
-# under GitHub Releases' 2 GB asset limit.
+# We intentionally do NOT use collect_dynamic_libs('torch') because that
+# also pulls in torch_cuda.dll (~1.5 GB), torch_cpu.dll (~500 MB), and
+# other PyTorch internals that ctranslate2 does not need — bloating the
+# bundle past GitHub's 2 GB release asset limit.
 
-from PyInstaller.utils.hooks import collect_dynamic_libs
+import glob
+import importlib.util
+import os
 
-try:
-    binaries = collect_dynamic_libs("torch")
-except Exception:
-    binaries = []
+def _cuda_runtime_dlls() -> list[tuple[str, str]]:
+    try:
+        spec = importlib.util.find_spec("torch")
+        if not spec or not spec.origin:
+            return []
+        torch_lib = os.path.join(os.path.dirname(spec.origin), "lib")
+        if not os.path.isdir(torch_lib):
+            return []
+        patterns = [
+            "cublas64_*.dll",
+            "cublasLt64_*.dll",
+            "cudart64_*.dll",
+            "cudnn_*.dll",
+            "cudnn64_*.dll",
+        ]
+        dlls = []
+        for pat in patterns:
+            for f in glob.glob(os.path.join(torch_lib, pat)):
+                dlls.append((f, "."))
+        return dlls
+    except Exception:
+        return []
+
+binaries = _cuda_runtime_dlls()
