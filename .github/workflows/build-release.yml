@@ -5,6 +5,11 @@ name: Build and Publish Release
 # Two ZIP assets are published per release:
 #   - Transcriber7-<tag>-portable-with-model.zip  (~1.8 GB, extract and run)
 #   - Transcriber7-<tag>-portable-no-model.zip    (~300 MB, add your own model)
+#
+# Cache strategy (skips re-downloading on repeat builds):
+#   ffmpeg    ~70 MB   key: ffmpeg-win64-gpl-static-v1        (bump v1 to refresh)
+#   venv      ~3–4 GB  key: venv-win64-py3.11-cu<VER>-v1      (bump v1 to refresh)
+#   model     ~1.5 GB  key: faster-whisper-large-v3-turbo-mobiuslabs-v1
 on:
   workflow_dispatch:
     inputs:
@@ -36,8 +41,17 @@ jobs:
         with:
           python-version: '3.11'
 
-      # ── 3. Download ffmpeg (Windows static build) ────────────────────────────
+      # ── 3. Cache ffmpeg (~70 MB, rarely changes) ──────────────────────────────
+      - name: Cache ffmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: tools\ffmpeg
+          key: ffmpeg-win64-gpl-static-v1
+
+      # ── 3b. Download ffmpeg (skipped on cache hit) ────────────────────────────
       - name: Download ffmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
@@ -54,7 +68,7 @@ jobs:
           Remove-Item ffmpeg.zip -Force
           Write-Host "ffmpeg ready."
 
-      # ── 4. Cache model (avoids re-downloading ~1.5 GB every build) ───────────
+      # ── 4. Cache model (~1.5 GB, content never changes) ──────────────────────
       - name: Cache Faster Whisper model
         id: model-cache
         uses: actions/cache@v4
@@ -62,7 +76,7 @@ jobs:
           path: models/faster-whisper-large-v3-turbo
           key: faster-whisper-large-v3-turbo-mobiuslabs-v1
 
-      # ── 5. Download model from HuggingFace (skipped on cache hit) ────────────
+      # ── 4b. Download model from HuggingFace (skipped on cache hit) ────────────
       - name: Download Faster Whisper model
         if: steps.model-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -88,8 +102,19 @@ jobs:
 
           $script | python
 
-      # ── 5. Install Python dependencies ───────────────────────────────────────
+      # ── 5. Cache Python venv (~3–4 GB for CUDA, ~1 GB for CPU) ──────────────
+      # Key includes cuda_version so CPU and CUDA builds never share a cache.
+      # Bump v1 → v2 to force a clean reinstall (e.g. after adding a package).
+      - name: Cache Python venv
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: venv
+          key: venv-win64-py3.11-cu${{ github.event.inputs.cuda_version }}-v1
+
+      # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
+        if: steps.venv-cache.outputs.cache-hit != 'true'
         shell: pwsh
         env:
           CUDA_VERSION: ${{ github.event.inputs.cuda_version }}
