@@ -153,22 +153,28 @@ jobs:
           Write-Host "  Size: ${sz1} MB"
 
           # ── ZIP 2: without model (app + ffmpeg only) ─────────────────────────
-          # Copy dist folder, remove model, zip separately
-          Copy-Item "dist\PortableTranscriber" "dist\PortableTranscriber-NoModel" -Recurse -Force
-          Remove-Item "dist\PortableTranscriber-NoModel\models" -Recurse -Force
-          # Add a placeholder README inside models/ so the folder structure is clear
+          # Use robocopy to copy everything EXCEPT the models folder.
+          # Copy-Item -Recurse has a quirk where it can nest the source inside
+          # the destination, causing _internal and other top-level items to go
+          # missing. robocopy /XD is reliable and only excludes models/.
+          New-Item -ItemType Directory -Force -Path "dist\PortableTranscriber-NoModel" | Out-Null
+          # robocopy exit codes 0-7 are success; suppress error on those
+          robocopy "dist\PortableTranscriber" "dist\PortableTranscriber-NoModel" /E /XD "models" /NFL /NDL /NJH /NJS
+          if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
+
+          # Add a placeholder inside models/ so the folder structure is clear
           New-Item -ItemType Directory -Force -Path "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo" | Out-Null
           @"
-          Place the model files here:
-            config.json
-            model.bin
-            preprocessor_config.json
-            tokenizer.json
-            vocabulary.json
+Place the 5 model files here:
+  config.json
+  model.bin
+  preprocessor_config.json
+  tokenizer.json
+  vocabulary.json
 
-          Download from:
-          https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
-          "@ | Out-File "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo\PUT_MODEL_FILES_HERE.txt" -Encoding utf8
+Download from:
+https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
+"@ | Out-File "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo\PUT_MODEL_FILES_HERE.txt" -Encoding utf8
 
           $zipNoModel = "Transcriber7-${tag}-portable-no-model.zip"
           Write-Host "Creating $zipNoModel ..."
