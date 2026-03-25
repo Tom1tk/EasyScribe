@@ -173,10 +173,6 @@ jobs:
           $sz2 = [math]::Round((Get-Item $zipNoModel).Length / 1MB, 1)
           Write-Host "  Size: ${sz2} MB"
 
-          # Export names for next step
-          echo "ZIP_WITH_MODEL=$zipWithModel"    | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          echo "ZIP_NO_MODEL=$zipNoModel"         | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       # ── 9. Publish GitHub Release ────────────────────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -219,8 +215,8 @@ jobs:
             Windows Defender SmartScreen may show **"Windows protected your PC"** — click **More info → Run anyway**.
             This is expected for unsigned PyInstaller executables.
           files: |
-            ${{ env.ZIP_WITH_MODEL }}
-            ${{ env.ZIP_NO_MODEL }}
+            Transcriber7-${{ github.event.inputs.tag }}-portable-with-model.zip
+            Transcriber7-${{ github.event.inputs.tag }}-portable-no-model.zip
           draft: false
           prerelease: false
         env:
