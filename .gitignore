@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# PyInstaller
+*.spec.bak
+dist/
+build/
+
+# Model files (large binaries — user must provide these)
+models/
+
+# ffmpeg binaries (downloaded by build script)
+tools/ffmpeg/
+
+# Logs and temp files
+logs/
+temp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build artifacts
+*.zip
+*.tar.gz
