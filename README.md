@@ -38,7 +38,7 @@ models\
 
 Download the model from Hugging Face:
 
-```
+```powershell
 pip install huggingface_hub
 python -c "from huggingface_hub import snapshot_download; snapshot_download('mobiuslabsgmbh/faster-whisper-large-v3-turbo', local_dir='models/faster-whisper-large-v3-turbo', ignore_patterns=['*.gitattributes'])"
 ```
@@ -66,6 +66,17 @@ build_windows.bat --cuda 11.8
 ```batch
 build_windows.bat --cuda 12.1
 ```
+
+### GPU build (CUDA 12.4 — latest)
+
+```batch
+build_windows.bat --cuda 12.4
+```
+
+> **PowerShell tip:** Run the build script from **Command Prompt** (`cmd.exe`), not PowerShell.
+> If you must use PowerShell, note that `>` is a redirect operator — never write
+> `pip install torch>=2.3.0` unquoted. The build script avoids this problem by not
+> embedding version specifiers in the pip call.
 
 The build script will:
 
