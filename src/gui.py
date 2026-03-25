@@ -18,36 +18,20 @@ from typing import Callable
 import customtkinter as ctk  # type: ignore
 
 # ── tkinterdnd2 integration ───────────────────────────────────────────────────
-# tkinterdnd2 requires the Tk root to be a TkinterDnD.Tk instance.
-# We create a mixin base class so CTk can gain that capability.
-# If tkinterdnd2 is unavailable (e.g. DLL missing in the bundle), we fall back
-# to a plain CTk root and disable drag-and-drop gracefully.
+# The correct way to combine tkinterdnd2 with CustomTkinter is to let CTk
+# create its Tk interpreter normally, then load the tkdnd Tcl extension into
+# that interpreter using TkinterDnD._require(root).
+# This avoids the "invalid command name tkdnd::drop_target" crash that occurs
+# when TkinterDnD.Tk.__init__ is mixed with CTk.__init__ (they fight over the
+# interpreter).
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
-
-    class _DnDBase(TkinterDnD.Tk):  # type: ignore
-        """Thin wrapper: gives TkinterDnD.Tk the CTk initialisation."""
-        pass
-
     _DND_AVAILABLE = True
 except Exception:
-    _DnDBase = None  # type: ignore
     DND_FILES = None  # type: ignore
     _DND_AVAILABLE = False
 
-# Build the actual base class for TranscriberApp
-if _DND_AVAILABLE:
-    # Combine TkinterDnD.Tk (for DnD) with CTk (for theming).
-    # CTk.__init__ accepts the same args as Tk, so this works.
-    class _AppBase(ctk.CTk):  # type: ignore
-        """CTk app with TkinterDnD drop support."""
-        def __init__(self, **kwargs):
-            # Initialise TkinterDnD.Tk first so the drop machinery is set up,
-            # then let CTk apply its theming on top of the same Tcl interpreter.
-            TkinterDnD.Tk.__init__(self)  # type: ignore
-            ctk.CTk.__init__(self, **kwargs)  # type: ignore
-else:
-    _AppBase = ctk.CTk  # type: ignore
+_AppBase = ctk.CTk  # type: ignore  # always inherit from plain CTk
 
 from config import APP_NAME, APP_VERSION, MIN_FREE_DISK_BYTES, SUPPORTED_EXTENSIONS
 from ffmpeg_wrapper import (
@@ -102,12 +86,19 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._engine = TranscriptionEngine()
         self._last_output_folder: Path | None = None
 
-        # Drag-and-drop availability (depends on whether TkinterDnD loaded)
-        self._dnd_enabled: bool = _DND_AVAILABLE
+        # ── Load tkdnd Tcl extension into the existing CTk interpreter ──────────
+        # TkinterDnD._require() registers the tkdnd:: commands in whatever Tk
+        # interpreter is already running — no separate root needed.
+        self._dnd_enabled: bool = False
         if _DND_AVAILABLE:
-            logger.info("tkinterdnd2 drag-and-drop enabled")
+            try:
+                TkinterDnD._require(self)  # type: ignore
+                self._dnd_enabled = True
+                logger.info("tkinterdnd2 drag-and-drop enabled")
+            except Exception as exc:
+                logger.warning(f"tkdnd extension failed to load — drag-and-drop disabled: {exc}")
         else:
-            logger.warning("tkinterdnd2 unavailable — drag-and-drop disabled")
+            logger.warning("tkinterdnd2 not installed — drag-and-drop disabled")
 
         # GPU selector state (populated in _build_ui)
         self._gpu_options: list[str] = []
