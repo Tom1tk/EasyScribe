@@ -63,10 +63,6 @@ a = Analysis(
         # huggingface_hub is imported by faster-whisper internally
         "huggingface_hub",
         "huggingface_hub.utils",
-        # torch is optional — included when present, skipped when not installed
-        # (ctranslate2 handles GPU detection without torch)
-        "torch",
-        "torch.cuda",
         # tkinterdnd2
         "tkinterdnd2",
     ],
@@ -74,6 +70,14 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # torch is excluded from the bundle — torch_cuda.dll (~1.5 GB) and
+        # torch_cpu.dll (~500 MB) would blow the bundle past GitHub's 2 GB limit.
+        # transcriber.py wraps `import torch` in try/except so it degrades
+        # gracefully; ctranslate2 handles GPU detection and inference directly.
+        # The CUDA runtime DLLs ctranslate2 needs (cublas, cudart, cudnn) are
+        # collected selectively by hooks/hook-torch.py from the build venv.
+        "torch",
+        "torchaudio",
         # Reduce size — things we never use
         "matplotlib",
         "numpy.distutils",
