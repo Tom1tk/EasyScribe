@@ -147,6 +147,42 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
+      # ── 6b. Copy CUDA runtime DLLs into _internal/ ────────────────────────────
+      # PyInstaller hooks are unreliable for placing DLLs where ctranslate2 can
+      # find them via Windows DLL search. We copy them explicitly instead.
+      # cublas/cublasLt/cudart/cudnn are all ctranslate2 needs for float16 GPU.
+      - name: Copy CUDA runtime DLLs
+        shell: pwsh
+        env:
+          CUDA_VERSION: ${{ github.event.inputs.cuda_version }}
+        run: |
+          $torchLib   = "venv\Lib\site-packages\torch\lib"
+          $internalDir = "dist\PortableTranscriber\_internal"
+
+          if (-not (Test-Path $torchLib)) {
+            throw "torch lib not found at $torchLib"
+          }
+
+          $patterns = @("cublas64_*.dll", "cublasLt64_*.dll", "cudart64_*.dll", "cudnn_*.dll", "cudnn64_*.dll")
+          $copied = 0
+          foreach ($pat in $patterns) {
+            Get-ChildItem "$torchLib\$pat" -ErrorAction SilentlyContinue | ForEach-Object {
+              $sizeMB = [math]::Round($_.Length / 1MB, 1)
+              Copy-Item $_.FullName "$internalDir\" -Force
+              Write-Host "  Copied $($_.Name)  ($sizeMB MB)"
+              $copied++
+            }
+          }
+
+          if ($copied -eq 0) { throw "No CUDA DLLs found in $torchLib — check cuda_version input" }
+          Write-Host "Total CUDA DLLs copied: $copied"
+
+          # Show everything CUDA-related now in _internal/ for verification
+          Write-Host "`nCUDA DLLs in _internal/:"
+          Get-ChildItem "$internalDir\cu*.dll", "$internalDir\cudnn*.dll" -ErrorAction SilentlyContinue |
+            Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} |
+            Format-Table -AutoSize
+
       # ── 7. Assemble portable app folder (no model) ────────────────────────────
       - name: Assemble PortableTranscriber folder
         shell: pwsh
@@ -237,7 +273,7 @@ jobs:
           files: |
             Transcriber7-${{ github.event.inputs.tag }}-app.zip
             Transcriber7-${{ github.event.inputs.tag }}-model.zip
-          draft: false
+          draft: true
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
