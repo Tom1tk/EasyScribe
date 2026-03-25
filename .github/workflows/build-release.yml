@@ -1,4 +1,4 @@
-name: Build & Publish Release
+name: Build and Publish Release
 
 # Trigger manually from the GitHub Actions tab.
 # Provide a tag like "v1.0.0" — a GitHub Release is created automatically.
