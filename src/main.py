@@ -10,8 +10,10 @@ This order ensures HF_HUB_OFFLINE and friends are set before any
 faster_whisper or huggingface_hub code is imported.
 """
 
-# ── MUST be first import ──────────────────────────────────────────────────────
-import config  # noqa: F401  (side-effect: sets offline env vars)
+# ── Import order is critical ──────────────────────────────────────────────────
+import config      # 1st: sets HF_HOME + offline env vars before any HF import
+import cuda_setup  # 2nd: registers CUDA DLL dirs via os.add_dll_directory()
+                   #      must run before ctranslate2 / pyannote are imported
 
 import atexit
 import logging

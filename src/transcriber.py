@@ -158,6 +158,23 @@ def validate_model_directory() -> list[str]:
     return missing
 
 
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _build_plain_transcript(
+    raw_segments: list[tuple[float, float, str]],
+    add_timestamps: bool,
+) -> str:
+    """Build a plain (no speaker labels) transcript string from raw segments."""
+    if add_timestamps:
+        lines = [
+            f"[{_format_timestamp(start)} --> {_format_timestamp(end)}] {text}"
+            for start, end, text in raw_segments
+        ]
+        return "\n".join(lines)
+    return " ".join(text for _, _, text in raw_segments)
+
+
 # ─── Engine ───────────────────────────────────────────────────────────────────
 
 
@@ -285,6 +302,7 @@ class TranscriptionEngine:
         status_callback: Callable[[str], None],
         progress_callback: Callable[[float], None],
         log_callback: Callable[[str], None],
+        diarize: bool = False,
     ) -> None:
         """
         Transcribe *audio_path* and write the result to *output_path*.
@@ -348,7 +366,8 @@ class TranscriptionEngine:
         log_callback(f"[Whisper] Device         : {device_info} / {self._compute_type}")
         log_callback(f"[Whisper] Processing segments — output will appear below as it's decoded…")
 
-        collected_lines: list[str] = []
+        # (start_sec, end_sec, text) — always keep times for diarization mapping
+        raw_segments: list[tuple[float, float, str]] = []
         segment_count = 0
         word_count = 0
         last_progress_log = time.monotonic()
@@ -369,17 +388,8 @@ class TranscriptionEngine:
 
                 segment_count += 1
                 word_count += len(text.split())
-
-                if add_timestamps:
-                    line = (
-                        f"[{_format_timestamp(segment.start)} --> "
-                        f"{_format_timestamp(segment.end)}] {text}"
-                    )
-                else:
-                    line = text
-
-                collected_lines.append(line)
-                log_callback(line)
+                raw_segments.append((segment.start, segment.end, text))
+                log_callback(text)
 
                 # Periodic progress heartbeat — once per second in wall time
                 now = time.monotonic()
@@ -408,6 +418,38 @@ class TranscriptionEngine:
             f"{word_count} words in {_fmt_seconds(total_elapsed)}"
         )
 
+        # ── Optional speaker diarization ──────────────────────────────────────
+        if diarize and raw_segments:
+            status_callback("Identifying Speakers")
+            try:
+                from diarizer import DiarizationEngine, DiarizationError  # type: ignore
+                _diarizer = DiarizationEngine()
+                turns = _diarizer.diarize(audio_path, log_callback)
+                assigned = _diarizer.assign_speakers(raw_segments, turns)
+                # assigned: list of (speaker, text, start, end)
+                # Build output lines grouped by consecutive speaker
+                output_lines: list[str] = []
+                prev_speaker: str | None = None
+                for speaker, text, start, end in assigned:
+                    # Normalise label: SPEAKER_00 → Speaker 0
+                    label = speaker.replace("SPEAKER_", "Speaker ").replace("_", " ").title()
+                    if add_timestamps:
+                        line = f"[{label}] [{_format_timestamp(start)} --> {_format_timestamp(end)}] {text}"
+                    elif label != prev_speaker:
+                        output_lines.append(f"\n[{label}]")
+                        line = text
+                    else:
+                        line = text
+                    output_lines.append(line)
+                    prev_speaker = label
+                transcript_text = " ".join(output_lines).strip()
+            except Exception as exc:
+                logger.warning(f"Diarization failed, falling back to plain transcript: {exc}")
+                log_callback(f"[Diarize] Warning: {exc} — writing plain transcript")
+                transcript_text = _build_plain_transcript(raw_segments, add_timestamps)
+        else:
+            transcript_text = _build_plain_transcript(raw_segments, add_timestamps)
+
         # ── Write transcript ──────────────────────────────────────────────────
         status_callback("Writing Transcript")
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -415,8 +457,6 @@ class TranscriptionEngine:
         logger.info(f"Writing transcript to: {output_path}")
 
         try:
-            separator = "\n" if add_timestamps else " "
-            transcript_text = separator.join(collected_lines)
             with open(output_path, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(transcript_text)
                 fh.write("\n")

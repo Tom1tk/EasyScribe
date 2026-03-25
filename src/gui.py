@@ -40,6 +40,7 @@ from ffmpeg_wrapper import (
     FFmpegNotFoundError,
     extract_audio,
 )
+from diarizer import DiarizationEngine  # type: ignore
 from transcriber import (
     CancelledError as TranscribeCancelledError,
     ModelNotFoundError,
@@ -61,6 +62,7 @@ _STATUS_COLOURS: dict[str, str] = {
     "Loading Model": "#FF9800",
     "Extracting Audio": "#2196F3",
     "Transcribing": "#2196F3",
+    "Identifying Speakers": "#2196F3",
     "Writing Transcript": "#2196F3",
     "Done": "#4CAF50",
     "Cancelled": "#FF9800",
@@ -99,6 +101,9 @@ class TranscriberApp(_AppBase):  # type: ignore
                 logger.warning(f"tkdnd extension failed to load — drag-and-drop disabled: {exc}")
         else:
             logger.warning("tkinterdnd2 not installed — drag-and-drop disabled")
+
+        # Diarization availability (checked once at startup)
+        self._diarization_available: bool = DiarizationEngine().is_available()
 
         # GPU selector state (populated in _build_ui)
         self._gpu_options: list[str] = []
@@ -205,9 +210,20 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._timestamps_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             opts_frame,
-            text="Include timestamps in transcript",
+            text="Include timestamps",
             variable=self._timestamps_var,
         ).grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
+
+        self._diarize_var = ctk.BooleanVar(value=False)
+        _diarize_cb = ctk.CTkCheckBox(
+            opts_frame,
+            text="Identify speakers",
+            variable=self._diarize_var,
+            state="normal" if self._diarization_available else "disabled",
+        )
+        _diarize_cb.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="w")
+        if not self._diarization_available:
+            _diarize_cb.configure(text="Identify speakers  (model not found)")
 
         # GPU selector
         ctk.CTkLabel(opts_frame, text="Device:", anchor="w").grid(
@@ -463,6 +479,7 @@ class TranscriberApp(_AppBase):  # type: ignore
                     status_callback=self._safe_update_status,
                     progress_callback=self._safe_set_progress,
                     log_callback=self._safe_append_log,
+                    diarize=self._diarize_var.get(),
                 )
 
             except (FFmpegCancelledError, TranscribeCancelledError):
