@@ -20,6 +20,11 @@ setlocal enabledelayedexpansion
 ::   build_windows.bat              (CPU build - default)
 ::   build_windows.bat --cuda 11.8  (CUDA 11.8 build)
 ::   build_windows.bat --cuda 12.1  (CUDA 12.1 build)
+::   build_windows.bat --cuda 12.4  (CUDA 12.4 build)
+::   build_windows.bat --cuda 12.6  (CUDA 12.6 build)
+::
+:: TIP: Run this script from cmd.exe, not PowerShell.
+::      PowerShell treats > as a redirect operator which breaks pip version specs.
 :: ============================================================
 
 set SCRIPT_DIR=%~dp0
@@ -41,9 +46,10 @@ set TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 :parse_args
 if "%~1"=="--cuda" (
     set CUDA_VERSION=%~2
-    if "!CUDA_VERSION!"=="11.8" set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu118
-    if "!CUDA_VERSION!"=="12.1" set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
-    if "!CUDA_VERSION!"=="12.4" set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+    if "!CUDA_VERSION!"=="11.8"  set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu118
+    if "!CUDA_VERSION!"=="12.1"  set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+    if "!CUDA_VERSION!"=="12.4"  set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+    if "!CUDA_VERSION!"=="12.6"  set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126
     shift
     shift
     goto parse_args

@@ -1,20 +1,26 @@
 # Transcriber7 - Python dependencies
 #
-# IMPORTANT: Before running pip install, choose one of the torch lines below:
+# IMPORTANT: Install PyTorch separately before the other packages.
+# Use one of the commands below (copy into PowerShell or cmd):
 #
-#   CPU only (smaller download, slower inference):
-#     torch>=2.3.0
+#   CPU only (smaller download, slower transcription):
+#     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 #
-#   NVIDIA GPU with CUDA 11.8 (recommended for speed):
-#     torch>=2.3.0+cu118
-#     Install via: pip install torch>=2.3.0 --index-url https://download.pytorch.org/whl/cu118
+#   NVIDIA GPU — CUDA 11.8:
+#     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
 #
-#   NVIDIA GPU with CUDA 12.1:
-#     torch>=2.3.0+cu121
-#     Install via: pip install torch>=2.3.0 --index-url https://download.pytorch.org/whl/cu121
+#   NVIDIA GPU — CUDA 12.1:
+#     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 #
-# The build script (build_windows.bat) installs the CPU version by default.
-# Edit the script to switch to a CUDA build if your target machines have NVIDIA GPUs.
+#   NVIDIA GPU — CUDA 12.4 (latest):
+#     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+#
+# PowerShell warning: NEVER write "torch>=2.3.0" unquoted in PowerShell — the >
+# character is a redirect operator and will silently break the install.
+# Always quote: pip install "torch>=2.3.0" ...  or just omit the version pin.
+#
+# The build script (build_windows.bat) handles torch installation automatically.
+# Pass --cuda 11.8 / --cuda 12.1 / --cuda 12.4 to select a CUDA build.
 
 # Speech-to-text engine (uses ctranslate2 under the hood)
 faster-whisper>=1.0.3
