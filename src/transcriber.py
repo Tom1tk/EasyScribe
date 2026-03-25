@@ -10,6 +10,7 @@ for subsequent calls, avoiding long startup delays.
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -49,6 +50,16 @@ def _format_timestamp(seconds: float) -> str:
     m = int((seconds % 3600) // 60)
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+
+def _fmt_seconds(s: float) -> str:
+    """Human-readable duration, e.g. '1m 23s'."""
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = int(s % 60)
+    if h:
+        return f"{h}h {m:02d}m {sec:02d}s"
+    return f"{m}m {sec:02d}s"
 
 
 def list_gpus() -> list[dict[str, str | int]]:
@@ -193,9 +204,20 @@ class TranscriptionEngine:
             self._compute_type = compute_type
             self._device_index = resolved_index
 
+            device_label = f"cuda:{resolved_index}" if device == "cuda" else "cpu"
             logger.info(
-                f"Device: {device}, compute_type: {compute_type}, "
-                f"device_index: {resolved_index}"
+                f"Device: {device_label}, compute_type: {compute_type}"
+            )
+
+            # Validate model files and report sizes before loading
+            model_files = list(MODELS_DIR.iterdir()) if MODELS_DIR.exists() else []
+            for f in sorted(model_files):
+                size_mb = f.stat().st_size / (1024 * 1024)
+                logger.info(f"  Model file: {f.name}  ({size_mb:.1f} MB)")
+
+            logger.info(
+                f"[Model] Loading faster-whisper from {MODELS_DIR.name} "
+                f"on {device_label} ({compute_type}) — this may take a moment…"
             )
 
             # Import here (not at module level) so offline env vars are already set
@@ -212,8 +234,10 @@ class TranscriptionEngine:
             if resolved_index is not None:
                 model_kwargs["device_index"] = resolved_index
 
+            load_start = time.monotonic()
             self._model = WhisperModel(**model_kwargs)
-            logger.info("Model loaded successfully")
+            load_elapsed = time.monotonic() - load_start
+            logger.info(f"[Model] Loaded successfully in {load_elapsed:.1f}s")
 
     def reload_model(self) -> None:
         """
@@ -277,8 +301,12 @@ class TranscriptionEngine:
 
         status_callback("Transcribing")
         logger.info(f"Transcribing: {audio_path.name} → {output_path.name}")
+        log_callback(f"[Whisper] Starting transcription of {audio_path.name}…")
+        log_callback(f"[Whisper] beam_size={WHISPER_BEAM_SIZE}, vad_filter={WHISPER_VAD_FILTER}, language={'auto' if not WHISPER_LANGUAGE else WHISPER_LANGUAGE}")
 
         try:
+            log_callback("[Whisper] Initialising model pipeline (first-time setup may take a few seconds)…")
+            infer_start = time.monotonic()
             segments_iter, info = self._model.transcribe(
                 str(audio_path),
                 beam_size=WHISPER_BEAM_SIZE,
@@ -293,18 +321,18 @@ class TranscriptionEngine:
 
         duration: float = info.duration if info.duration else 0.0
         language_detected: str = info.language or "unknown"
-        logger.info(
-            f"Audio duration: {duration:.1f}s, detected language: {language_detected}"
-        )
-        device_info = self._device or "?"
-        if self._device == "cuda" and self._device_index is not None:
-            device_info = f"cuda:{self._device_index}"
-        log_callback(
-            f"[Info] Duration: {duration:.1f}s | Language: {language_detected} | "
-            f"Device: {device_info}/{self._compute_type}"
-        )
+        device_info = f"cuda:{self._device_index}" if self._device == "cuda" and self._device_index is not None else (self._device or "cpu")
+
+        logger.info(f"Audio duration: {duration:.1f}s, detected language: {language_detected}")
+        log_callback(f"[Whisper] Audio duration : {_fmt_seconds(duration)}")
+        log_callback(f"[Whisper] Language       : {language_detected}")
+        log_callback(f"[Whisper] Device         : {device_info} / {self._compute_type}")
+        log_callback(f"[Whisper] Processing segments — output will appear below as it's decoded…")
 
         collected_lines: list[str] = []
+        segment_count = 0
+        word_count = 0
+        last_progress_log = time.monotonic()
 
         try:
             for segment in segments_iter:
@@ -320,6 +348,9 @@ class TranscriptionEngine:
                 if not text:
                     continue
 
+                segment_count += 1
+                word_count += len(text.split())
+
                 if add_timestamps:
                     line = (
                         f"[{_format_timestamp(segment.start)} --> "
@@ -331,15 +362,37 @@ class TranscriptionEngine:
                 collected_lines.append(line)
                 log_callback(line)
 
+                # Periodic progress heartbeat — once per second in wall time
+                now = time.monotonic()
+                if now - last_progress_log >= 1.0:
+                    last_progress_log = now
+                    pos_str = _fmt_seconds(segment.end)
+                    dur_str = _fmt_seconds(duration) if duration > 0 else "?"
+                    pct = f"{min(segment.end / duration * 100, 100):.0f}%" if duration > 0 else "?%"
+                    elapsed = now - infer_start
+                    speed = segment.end / elapsed if elapsed > 0 else 0
+                    log_callback(
+                        f"[Progress] {pos_str} / {dur_str} ({pct}) — "
+                        f"{segment_count} segments, {word_count} words — "
+                        f"{speed:.1f}x realtime"
+                    )
+
         except CancelledError:
             raise
         except Exception as exc:
             logger.exception(f"Error during segment iteration: {exc}")
             raise TranscriptionError(f"Error during transcription: {exc}") from exc
 
+        total_elapsed = time.monotonic() - infer_start
+        log_callback(
+            f"[Whisper] Transcription complete — {segment_count} segments, "
+            f"{word_count} words in {_fmt_seconds(total_elapsed)}"
+        )
+
         # ── Write transcript ──────────────────────────────────────────────────
         status_callback("Writing Transcript")
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        log_callback(f"[Output] Writing transcript to: {output_path}")
         logger.info(f"Writing transcript to: {output_path}")
 
         try:
@@ -358,9 +411,7 @@ class TranscriptionEngine:
                 f"Failed to write transcript file: {output_path}\n\n{exc}"
             ) from exc
 
+        size_kb = output_path.stat().st_size // 1024
         progress_callback(1.0)
-        logger.info(
-            f"Transcript written: {len(collected_lines)} segments, "
-            f"{output_path.stat().st_size} bytes"
-        )
-        log_callback(f"[Done] Saved: {output_path}")
+        logger.info(f"Transcript written: {segment_count} segments, {output_path.stat().st_size} bytes")
+        log_callback(f"[Done] Saved: {output_path}  ({size_kb} KB)")
