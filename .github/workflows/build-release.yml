@@ -2,6 +2,9 @@ name: Build & Publish Release
 
 # Trigger manually from the GitHub Actions tab.
 # Provide a tag like "v1.0.0" — a GitHub Release is created automatically.
+# Two ZIP assets are published per release:
+#   - Transcriber7-<tag>-portable-with-model.zip  (~1.8 GB, extract and run)
+#   - Transcriber7-<tag>-portable-no-model.zip    (~300 MB, add your own model)
 on:
   workflow_dispatch:
     inputs:
@@ -111,7 +114,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
-      # ── 7. Assemble portable output folder ───────────────────────────────────
+      # ── 7. Assemble portable output folder (with model) ──────────────────────
       - name: Assemble PortableTranscriber folder
         shell: pwsh
         run: |
@@ -134,19 +137,48 @@ jobs:
           # Summary
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "Total folder size: $([math]::Round($totalMB, 0)) MB"
-          Get-ChildItem $dist | Select-Object Name, @{N='Size(MB)';E={[math]::Round($_.Length/1MB,1)}}
+          Get-ChildItem $dist | Select-Object Name
 
-      # ── 8. Create release ZIP ─────────────────────────────────────────────────
-      - name: Create release ZIP
+      # ── 8. Create both release ZIPs ───────────────────────────────────────────
+      - name: Create release ZIPs
         shell: pwsh
         run: |
-          $tag     = "${{ github.event.inputs.tag }}"
-          $zipName = "Transcriber7-${tag}-portable.zip"
-          Write-Host "Creating $zipName ..."
-          Compress-Archive -Path "dist\PortableTranscriber\*" -DestinationPath $zipName -CompressionLevel Optimal
-          $sizeMB = [math]::Round((Get-Item $zipName).Length / 1MB, 1)
-          Write-Host "ZIP size: ${sizeMB} MB"
-          echo "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $tag = "${{ github.event.inputs.tag }}"
+
+          # ── ZIP 1: with model bundled ────────────────────────────────────────
+          $zipWithModel = "Transcriber7-${tag}-portable-with-model.zip"
+          Write-Host "Creating $zipWithModel ..."
+          Compress-Archive -Path "dist\PortableTranscriber\*" -DestinationPath $zipWithModel -CompressionLevel Optimal
+          $sz1 = [math]::Round((Get-Item $zipWithModel).Length / 1MB, 1)
+          Write-Host "  Size: ${sz1} MB"
+
+          # ── ZIP 2: without model (app + ffmpeg only) ─────────────────────────
+          # Copy dist folder, remove model, zip separately
+          Copy-Item "dist\PortableTranscriber" "dist\PortableTranscriber-NoModel" -Recurse -Force
+          Remove-Item "dist\PortableTranscriber-NoModel\models" -Recurse -Force
+          # Add a placeholder README inside models/ so the folder structure is clear
+          New-Item -ItemType Directory -Force -Path "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo" | Out-Null
+          @"
+          Place the model files here:
+            config.json
+            model.bin
+            preprocessor_config.json
+            tokenizer.json
+            vocabulary.json
+
+          Download from:
+          https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
+          "@ | Out-File "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo\PUT_MODEL_FILES_HERE.txt" -Encoding utf8
+
+          $zipNoModel = "Transcriber7-${tag}-portable-no-model.zip"
+          Write-Host "Creating $zipNoModel ..."
+          Compress-Archive -Path "dist\PortableTranscriber-NoModel\*" -DestinationPath $zipNoModel -CompressionLevel Optimal
+          $sz2 = [math]::Round((Get-Item $zipNoModel).Length / 1MB, 1)
+          Write-Host "  Size: ${sz2} MB"
+
+          # Export names for next step
+          echo "ZIP_WITH_MODEL=$zipWithModel"    | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "ZIP_NO_MODEL=$zipNoModel"         | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       # ── 9. Publish GitHub Release ────────────────────────────────────────────
       - name: Create GitHub Release
@@ -157,30 +189,41 @@ jobs:
           body: |
             ## Transcriber7 — Portable Offline Speech-to-Text
 
-            ### How to use
-            1. Download `Transcriber7-${{ github.event.inputs.tag }}-portable.zip`
+            Two downloads are provided — pick whichever suits you:
+
+            | Asset | Size | Description |
+            |---|---|---|
+            | `...-with-model.zip` | ~1.8 GB | **Everything included** — extract and run immediately |
+            | `...-no-model.zip` | ~300 MB | App + ffmpeg only — add your own model files |
+
+            ---
+
+            ### Option A — with-model (recommended)
+            1. Download `Transcriber7-${{ github.event.inputs.tag }}-portable-with-model.zip`
             2. Extract anywhere (Desktop, USB stick, etc.)
             3. Double-click **PortableTranscriber.exe**
 
-            No installation required. No internet needed after download.
+            ### Option B — no-model
+            1. Download `Transcriber7-${{ github.event.inputs.tag }}-portable-no-model.zip`
+            2. Extract anywhere
+            3. Copy your `faster-whisper-large-v3-turbo` model files into `models\faster-whisper-large-v3-turbo\`
+               (needs: `config.json`, `model.bin`, `preprocessor_config.json`, `tokenizer.json`, `vocabulary.json`)
+            4. Double-click **PortableTranscriber.exe**
 
-            ### What's bundled
-            - `PortableTranscriber.exe` — the application
-            - `models/faster-whisper-large-v3-turbo/` — speech-to-text model
-            - `ffmpeg/ffmpeg.exe` — audio decoder (all common video/audio formats)
+            ---
 
             ### Supported input formats
             mp4, mkv, mov, avi, webm, mp3, wav, m4a, flac, ogg, opus, aac
 
             ### GPU acceleration
-            NVIDIA GPU is used automatically if a compatible driver is present.
-            Falls back to CPU otherwise. The Device dropdown lists all available GPUs.
+            NVIDIA GPU used automatically if a compatible driver is present. Falls back to CPU otherwise.
 
             ### First launch note
-            Windows Defender SmartScreen may show "Windows protected your PC" for an
-            unrecognised app. Click **More info → Run anyway**. This is expected for
-            unsigned executables built with PyInstaller.
-          files: ${{ env.ZIP_NAME }}
+            Windows Defender SmartScreen may show **"Windows protected your PC"** — click **More info → Run anyway**.
+            This is expected for unsigned PyInstaller executables.
+          files: |
+            ${{ env.ZIP_WITH_MODEL }}
+            ${{ env.ZIP_NO_MODEL }}
           draft: false
           prerelease: false
         env:
