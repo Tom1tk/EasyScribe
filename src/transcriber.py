@@ -235,7 +235,26 @@ class TranscriptionEngine:
                 model_kwargs["device_index"] = resolved_index
 
             load_start = time.monotonic()
-            self._model = WhisperModel(**model_kwargs)
+            try:
+                self._model = WhisperModel(**model_kwargs)
+            except Exception as cuda_exc:
+                # CUDA runtime DLLs missing (e.g. cublas64_12.dll not found) —
+                # fall back to CPU automatically rather than crashing.
+                if device == "cuda":
+                    logger.warning(
+                        f"[Model] CUDA load failed ({cuda_exc}); retrying on CPU int8…"
+                    )
+                    status_callback("Loading Model (CPU fallback)")
+                    self._device = "cpu"
+                    self._compute_type = "int8"
+                    self._device_index = None
+                    model_kwargs.update(
+                        device="cpu", compute_type="int8"
+                    )
+                    model_kwargs.pop("device_index", None)
+                    self._model = WhisperModel(**model_kwargs)
+                else:
+                    raise
             load_elapsed = time.monotonic() - load_start
             logger.info(f"[Model] Loaded successfully in {load_elapsed:.1f}s")
 
