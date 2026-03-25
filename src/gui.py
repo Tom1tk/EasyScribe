@@ -17,6 +17,38 @@ from typing import Callable
 
 import customtkinter as ctk  # type: ignore
 
+# ── tkinterdnd2 integration ───────────────────────────────────────────────────
+# tkinterdnd2 requires the Tk root to be a TkinterDnD.Tk instance.
+# We create a mixin base class so CTk can gain that capability.
+# If tkinterdnd2 is unavailable (e.g. DLL missing in the bundle), we fall back
+# to a plain CTk root and disable drag-and-drop gracefully.
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
+
+    class _DnDBase(TkinterDnD.Tk):  # type: ignore
+        """Thin wrapper: gives TkinterDnD.Tk the CTk initialisation."""
+        pass
+
+    _DND_AVAILABLE = True
+except Exception:
+    _DnDBase = None  # type: ignore
+    DND_FILES = None  # type: ignore
+    _DND_AVAILABLE = False
+
+# Build the actual base class for TranscriberApp
+if _DND_AVAILABLE:
+    # Combine TkinterDnD.Tk (for DnD) with CTk (for theming).
+    # CTk.__init__ accepts the same args as Tk, so this works.
+    class _AppBase(ctk.CTk):  # type: ignore
+        """CTk app with TkinterDnD drop support."""
+        def __init__(self, **kwargs):
+            # Initialise TkinterDnD.Tk first so the drop machinery is set up,
+            # then let CTk apply its theming on top of the same Tcl interpreter.
+            TkinterDnD.Tk.__init__(self)  # type: ignore
+            ctk.CTk.__init__(self, **kwargs)  # type: ignore
+else:
+    _AppBase = ctk.CTk  # type: ignore
+
 from config import APP_NAME, APP_VERSION, MIN_FREE_DISK_BYTES, SUPPORTED_EXTENSIONS
 from ffmpeg_wrapper import (
     CancelledError as FFmpegCancelledError,
@@ -52,7 +84,7 @@ _STATUS_COLOURS: dict[str, str] = {
 }
 
 
-class TranscriberApp(ctk.CTk):
+class TranscriberApp(_AppBase):  # type: ignore
     """Main application window."""
 
     def __init__(self) -> None:
@@ -70,13 +102,16 @@ class TranscriberApp(ctk.CTk):
         self._engine = TranscriptionEngine()
         self._last_output_folder: Path | None = None
 
-        # Set initial GPU preference on engine (will be overridden once UI is built)
-        # Build GPU options first so we know the default
+        # Drag-and-drop availability (depends on whether TkinterDnD loaded)
+        self._dnd_enabled: bool = _DND_AVAILABLE
+        if _DND_AVAILABLE:
+            logger.info("tkinterdnd2 drag-and-drop enabled")
+        else:
+            logger.warning("tkinterdnd2 unavailable — drag-and-drop disabled")
+
+        # GPU selector state (populated in _build_ui)
         self._gpu_options: list[str] = []
         self._gpu_index_map: dict[str, int | None] = {}
-
-        # ── Enable drag & drop (tkinterdnd2) ──────────────────────────────────
-        self._dnd_enabled = self._try_enable_dnd()
 
         # ── Build UI ──────────────────────────────────────────────────────────
         self._build_ui()
@@ -139,9 +174,9 @@ class TranscriberApp(ctk.CTk):
         )
         self._drop_zone.grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="ew")
 
-        if self._dnd_enabled:
-            self._drop_zone.drop_target_register("DND_Files")  # type: ignore[attr-defined]
-            self._drop_zone.dnd_bind("<<Drop>>", self._on_drop)  # type: ignore[attr-defined]
+        if self._dnd_enabled and DND_FILES is not None:
+            self._drop_zone.drop_target_register(DND_FILES)
+            self._drop_zone.dnd_bind("<<Drop>>", self._on_drop)
 
         # ── Output folder ─────────────────────────────────────────────────────
         out_frame = ctk.CTkFrame(self)
@@ -282,18 +317,6 @@ class TranscriberApp(ctk.CTk):
     # ─────────────────────────────────────────────────────────────────────────
     # Drag & drop
     # ─────────────────────────────────────────────────────────────────────────
-
-    def _try_enable_dnd(self) -> bool:
-        """Attempt to initialise tkinterdnd2. Returns True on success."""
-        try:
-            from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore  # noqa: F401
-            # Replace the Tk root with a TkinterDnD-compatible one
-            # (tkinterdnd2 patches the root widget in place when imported)
-            logger.info("tkinterdnd2 drag-and-drop enabled")
-            return True
-        except Exception as exc:
-            logger.warning(f"tkinterdnd2 not available, drag-and-drop disabled: {exc}")
-            return False
 
     def _on_drop(self, event: object) -> None:
         """Handle files dropped onto the drop zone."""
