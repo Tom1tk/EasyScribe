@@ -170,6 +170,7 @@ jobs:
           # robocopy exit codes 0-7 are success; suppress error on those
           robocopy "dist\PortableTranscriber" "dist\PortableTranscriber-NoModel" /E /XD "models" /NFL /NDL /NJH /NJS
           if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
+          $LASTEXITCODE = 0   # robocopy 1 = "files copied OK" — reset so pwsh exits 0
 
           # Add a placeholder inside models/ so the folder structure is clear
           New-Item -ItemType Directory -Force -Path "dist\PortableTranscriber-NoModel\models\faster-whisper-large-v3-turbo" | Out-Null
