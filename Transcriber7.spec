@@ -12,6 +12,36 @@
 import sys
 from pathlib import Path
 
+
+def _collect_nvidia_dlls():
+    """
+    Collect nvidia CUDA package DLLs into the bundle unconditionally.
+
+    hook-nvidia.py is never triggered because nothing imports nvidia.* —
+    ctranslate2 loads CUDA DLLs via Windows LoadLibrary, not Python imports.
+    Running the collection here (spec executes at build time regardless of
+    imports) guarantees the DLLs land in _internal/nvidia/<pkg>/bin/.
+    cuda_setup.py then calls os.add_dll_directory() on those dirs at startup.
+    """
+    result = []
+    for sp in sys.path:
+        nvidia_root = Path(sp) / "nvidia"
+        if not nvidia_root.is_dir():
+            continue
+        for pkg_dir in nvidia_root.iterdir():
+            if not pkg_dir.is_dir():
+                continue
+            for sub in ("bin", "lib"):
+                dll_dir = pkg_dir / sub
+                if not dll_dir.is_dir():
+                    continue
+                for f in dll_dir.iterdir():
+                    if f.suffix.lower() in (".dll", ".so") and f.is_file():
+                        dest = f"nvidia/{pkg_dir.name}/{sub}"
+                        result.append((str(f), dest))
+    print(f"[spec] Collected {len(result)} nvidia DLL(s) from site-packages")
+    return result
+
 block_cipher = None
 
 # ── Locate CustomTkinter and tkinterdnd2 package directories ─────────────────
@@ -44,7 +74,7 @@ if _dnd_dir:
 a = Analysis(
     ["src/main.py"],
     pathex=["src"],          # so imports like `from config import ...` resolve
-    binaries=[],
+    binaries=_collect_nvidia_dlls(),
     datas=_datas,
     hiddenimports=[
         # ctranslate2 loads DLLs dynamically; PyInstaller misses them without this
