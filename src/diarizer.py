@@ -134,46 +134,11 @@ class DiarizationEngine:
         if self._pipeline is not None:
             return
 
-        from config import DIARIZATION_MODELS_DIR
+        from config import DIARIZATION_MODELS_DIR, BASE_DIR
+        import tempfile
 
         logger.info(f"Loading diarization pipeline from: {DIARIZATION_MODELS_DIR}")
 
-        from config import BASE_DIR
-        hub_cache = Path(BASE_DIR / "models" / "hf_cache" / "hub")
-
-        # Monkey-patch huggingface_hub.hf_hub_download BEFORE importing pyannote.
-        #
-        # pyannote.audio.core.model does `from huggingface_hub import hf_hub_download`
-        # at MODULE level.  When `from pyannote.audio import Pipeline` runs below,
-        # Python binds pyannote's local copy from huggingface_hub.__dict__ at that
-        # instant.  So the patch MUST be applied first — patching afterwards only
-        # updates the module attribute, not pyannote's already-bound local reference.
-        #
-        # The patch bypasses refs/main lookup and searches snapshots/*/filename
-        # directly, which works even if the cache was written by a different
-        # huggingface_hub version (refs/main format changed between releases).
-        import huggingface_hub as _hf
-
-        _original_hf_hub_download = _hf.hf_hub_download
-
-        def _local_hf_hub_download(repo_id, filename, *, cache_dir=None, **kwargs):
-            """Find cached files directly in snapshots/ without needing refs/main."""
-            search_root = Path(cache_dir) if cache_dir else hub_cache
-            dir_name = "models--" + str(repo_id).replace("/", "--")
-            snaps_dir = search_root / dir_name / "snapshots"
-            if snaps_dir.is_dir():
-                for snap in sorted(snaps_dir.iterdir()):
-                    candidate = snap / filename
-                    if candidate.is_file():
-                        logger.debug(f"_local_hf_hub_download: found {repo_id}/{filename} at {candidate}")
-                        return str(candidate)
-            logger.warning(f"_local_hf_hub_download: {repo_id}/{filename} not found under {snaps_dir}")
-            return _original_hf_hub_download(repo_id, filename, cache_dir=cache_dir, **kwargs)
-
-        _hf.hf_hub_download = _local_hf_hub_download
-
-        # Import pyannote AFTER patching so its module-level
-        # `from huggingface_hub import hf_hub_download` binds our version.
         try:
             from pyannote.audio import Pipeline  # type: ignore[import]
         except ImportError as exc:
@@ -182,22 +147,65 @@ class DiarizationEngine:
                 "Re-build with diarization support enabled."
             ) from exc
 
+        hub_dir = BASE_DIR / "models" / "hf_cache" / "hub"
+
+        def _find_local_snapshot(repo_id: str) -> str | None:
+            """Return the snapshot directory path for a bundled HF repo, or None."""
+            dir_name = "models--" + repo_id.replace("/", "--")
+            snaps = hub_dir / dir_name / "snapshots"
+            if not snaps.is_dir():
+                return None
+            snap_dirs = sorted(snaps.iterdir())
+            return str(snap_dirs[0]) if snap_dirs else None
+
+        # Locate the main pipeline snapshot
+        snapshots_dir = DIARIZATION_MODELS_DIR / "snapshots"
+        snapshot_dirs = sorted(snapshots_dir.iterdir())
+        if not snapshot_dirs:
+            raise DiarizationError("No snapshot directory found in diarization model cache")
+
+        # Read and patch config.yaml before loading.
+        # The config references sub-models by HF repo ID (e.g. "pyannote/segmentation-3.0"),
+        # which causes Pipeline.from_pretrained to call hf_hub_download() — this fails
+        # offline.  We replace repo IDs with absolute local snapshot directory paths.
+        # Model.from_pretrained() accepts local directories and loads directly from disk,
+        # no hub machinery involved.
         try:
-            # Load main pipeline from local snapshot dir — no Hub round-trip.
-            # Sub-models (segmentation-3.0, wespeaker) are fetched via the
-            # patched hf_hub_download above, which finds them in snapshots/.
-            snapshots_dir = DIARIZATION_MODELS_DIR / "snapshots"
-            snapshot_dirs = sorted(snapshots_dir.iterdir())
-            if not snapshot_dirs:
-                raise RuntimeError("No snapshot directory found in diarization model cache")
-            pipeline = Pipeline.from_pretrained(str(snapshot_dirs[0]))
+            from omegaconf import OmegaConf
+        except ImportError as exc:
+            raise DiarizationError(f"omegaconf import failed: {exc}") from exc
+
+        config_path = snapshot_dirs[0] / "config.yaml"
+        if not config_path.is_file():
+            raise DiarizationError(f"config.yaml not found at {config_path}")
+
+        config = OmegaConf.load(config_path)
+
+        for key in ("segmentation", "embedding"):
+            repo_id = str(getattr(config.pipeline.params, key, ""))
+            if not repo_id or Path(repo_id).exists():
+                continue  # already a local path or empty
+            local = _find_local_snapshot(repo_id)
+            if not local:
+                raise DiarizationError(
+                    f"Sub-model '{repo_id}' not found in bundled cache.\n"
+                    "Re-download model.zip to fix."
+                )
+            OmegaConf.update(config, f"pipeline.params.{key}", local)
+            logger.info(f"Resolved {key}: {repo_id} -> {local}")
+
+        # Write the patched config to a temp directory and load from there.
+        # Pipeline.from_pretrained() only needs config.yaml from the directory.
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                OmegaConf.save(config, Path(tmp) / "config.yaml")
+                pipeline = Pipeline.from_pretrained(tmp)
+        except DiarizationError:
+            raise
         except Exception as exc:
             raise DiarizationError(
                 f"Could not load diarization pipeline from {DIARIZATION_MODELS_DIR}:\n{exc}"
             ) from exc
-        finally:
-            # Restore original so nothing else is affected
-            _hf.hf_hub_download = _original_hf_hub_download
 
         self._pipeline = pipeline
         log_callback("[Diarize] Pipeline loaded")
