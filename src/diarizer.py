@@ -149,42 +149,54 @@ class DiarizationEngine:
             ) from exc
 
         from config import BASE_DIR
-        hub_cache = str(BASE_DIR / "models" / "hf_cache" / "hub")
+        hub_cache = Path(BASE_DIR / "models" / "hf_cache" / "hub")
 
-        # huggingface_hub uses module-level constants bound via
-        #   from .constants import HUGGINGFACE_HUB_CACHE
-        # in file_download.py and elsewhere.  Patching constants.py alone does
-        # nothing to those already-bound local references.  We must patch every
-        # module that has its own copy, plus the env var for anything we missed.
-        import os as _os
-        _os.environ["HF_HUB_CACHE"] = hub_cache
-        _os.environ["HF_HUB_OFFLINE"] = "1"
-        try:
-            import huggingface_hub.constants as _hfc
-            import huggingface_hub.file_download as _hfd
-            _hfc.HUGGINGFACE_HUB_CACHE = hub_cache
-            _hfd.HUGGINGFACE_HUB_CACHE = hub_cache   # the binding hf_hub_download() reads
-        except Exception:
-            pass  # non-fatal fallback to env vars
+        # Monkey-patch huggingface_hub.hf_hub_download to bypass the refs/main
+        # lookup entirely.  The normal offline path reads refs/main to resolve
+        # the commit hash, then checks snapshots/{hash}/{filename}.  If refs/main
+        # is missing or was written by a different huggingface_hub version, this
+        # fails even when the files exist.  Our patch skips refs/main and searches
+        # snapshots/*/filename directly.
+        #
+        # pyannote.audio does  `from huggingface_hub import hf_hub_download`
+        # INSIDE its functions (lazy import), so it reads huggingface_hub.__dict__
+        # at call time — patching the module attribute before the call takes effect.
+        import huggingface_hub as _hf
+
+        _original_hf_hub_download = _hf.hf_hub_download
+
+        def _local_hf_hub_download(repo_id, filename, *, cache_dir=None, **kwargs):
+            """Find cached files directly in snapshots/ without needing refs/main."""
+            search_root = Path(cache_dir) if cache_dir else hub_cache
+            dir_name = "models--" + str(repo_id).replace("/", "--")
+            snaps_dir = search_root / dir_name / "snapshots"
+            if snaps_dir.is_dir():
+                for snap in sorted(snaps_dir.iterdir()):
+                    candidate = snap / filename
+                    if candidate.is_file():
+                        logger.debug(f"_local_hf_hub_download: found {repo_id}/{filename} at {candidate}")
+                        return str(candidate)
+            logger.warning(f"_local_hf_hub_download: {repo_id}/{filename} not found under {snaps_dir}")
+            return _original_hf_hub_download(repo_id, filename, cache_dir=cache_dir, **kwargs)
+
+        _hf.hf_hub_download = _local_hf_hub_download
 
         try:
-            # Load main pipeline from the local snapshot dir (bypasses refs/main
-            # lookup for the top-level model).  Sub-models (segmentation-3.0,
-            # wespeaker) are still resolved via hf_hub_download(), which now uses
-            # the patched cache dir above.  We also pass cache_dir explicitly so
-            # pyannote.audio 3.x threads it down to Model.from_pretrained() calls.
+            # Load main pipeline from local snapshot dir — no Hub round-trip.
+            # Sub-models (segmentation-3.0, wespeaker) are fetched via the
+            # patched hf_hub_download above, which finds them in snapshots/.
             snapshots_dir = DIARIZATION_MODELS_DIR / "snapshots"
             snapshot_dirs = sorted(snapshots_dir.iterdir())
             if not snapshot_dirs:
                 raise RuntimeError("No snapshot directory found in diarization model cache")
-            pipeline = Pipeline.from_pretrained(
-                str(snapshot_dirs[0]),
-                cache_dir=hub_cache,
-            )
+            pipeline = Pipeline.from_pretrained(str(snapshot_dirs[0]))
         except Exception as exc:
             raise DiarizationError(
                 f"Could not load diarization pipeline from {DIARIZATION_MODELS_DIR}:\n{exc}"
             ) from exc
+        finally:
+            # Restore original so nothing else is affected
+            _hf.hf_hub_download = _original_hf_hub_download
 
         self._pipeline = pipeline
         log_callback("[Diarize] Pipeline loaded")
