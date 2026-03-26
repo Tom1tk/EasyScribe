@@ -123,10 +123,14 @@ a = Analysis(
         "pyannote.core",
         "asteroid_filterbanks",
         "speechbrain",
-        # torch is needed by pyannote (CPU inference only — torch_cuda.dll
-        # is excluded below to keep the bundle under 2 GB)
+        # torch + torchaudio: CPU versions, required by pyannote.audio
         "torch",
         "torch.nn",
+        "torchaudio",
+        # pyannote.audio runtime deps that PyInstaller may miss (lazy imports)
+        "einops",
+        "omegaconf",
+        "soundfile",
         # tkinterdnd2
         "tkinterdnd2",
     ] + _pyannote_hidden,
@@ -136,9 +140,9 @@ a = Analysis(
     excludes=[
         # torch_cuda.dll is ~1.5 GB — excluded to keep app.zip under 2 GB.
         # ctranslate2 GPU inference uses the CUDA runtime DLLs from the
-        # separate nvidia-* packages collected by hooks/hook-nvidia.py.
-        # pyannote runs on CPU torch (torch_cpu.dll, ~300 MB) which is kept.
-        "torchaudio",
+        # separate nvidia-* packages collected by _collect_nvidia_dlls().
+        # pyannote runs on CPU torch + CPU torchaudio (both kept).
+        # NOTE: torchaudio is NOT excluded — pyannote.audio imports it at load time.
         # Reduce size — things we never use
         "matplotlib",
         "numpy.distutils",

@@ -144,7 +144,7 @@ class DiarizationEngine:
             from pyannote.audio import Pipeline  # type: ignore[import]
         except ImportError as exc:
             raise DiarizationError(
-                "pyannote.audio is not installed. "
+                f"pyannote.audio import failed: {exc}\n"
                 "Re-build with diarization support enabled."
             ) from exc
 

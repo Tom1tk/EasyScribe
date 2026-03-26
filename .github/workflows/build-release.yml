@@ -104,14 +104,14 @@ jobs:
           $script | python
 
       # ── 5. Cache Python venv (~2-3 GB) ────────────────────────────────────────
-      # CPU-only torch + separate nvidia-*-cu12 packages for CUDA DLLs.
+      # CPU-only torch + torchaudio + separate nvidia-*-cu12 packages for CUDA DLLs.
       # Bump v2 → v3 to force a clean reinstall (e.g. after adding a package).
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v2
+          key: venv-win64-py3.11-v3
 
       # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
@@ -123,10 +123,11 @@ jobs:
 
           python -m pip install --upgrade pip --quiet
 
-          # CPU-only torch — used by pyannote.audio for diarization inference.
+          # CPU-only torch + torchaudio — used by pyannote.audio for diarization.
           # torch_cuda.dll (~1.5 GB) is NOT included this way, keeping app.zip small.
-          Write-Host "Installing CPU-only PyTorch..."
-          pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet
+          # torchaudio must be CPU-only too, otherwise it drags in large CUDA binaries.
+          Write-Host "Installing CPU-only PyTorch + torchaudio..."
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
 
           # Separate nvidia CUDA 12 packages — provide cublas/cudart/cudnn DLLs
           # that ctranslate2 needs for GPU transcription inference.
@@ -141,7 +142,8 @@ jobs:
             --quiet
 
           Write-Host "Installing core dependencies..."
-          pip install faster-whisper pyannote.audio customtkinter tkinterdnd2 pyinstaller --quiet
+          # einops: required by pyannote.audio at import time (tensor ops)
+          pip install faster-whisper pyannote.audio einops customtkinter tkinterdnd2 pyinstaller --quiet
 
           Write-Host "Installed packages:"
           pip list --format=columns
@@ -183,7 +185,10 @@ jobs:
 
           token = os.environ.get('HF_TOKEN') or None
           if not token:
-              raise RuntimeError('HF_TOKEN secret is required for pyannote gated models')
+              print('WARNING: HF_TOKEN not set — skipping pyannote model download.')
+              print('Speaker diarization will be unavailable in this build.')
+              print('Add HF_TOKEN secret with pyannote gated-model access to enable it.')
+              exit(0)
 
           models = [
               'pyannote/speaker-diarization-3.1',
