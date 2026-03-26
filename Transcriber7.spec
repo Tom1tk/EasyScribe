@@ -83,6 +83,7 @@ for _pkg in [
     "pyannote.pipeline",
     "asteroid_filterbanks",
     "speechbrain",
+    "sklearn",      # has Cython .pyd extensions — collect_all required, not just hiddenimports
 ]:
     try:
         _d, _b, _h = _collect_all(_pkg)
@@ -133,6 +134,13 @@ a = Analysis(
         "soundfile",
         # tkinterdnd2
         "tkinterdnd2",
+        # pyannote.metrics core deps (pyinstaller built-in hooks handle their C extensions)
+        "pandas",
+        "matplotlib",
+        "matplotlib.backends.backend_agg",
+        # sklearn top-level (binaries collected via collect_all above)
+        "sklearn",
+        "sklearn.utils",
     ] + _pyannote_hidden,
     hookspath=["hooks"],
     hooksconfig={},
@@ -143,15 +151,14 @@ a = Analysis(
         # separate nvidia-* packages collected by _collect_nvidia_dlls().
         # pyannote runs on CPU torch + CPU torchaudio (both kept).
         # NOTE: torchaudio is NOT excluded — pyannote.audio imports it at load time.
-        # Reduce size — things we never use
-        "matplotlib",
+        # Reduce size — safe to exclude (not in pyannote's transitive dep tree)
+        # WARNING: Do NOT add pandas, sklearn, matplotlib, scipy, or torchaudio here —
+        # all are runtime deps of pyannote.audio and will cause "No module named" crashes.
+        # See CLAUDE.md Rule 1 for full explanation.
         "numpy.distutils",
-        # NOTE: scipy is NOT excluded — pyannote.audio requires it at runtime.
         "PIL",
         "notebook",
         "IPython",
-        "pandas",
-        "sklearn",
         "cv2",
         "pytest",
     ],
