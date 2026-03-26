@@ -148,29 +148,39 @@ class DiarizationEngine:
                 "Re-build with diarization support enabled."
             ) from exc
 
+        from config import BASE_DIR
+        hub_cache = str(BASE_DIR / "models" / "hf_cache" / "hub")
+
+        # huggingface_hub uses module-level constants bound via
+        #   from .constants import HUGGINGFACE_HUB_CACHE
+        # in file_download.py and elsewhere.  Patching constants.py alone does
+        # nothing to those already-bound local references.  We must patch every
+        # module that has its own copy, plus the env var for anything we missed.
+        import os as _os
+        _os.environ["HF_HUB_CACHE"] = hub_cache
+        _os.environ["HF_HUB_OFFLINE"] = "1"
         try:
-            # huggingface_hub caches HUGGINGFACE_HUB_CACHE as a module-level
-            # constant at import time.  If it was imported before config.py set
-            # HF_HOME/HF_HUB_CACHE, it points to the user's default ~/.cache
-            # instead of our bundled models.  Force-patch it here before loading.
-            from config import BASE_DIR
             import huggingface_hub.constants as _hfc
-            _hfc.HUGGINGFACE_HUB_CACHE = str(BASE_DIR / "models" / "hf_cache" / "hub")
-            _hfc.HF_HUB_OFFLINE = True
+            import huggingface_hub.file_download as _hfd
+            _hfc.HUGGINGFACE_HUB_CACHE = hub_cache
+            _hfd.HUGGINGFACE_HUB_CACHE = hub_cache   # the binding hf_hub_download() reads
         except Exception:
-            pass  # non-fatal: env vars are still set as belt-and-suspenders
+            pass  # non-fatal fallback to env vars
 
         try:
-            # Load directly from the local snapshot directory rather than via
-            # repo ID.  Passing a local path to Pipeline.from_pretrained() skips
-            # all Hub resolution (no refs/main lookup, no gating check) and reads
-            # config.yaml straight from disk.  Sub-models are still resolved via
-            # the patched HUGGINGFACE_HUB_CACHE above.
+            # Load main pipeline from the local snapshot dir (bypasses refs/main
+            # lookup for the top-level model).  Sub-models (segmentation-3.0,
+            # wespeaker) are still resolved via hf_hub_download(), which now uses
+            # the patched cache dir above.  We also pass cache_dir explicitly so
+            # pyannote.audio 3.x threads it down to Model.from_pretrained() calls.
             snapshots_dir = DIARIZATION_MODELS_DIR / "snapshots"
             snapshot_dirs = sorted(snapshots_dir.iterdir())
             if not snapshot_dirs:
                 raise RuntimeError("No snapshot directory found in diarization model cache")
-            pipeline = Pipeline.from_pretrained(str(snapshot_dirs[0]))
+            pipeline = Pipeline.from_pretrained(
+                str(snapshot_dirs[0]),
+                cache_dir=hub_cache,
+            )
         except Exception as exc:
             raise DiarizationError(
                 f"Could not load diarization pipeline from {DIARIZATION_MODELS_DIR}:\n{exc}"
