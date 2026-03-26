@@ -76,7 +76,13 @@ def setup_cuda_libraries() -> None:
         except (OSError, AttributeError) as exc:
             logger.debug(f"cuda_setup: could not register {d}: {exc}")
 
-    logger.info(f"cuda_setup: registered {len(dirs)} nvidia DLL director(ies)")
+    # ctranslate2 loads CUDA via C++ LoadLibraryA(), which ignores
+    # AddDllDirectory entries and only searches PATH (standard DLL
+    # search order).  Prepend our nvidia dirs to PATH so LoadLibraryA
+    # finds cublas64_12.dll, cudart64_12.dll, etc.
+    path_additions = os.pathsep.join(str(d) for d in dirs)
+    os.environ["PATH"] = path_additions + os.pathsep + os.environ.get("PATH", "")
+    logger.info(f"cuda_setup: registered {len(dirs)} nvidia DLL director(ies) (add_dll_directory + PATH)")
 
 
 # Auto-run on import — this is the intended usage pattern
