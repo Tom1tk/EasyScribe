@@ -90,3 +90,4 @@ this means the old cached venv is used and changes don't take effect.
 | v1.0.12 | Bump venv cache v4→v5 (omegaconf missing); add omegaconf explicitly to pip install |
 | v1.0.13 | Fix: pass pytorch_model.bin path not snapshot dir to Model.from_pretrained |
 | v1.0.14 | Fix: copy all snapshot files to tmp (params.yaml etc.); add traceback logging |
+| v1.0.15 | Fix: disable PLDA (references unbundled pyannote/speaker-diarization-community-1) |
