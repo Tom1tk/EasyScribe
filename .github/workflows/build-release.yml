@@ -12,7 +12,7 @@ name: Build and Publish Release
 #
 # Cache strategy (skips re-downloading on repeat builds):
 #   ffmpeg          ~70 MB    key: ffmpeg-win64-gpl-static-v1
-#   venv            ~2-3 GB   key: venv-win64-py3.11-v4              (bump v4 to refresh)
+#   venv            ~2-3 GB   key: venv-win64-py3.11-v5              (bump v5 to refresh)
 #   whisper model   ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
 #   pyannote models ~200 MB   key: pyannote-speaker-diarization-3.1-v3
 on:
@@ -111,7 +111,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v4
+          key: venv-win64-py3.11-v5
 
       # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
@@ -143,7 +143,8 @@ jobs:
 
           Write-Host "Installing core dependencies..."
           # einops: required by pyannote.audio at import time (tensor ops)
-          pip install faster-whisper pyannote.audio einops customtkinter tkinterdnd2 pyinstaller --quiet
+          # omegaconf: required by diarizer.py at runtime for config.yaml patching; explicit to ensure venv has it
+          pip install faster-whisper pyannote.audio einops omegaconf customtkinter tkinterdnd2 pyinstaller --quiet
 
           Write-Host "Installed packages:"
           pip list --format=columns
