@@ -214,6 +214,13 @@ class DiarizationEngine:
             log_callback(f"[Diarize] {key}: {Path(local).name}")
             logger.info(f"Resolved {key}: {repo_id} -> {local}")
 
+        # Disable PLDA: config references pyannote/speaker-diarization-community-1
+        # which is a separate hub model we don't bundle.  Without PLDA the pipeline
+        # falls back to cosine similarity for speaker clustering — still accurate.
+        if OmegaConf.select(config, "pipeline.params.plda") is not None:
+            OmegaConf.update(config, "pipeline.params.plda", None)
+            logger.info("PLDA disabled (not bundled) — using cosine similarity for clustering")
+
         # Write the patched config to a temp directory and load from there.
         # We copy ALL files from the main snapshot into tmp (params.yaml,
         # etc.) so Pipeline.from_pretrained() never needs to call hf_hub_download
