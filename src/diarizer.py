@@ -138,29 +138,20 @@ class DiarizationEngine:
 
         logger.info(f"Loading diarization pipeline from: {DIARIZATION_MODELS_DIR}")
 
-        try:
-            # Import here so pyannote is never touched unless diarization is
-            # actually requested — avoids slowing down normal startup.
-            from pyannote.audio import Pipeline  # type: ignore[import]
-        except ImportError as exc:
-            raise DiarizationError(
-                f"pyannote.audio import failed: {exc}\n"
-                "Re-build with diarization support enabled."
-            ) from exc
-
         from config import BASE_DIR
         hub_cache = Path(BASE_DIR / "models" / "hf_cache" / "hub")
 
-        # Monkey-patch huggingface_hub.hf_hub_download to bypass the refs/main
-        # lookup entirely.  The normal offline path reads refs/main to resolve
-        # the commit hash, then checks snapshots/{hash}/{filename}.  If refs/main
-        # is missing or was written by a different huggingface_hub version, this
-        # fails even when the files exist.  Our patch skips refs/main and searches
-        # snapshots/*/filename directly.
+        # Monkey-patch huggingface_hub.hf_hub_download BEFORE importing pyannote.
         #
-        # pyannote.audio does  `from huggingface_hub import hf_hub_download`
-        # INSIDE its functions (lazy import), so it reads huggingface_hub.__dict__
-        # at call time — patching the module attribute before the call takes effect.
+        # pyannote.audio.core.model does `from huggingface_hub import hf_hub_download`
+        # at MODULE level.  When `from pyannote.audio import Pipeline` runs below,
+        # Python binds pyannote's local copy from huggingface_hub.__dict__ at that
+        # instant.  So the patch MUST be applied first — patching afterwards only
+        # updates the module attribute, not pyannote's already-bound local reference.
+        #
+        # The patch bypasses refs/main lookup and searches snapshots/*/filename
+        # directly, which works even if the cache was written by a different
+        # huggingface_hub version (refs/main format changed between releases).
         import huggingface_hub as _hf
 
         _original_hf_hub_download = _hf.hf_hub_download
@@ -180,6 +171,16 @@ class DiarizationEngine:
             return _original_hf_hub_download(repo_id, filename, cache_dir=cache_dir, **kwargs)
 
         _hf.hf_hub_download = _local_hf_hub_download
+
+        # Import pyannote AFTER patching so its module-level
+        # `from huggingface_hub import hf_hub_download` binds our version.
+        try:
+            from pyannote.audio import Pipeline  # type: ignore[import]
+        except ImportError as exc:
+            raise DiarizationError(
+                f"pyannote.audio import failed: {exc}\n"
+                "Re-build with diarization support enabled."
+            ) from exc
 
         try:
             # Load main pipeline from local snapshot dir — no Hub round-trip.
