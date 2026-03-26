@@ -114,7 +114,7 @@ REQUIRED_MODEL_FILES: frozenset[str] = frozenset(
 WHISPER_BEAM_SIZE: int = 5
 WHISPER_VAD_FILTER: bool = True
 WHISPER_VAD_MIN_SILENCE_MS: int = 500
-WHISPER_LANGUAGE: str | None = None  # None = auto-detect
+WHISPER_LANGUAGE: str | None = "en"  # Force English; set to None for auto-detect
 
 # Disk space safety threshold: warn if less than this many bytes free
 MIN_FREE_DISK_BYTES: int = 512 * 1024 * 1024  # 512 MB

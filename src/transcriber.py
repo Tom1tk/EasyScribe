@@ -353,6 +353,10 @@ class TranscriptionEngine:
                 vad_filter=WHISPER_VAD_FILTER,
                 vad_parameters={"min_silence_duration_ms": WHISPER_VAD_MIN_SILENCE_MS},
                 word_timestamps=False,
+                # Prevent repetition-loop hallucinations ("yeah yeah yeah..."):
+                # conditioning on previous text creates feedback when audio is
+                # ambiguous or quiet — disabling it stops the loop.
+                condition_on_previous_text=False,
             )
         except Exception as exc:
             logger.exception(f"Model transcribe() call failed: {exc}")
