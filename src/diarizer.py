@@ -15,6 +15,7 @@ if engine.is_available():
 """
 
 import logging
+import shutil
 from pathlib import Path
 from typing import Callable
 
@@ -214,14 +215,23 @@ class DiarizationEngine:
             logger.info(f"Resolved {key}: {repo_id} -> {local}")
 
         # Write the patched config to a temp directory and load from there.
-        # Pipeline.from_pretrained() only needs config.yaml from the directory.
+        # We copy ALL files from the main snapshot into tmp (params.yaml,
+        # etc.) so Pipeline.from_pretrained() never needs to call hf_hub_download
+        # for any additional file — only config.yaml is overwritten with our
+        # patched version.
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                OmegaConf.save(config, Path(tmp) / "config.yaml")
-                pipeline = Pipeline.from_pretrained(tmp)
+                tmp_path = Path(tmp)
+                for f in snapshot_dirs[0].iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, tmp_path / f.name)
+                OmegaConf.save(config, tmp_path / "config.yaml")
+                pipeline = Pipeline.from_pretrained(str(tmp_path))
         except DiarizationError:
             raise
         except Exception as exc:
+            import traceback as _tb
+            logger.error(f"Pipeline loading traceback:\n{_tb.format_exc()}")
             raise DiarizationError(
                 f"Could not load diarization pipeline from {DIARIZATION_MODELS_DIR}:\n{exc}"
             ) from exc
