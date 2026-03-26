@@ -69,12 +69,36 @@ if _ctk_dir:
 if _dnd_dir:
     _datas.append((_dnd_dir, "tkinterdnd2"))
 
+# ── Collect pyannote.audio and dependencies via collect_all ──────────────────
+# hiddenimports alone doesn't find data files or native sub-modules inside
+# complex packages like pyannote.  collect_all() does the full sweep.
+# scipy is also required by pyannote at runtime — do NOT exclude it below.
+from PyInstaller.utils.hooks import collect_all as _collect_all
+
+_pyannote_binaries: list = []
+_pyannote_hidden: list = []
+for _pkg in [
+    "pyannote.audio",
+    "pyannote.core",
+    "pyannote.pipeline",
+    "asteroid_filterbanks",
+    "speechbrain",
+]:
+    try:
+        _d, _b, _h = _collect_all(_pkg)
+        _datas += _d
+        _pyannote_binaries += _b
+        _pyannote_hidden += _h
+        print(f"[spec] collect_all({_pkg!r}): {len(_d)} datas, {len(_b)} bins, {len(_h)} hidden")
+    except Exception as _e:
+        print(f"[spec] Warning: could not collect {_pkg!r}: {_e}")
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 a = Analysis(
     ["src/main.py"],
     pathex=["src"],          # so imports like `from config import ...` resolve
-    binaries=_collect_nvidia_dlls(),
+    binaries=_collect_nvidia_dlls() + _pyannote_binaries,
     datas=_datas,
     hiddenimports=[
         # ctranslate2 loads DLLs dynamically; PyInstaller misses them without this
@@ -105,7 +129,7 @@ a = Analysis(
         "torch.nn",
         # tkinterdnd2
         "tkinterdnd2",
-    ],
+    ] + _pyannote_hidden,
     hookspath=["hooks"],
     hooksconfig={},
     runtime_hooks=[],
@@ -118,7 +142,7 @@ a = Analysis(
         # Reduce size — things we never use
         "matplotlib",
         "numpy.distutils",
-        "scipy",
+        # NOTE: scipy is NOT excluded — pyannote.audio requires it at runtime.
         "PIL",
         "notebook",
         "IPython",
