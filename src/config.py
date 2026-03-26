@@ -20,6 +20,9 @@ from pathlib import Path
 _frozen = getattr(sys, "frozen", False)
 _base = Path(sys.executable).parent.resolve() if _frozen else Path(__file__).parent.parent.resolve()
 os.environ["HF_HOME"] = str(_base / "models" / "hf_cache")
+# Set HF_HUB_CACHE explicitly so huggingface_hub's module-level constant is correct
+# even if the library is imported before HF_HOME takes effect.
+os.environ["HF_HUB_CACHE"] = str(_base / "models" / "hf_cache" / "hub")
 
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
