@@ -12,7 +12,7 @@ name: Build and Publish Release
 #
 # Cache strategy (skips re-downloading on repeat builds):
 #   ffmpeg          ~70 MB    key: ffmpeg-win64-gpl-static-v1
-#   venv            ~2-3 GB   key: venv-win64-py3.11-v2              (bump v2 to refresh)
+#   venv            ~2-3 GB   key: venv-win64-py3.11-v4              (bump v4 to refresh)
 #   whisper model   ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
 #   pyannote models ~200 MB   key: pyannote-speaker-diarization-3.1-v1
 on:
@@ -105,13 +105,13 @@ jobs:
 
       # ── 5. Cache Python venv (~2-3 GB) ────────────────────────────────────────
       # CPU-only torch + torchaudio + separate nvidia-*-cu12 packages for CUDA DLLs.
-      # Bump v2 → v3 to force a clean reinstall (e.g. after adding a package).
+      # Bump v4 → v5 (etc.) to force a clean reinstall (e.g. after adding a package).
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v3
+          key: venv-win64-py3.11-v4
 
       # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
