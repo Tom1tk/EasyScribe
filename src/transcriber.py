@@ -340,6 +340,8 @@ class TranscriptionEngine:
         logger.info(f"Transcribing: {audio_path.name} → {output_path.name}")
         log_callback(f"[Whisper] Starting transcription of {audio_path.name}…")
         log_callback(f"[Whisper] beam_size={WHISPER_BEAM_SIZE}, vad_filter={WHISPER_VAD_FILTER}, language={'auto' if not WHISPER_LANGUAGE else WHISPER_LANGUAGE}")
+        log_callback(f"[Whisper] Output options: timestamps={'on' if add_timestamps else 'off'}, speakers={'on' if diarize else 'off'}")
+        log_callback(f"[Whisper] (Formatted transcript is written to the .txt output file, not the log)")
 
         try:
             log_callback("[Whisper] Initialising model pipeline (first-time setup may take a few seconds)…")
