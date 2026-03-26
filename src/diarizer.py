@@ -150,13 +150,31 @@ class DiarizationEngine:
         hub_dir = BASE_DIR / "models" / "hf_cache" / "hub"
 
         def _find_local_snapshot(repo_id: str) -> str | None:
-            """Return the snapshot directory path for a bundled HF repo, or None."""
+            """Return path to the model checkpoint file for a bundled HF repo, or None.
+
+            Returns the path to pytorch_model.bin or model.safetensors inside the
+            snapshot directory.  Model.from_pretrained() checks Path(x).is_file() —
+            passing a directory causes it to fall back to hf_hub_download() even when
+            the directory exists.
+            """
             dir_name = "models--" + repo_id.replace("/", "--")
             snaps = hub_dir / dir_name / "snapshots"
             if not snaps.is_dir():
+                logger.warning(f"Snapshots dir missing for {repo_id}: {snaps}")
                 return None
             snap_dirs = sorted(snaps.iterdir())
-            return str(snap_dirs[0]) if snap_dirs else None
+            if not snap_dirs:
+                logger.warning(f"Snapshots dir is empty for {repo_id}: {snaps}")
+                return None
+            snap = snap_dirs[0]
+            for fname in ("pytorch_model.bin", "model.safetensors"):
+                fpath = snap / fname
+                if fpath.is_file():
+                    logger.info(f"  Found {repo_id} checkpoint: {fpath}")
+                    return str(fpath)
+            # No recognized checkpoint file — fall back to directory
+            logger.warning(f"No pytorch_model.bin/model.safetensors in {snap}, using dir")
+            return str(snap)
 
         # Locate the main pipeline snapshot
         snapshots_dir = DIARIZATION_MODELS_DIR / "snapshots"
@@ -167,9 +185,9 @@ class DiarizationEngine:
         # Read and patch config.yaml before loading.
         # The config references sub-models by HF repo ID (e.g. "pyannote/segmentation-3.0"),
         # which causes Pipeline.from_pretrained to call hf_hub_download() — this fails
-        # offline.  We replace repo IDs with absolute local snapshot directory paths.
-        # Model.from_pretrained() accepts local directories and loads directly from disk,
-        # no hub machinery involved.
+        # offline.  We replace repo IDs with paths to the actual pytorch_model.bin files
+        # inside the local snapshot directories.  Model.from_pretrained() skips hub
+        # download when Path(x).is_file() — a directory path is NOT sufficient.
         try:
             from omegaconf import OmegaConf
         except ImportError as exc:
@@ -192,6 +210,7 @@ class DiarizationEngine:
                     "Re-download model.zip to fix."
                 )
             OmegaConf.update(config, f"pipeline.params.{key}", local)
+            log_callback(f"[Diarize] {key}: {Path(local).name}")
             logger.info(f"Resolved {key}: {repo_id} -> {local}")
 
         # Write the patched config to a temp directory and load from there.

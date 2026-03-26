@@ -37,7 +37,7 @@ os.environ["NO_PROXY"] = "*"
 # ─── App metadata ─────────────────────────────────────────────────────────────
 
 APP_NAME = "Transcriber7"
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.13"
 MODEL_FOLDER_NAME = "faster-whisper-large-v3-turbo"
 
 # ─── Path resolution ──────────────────────────────────────────────────────────
