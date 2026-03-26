@@ -154,7 +154,6 @@ class DiarizationEngine:
             # HF_HUB_OFFLINE=1 is already set in config.py — no network access.
             pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
-                use_auth_token=False,
             )
         except Exception as exc:
             raise DiarizationError(
