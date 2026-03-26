@@ -85,3 +85,5 @@ this means the old cached venv is used and changes don't take effect.
 | v1.0.2 | pyannote collect_all added; torchaudio removed from excludes; einops added |
 | v1.0.3 | English-only mode; hallucination fix (condition_on_previous_text=False) |
 | v1.0.4 | Remove pandas/sklearn/matplotlib from excludes; collect_all(sklearn) |
+| v1.0.5–1.0.10 | Diarization offline fix iterations (hf_hub_download → config.yaml patching) |
+| v1.0.11 | Fix CI verify step (explicit venv Python); bump pyannote cache key to v3 |
