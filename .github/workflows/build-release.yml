@@ -14,7 +14,7 @@ name: Build and Publish Release
 #   ffmpeg          ~70 MB    key: ffmpeg-win64-gpl-static-v1
 #   venv            ~2-3 GB   key: venv-win64-py3.11-v4              (bump v4 to refresh)
 #   whisper model   ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
-#   pyannote models ~200 MB   key: pyannote-speaker-diarization-3.1-v2
+#   pyannote models ~200 MB   key: pyannote-speaker-diarization-3.1-v3
 on:
   workflow_dispatch:
     inputs:
@@ -163,7 +163,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: models/hf_cache/hub
-          key: pyannote-speaker-diarization-3.1-v2
+          key: pyannote-speaker-diarization-3.1-v3
 
       # ── 6c. Download pyannote models (skipped on cache hit) ───────────────────
       # Downloads speaker-diarization-3.1 and its sub-models (segmentation-3.0,
@@ -216,7 +216,6 @@ jobs:
       - name: Verify pyannote model cache
         shell: pwsh
         run: |
-          & venv\Scripts\Activate.ps1
           $verifyScript = @"
           import sys
           from pathlib import Path
@@ -264,7 +263,7 @@ jobs:
               sys.exit(1)
           print('Model cache verification PASSED')
           "@
-          $verifyScript | python
+          $verifyScript | venv\Scripts\python.exe
 
       # ── 7. Assemble portable app folder (no model) ────────────────────────────
       - name: Assemble PortableTranscriber folder
