@@ -218,54 +218,52 @@ jobs:
         run: |
           & venv\Scripts\Activate.ps1
           $verifyScript = @"
-import sys
-from pathlib import Path
-from omegaconf import OmegaConf
+          import sys
+          from pathlib import Path
+          from omegaconf import OmegaConf
 
-hub_dir = Path("models/hf_cache/hub")
-required = [
-    "models--pyannote--speaker-diarization-3.1",
-    "models--pyannote--segmentation-3.0",
-    "models--pyannote--wespeaker-voxceleb-resnet34-LM",
-]
-ok = True
-for model_dir_name in required:
-    snaps = hub_dir / model_dir_name / "snapshots"
-    if not snaps.is_dir():
-        print(f"FAIL: snapshots dir missing: {snaps}")
-        ok = False
-        continue
-    snap_dirs = sorted(snaps.iterdir())
-    if not snap_dirs:
-        print(f"FAIL: snapshots dir is empty: {snaps}")
-        ok = False
-        continue
-    snap = snap_dirs[0]
-    files = [f.name for f in snap.iterdir()]
-    print(f"OK  {model_dir_name} -> {snap.name}: {files}")
-    if model_dir_name != "models--pyannote--speaker-diarization-3.1":
-        has_weights = any(f in files for f in ("pytorch_model.bin", "model.safetensors"))
-        if not has_weights:
-            print(f"FAIL: no weight file in {snap}")
-            ok = False
+          hub_dir = Path('models/hf_cache/hub')
+          required = [
+              'models--pyannote--speaker-diarization-3.1',
+              'models--pyannote--segmentation-3.0',
+              'models--pyannote--wespeaker-voxceleb-resnet34-LM',
+          ]
+          ok = True
+          for model_dir_name in required:
+              snaps = hub_dir / model_dir_name / 'snapshots'
+              if not snaps.is_dir():
+                  print(f'FAIL: snapshots dir missing: {snaps}')
+                  ok = False
+                  continue
+              snap_dirs = sorted(snaps.iterdir())
+              if not snap_dirs:
+                  print(f'FAIL: snapshots dir is empty: {snaps}')
+                  ok = False
+                  continue
+              snap = snap_dirs[0]
+              files = [f.name for f in snap.iterdir()]
+              print(f'OK  {model_dir_name} -> {snap.name}: {files}')
+              if model_dir_name != 'models--pyannote--speaker-diarization-3.1':
+                  has_weights = any(f in files for f in ('pytorch_model.bin', 'model.safetensors'))
+                  if not has_weights:
+                      print(f'FAIL: no weight file in {snap}')
+                      ok = False
 
-# Verify sub-model repo IDs in the pipeline config match what we downloaded
-main_snaps = sorted((hub_dir / "models--pyannote--speaker-diarization-3.1" / "snapshots").iterdir())
-cfg = OmegaConf.load(main_snaps[0] / "config.yaml")
-for key in ("segmentation", "embedding"):
-    repo_id = str(getattr(cfg.pipeline.params, key, ""))
-    dir_name = "models--" + repo_id.replace("/", "--")
-    if not (hub_dir / dir_name / "snapshots").is_dir():
-        print(f"FAIL: pipeline config references '{repo_id}' but {dir_name} not downloaded")
-        ok = False
-    else:
-        print(f"OK  pipeline.params.{key} = {repo_id} -> found locally")
+          main_snaps = sorted((hub_dir / 'models--pyannote--speaker-diarization-3.1' / 'snapshots').iterdir())
+          cfg = OmegaConf.load(main_snaps[0] / 'config.yaml')
+          for key in ('segmentation', 'embedding'):
+              repo_id = str(getattr(cfg.pipeline.params, key, ''))
+              dir_name = 'models--' + repo_id.replace('/', '--')
+              if not (hub_dir / dir_name / 'snapshots').is_dir():
+                  print(f'FAIL: pipeline config references {repr(repo_id)} but {dir_name} not downloaded')
+                  ok = False
+              else:
+                  print(f'OK  pipeline.params.{key} = {repo_id} -> found locally')
 
-if not ok:
-    print("Model cache verification FAILED")
-    sys.exit(1)
-print("Model cache verification PASSED")
-"@
+          if not ok:
+              sys.exit(1)
+          print('Model cache verification PASSED')
+          "@
           $verifyScript | python
 
       # ── 7. Assemble portable app folder (no model) ────────────────────────────
