@@ -88,3 +88,4 @@ this means the old cached venv is used and changes don't take effect.
 | v1.0.5–1.0.10 | Diarization offline fix iterations (hf_hub_download → config.yaml patching) |
 | v1.0.11 | Fix CI verify step (explicit venv Python); bump pyannote cache key to v3 |
 | v1.0.12 | Bump venv cache v4→v5 (omegaconf missing); add omegaconf explicitly to pip install |
+| v1.0.13 | Fix: pass pytorch_model.bin path not snapshot dir to Model.from_pretrained |
