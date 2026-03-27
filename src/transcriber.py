@@ -591,11 +591,14 @@ class TranscriptionEngine:
                 _diarizer = DiarizationEngine()
                 turns = _diarizer.diarize(audio_path, log_callback)
                 assigned = _diarizer.assign_speakers(raw_segments, turns)
-                # Build stable first-appearance mapping: SPEAKER_00 → Speaker 1
+                # Build stable first-appearance mapping from turns (not assigned),
+                # so ALL detected speakers appear in the naming dialog even if a
+                # speaker's turns were too short to win the overlap assignment for
+                # any whisper segment (e.g. a participant who rarely speaks).
                 speaker_map: dict[str, str] = {}
-                for speaker, _text, _s, _e in assigned:
-                    if speaker not in speaker_map:
-                        speaker_map[speaker] = f"Speaker {len(speaker_map) + 1}"
+                for _ts, _te, spk in turns:
+                    if spk not in speaker_map:
+                        speaker_map[spk] = f"Speaker {len(speaker_map) + 1}"
 
                 # Let the user rename speakers via the GUI popup (blocks until done)
                 if speaker_name_callback is not None:
