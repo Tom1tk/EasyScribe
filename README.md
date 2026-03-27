@@ -1,103 +1,28 @@
 # Transcriber7
 
-A portable, fully offline Windows desktop application for transcribing any media file to plain text using [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) and the `mobiuslabsgmbh/faster-whisper-large-v3-turbo` model.
+A portable, fully offline Windows desktop application for transcribing any media file to plain text using [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) (`faster-whisper-large-v3-turbo`) with optional speaker identification powered by [pyannote.audio](https://github.com/pyannote/pyannote-audio).
 
 - **No internet required at runtime** — works completely offline
 - **No installer** — copy the folder to any Windows machine or USB stick and run
 - **No Python required** on the target machine — everything is bundled
 - **GPU-accelerated** on NVIDIA GPUs, automatic CPU fallback
+- **Speaker diarization** — identify who said what, with optional name assignment
 
 ---
 
-## Requirements (build machine only)
+## Features
 
-| Requirement | Notes |
-|---|---|
-| Windows 10/11 64-bit | Build and target platform |
-| Python 3.10+ | Must be on PATH (`python --version`) |
-| Model snapshot files | See below |
-| Internet access | Only needed during build to download ffmpeg and Python packages |
+### Transcription
+Converts any audio or video file to a plain UTF-8 text file. Uses the `faster-whisper-large-v3-turbo` model with voice activity detection (VAD) to skip silence and avoid hallucinations.
 
----
+### Timestamps
+Group output into natural-pause blocks, each headed with a `[HH:MM:SS]` timestamp. Blocks break when there is a ~2-second gap in speech.
 
-## Before Building: Place Model Files
+### Speaker Identification
+Uses pyannote.audio's `speaker-diarization-3.1` pipeline to detect and separate speakers. The transcript is formatted with `[Speaker N]` headers at each speaker change. When combined with timestamps, headers include both time and speaker: `[00:01:23] [Speaker 1]`.
 
-You need the local snapshot of `mobiuslabsgmbh/faster-whisper-large-v3-turbo`.
-
-Create this folder structure in the project root:
-
-```
-models\
-  faster-whisper-large-v3-turbo\
-    config.json
-    model.bin
-    preprocessor_config.json
-    tokenizer.json
-    vocabulary.json
-```
-
-Download the model from Hugging Face:
-
-```powershell
-pip install huggingface_hub
-python -c "from huggingface_hub import snapshot_download; snapshot_download('mobiuslabsgmbh/faster-whisper-large-v3-turbo', local_dir='models/faster-whisper-large-v3-turbo', ignore_patterns=['*.gitattributes'])"
-```
-
-Or download manually from: https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
-
----
-
-## Building
-
-### CPU-only build (default)
-
-```batch
-build_windows.bat
-```
-
-### GPU build (CUDA 11.8)
-
-```batch
-build_windows.bat --cuda 11.8
-```
-
-### GPU build (CUDA 12.1)
-
-```batch
-build_windows.bat --cuda 12.1
-```
-
-### GPU build (CUDA 12.4 — latest)
-
-```batch
-build_windows.bat --cuda 12.4
-```
-
-> **PowerShell tip:** Run the build script from **Command Prompt** (`cmd.exe`), not PowerShell.
-> If you must use PowerShell, note that `>` is a redirect operator — never write
-> `pip install torch>=2.3.0` unquoted. The build script avoids this problem by not
-> embedding version specifiers in the pip call.
-
-The build script will:
-
-1. Check Python is installed
-2. Validate model files exist
-3. **Auto-download ffmpeg** (Windows static build from GitHub) if not already present
-4. Create a Python virtual environment
-5. Install all Python dependencies (including PyTorch)
-6. Build the portable executable with PyInstaller
-7. Copy model files and ffmpeg into the output folder
-8. Create `logs/` and `temp/` runtime directories
-
-**Output:** `dist\PortableTranscriber\`
-
----
-
-## Running
-
-Double-click `dist\PortableTranscriber\PortableTranscriber.exe`.
-
-No installation required. To deploy to another machine, copy the entire `PortableTranscriber\` folder.
+### Speaker Naming
+After diarization completes, a popup lets you name each speaker. For each detected speaker you can play a short audio sample (to identify whose voice it is), then type a custom name. Names replace the generic `Speaker 1` labels in the output file.
 
 ---
 
@@ -107,9 +32,11 @@ No installation required. To deploy to another machine, copy the entire `Portabl
 2. Optionally click **Select Folder** to choose where transcripts are saved
    (defaults to the same folder as each input file)
 3. Choose a device from the **Device** dropdown (auto-detected GPUs are listed)
-4. Optionally tick **Include timestamps** for time-coded output
+4. Tick options as needed:
+   - **Include timestamps** — adds `[HH:MM:SS]` block headers
+   - **Identify speakers** — runs speaker diarization (requires bundled models)
 5. Click **Transcribe**
-6. Watch the progress bar and log output
+6. If speaker identification is enabled, a popup will appear when diarization is done — play samples and enter names, then click **Use These Names**
 7. Click **Open Output Folder** when done
 
 ### Batch mode
@@ -122,12 +49,39 @@ Click **Cancel** at any time to stop the current job cleanly.
 
 ---
 
-## Output
+## Output Examples
 
-Transcripts are saved as UTF-8 plain text files:
+**Plain text:**
+```
+Hello, this is the first sentence. And here is another.
+```
 
-- Plain text (default): `filename.txt`
-- Timestamped: `filename.txt` with lines like `[00:00:01.234 --> 00:00:04.567] Hello world`
+**With timestamps:**
+```
+[00:00:01]
+Hello, this is the first sentence.
+
+[00:00:14]
+After a pause, the next block starts here.
+```
+
+**With speakers:**
+```
+[Speaker 1]
+Hello, this is the first sentence.
+
+[Speaker 2]
+And I'm replying here.
+```
+
+**With speakers + timestamps:**
+```
+[00:00:01] [Alice]
+Hello, this is the first sentence.
+
+[00:00:14] [Bob]
+After a pause, the next block starts here.
+```
 
 ---
 
@@ -151,6 +105,11 @@ PortableTranscriber\
       preprocessor_config.json
       tokenizer.json
       vocabulary.json
+    hf_cache\
+      hub\
+        models--pyannote--speaker-diarization-3.1\
+        models--pyannote--segmentation-3.0\
+        models--pyannote--wespeaker-voxceleb-resnet34-LM\
   ffmpeg\
     ffmpeg.exe
     ffprobe.exe
@@ -161,20 +120,16 @@ PortableTranscriber\
 
 ---
 
-## Swapping the Model
+## Requirements (build machine only)
 
-To use a different Faster Whisper model:
+| Requirement | Notes |
+|---|---|
+| Windows 10/11 64-bit | Build and target platform |
+| Python 3.11 | Must be on PATH |
+| Model files | See CI workflow for download commands |
+| Internet access | Only needed during build |
 
-1. Place the model snapshot files in a new subfolder under `models\`, e.g.:
-   `models\faster-whisper-medium\`
-
-2. Edit `src\config.py`, line:
-   ```python
-   MODEL_FOLDER_NAME = "faster-whisper-large-v3-turbo"
-   ```
-   Change to match your folder name.
-
-3. Rebuild with `build_windows.bat`.
+The GitHub Actions CI workflow handles all model downloads, dependency installs, and packaging automatically on every tagged release.
 
 ---
 
@@ -187,28 +142,21 @@ src/
   logger.py          Rotating log file setup
   ffmpeg_wrapper.py  Subprocess ffmpeg with cancellation polling
   transcriber.py     Faster Whisper engine (lazy load, GPU/CPU detection)
+  diarizer.py        pyannote.audio speaker diarization engine
   gui.py             CustomTkinter UI with threaded worker
-hooks/
-  hook-ctranslate2.py  PyInstaller hook for ctranslate2 dynamic libs
 ```
 
 ### Offline guarantee
 
-Three independent layers prevent any network access:
+Three independent layers prevent any network access at runtime:
 
 1. **Environment variables** set in `config.py` before any library import:
    `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, etc.
 
 2. **Explicit API argument**: `WhisperModel(..., local_files_only=True)`
 
-3. **Local path**: the model is always loaded from a directory path string,
-   never from a model alias like `"large-v3-turbo"` that could trigger a download
-
-### GPU selection
-
-The Device dropdown is populated at startup by querying `torch.cuda.device_count()`.
-On systems with multiple NVIDIA GPUs, each is listed by name. Selecting a different
-GPU unloads the cached model so it reloads on the correct device on the next run.
+3. **Local path loading**: models are always loaded from absolute local paths,
+   never from hub alias strings
 
 ---
 
@@ -216,11 +164,12 @@ GPU unloads the cached model so it reloads on the correct device on the next run
 
 | Problem | Solution |
 |---|---|
-| "Model files missing" on startup | Copy model files to `models\faster-whisper-large-v3-turbo\` next to the exe |
-| "ffmpeg.exe not found" on startup | Copy `ffmpeg.exe` and `ffprobe.exe` to `ffmpeg\` next to the exe |
+| "Model files missing" on startup | Copy Whisper model files to `models\faster-whisper-large-v3-turbo\` next to the exe |
+| "ffmpeg.exe not found" | Copy `ffmpeg.exe` and `ffprobe.exe` to `ffmpeg\` next to the exe |
+| "Identify speakers" checkbox is greyed out | Diarization models not bundled; use a release build from CI |
 | Antivirus flags the exe | PyInstaller executables may trigger false positives; add an exclusion |
 | Very slow transcription | No NVIDIA GPU detected; CPU mode is slower by design |
-| Out of memory on large files | Try a smaller model, or use CPU mode |
+| Out of memory on large files | Try CPU mode |
 | "Access denied" writing transcript | Close the output .txt file in any other program |
 
 ---
@@ -231,5 +180,6 @@ This project is released under the MIT License.
 
 FFmpeg is included under the GPL v3 license. See https://ffmpeg.org/legal.html
 
-The Whisper model weights are subject to the MIT License.
-See https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
+Whisper model weights: MIT License — https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
+
+pyannote.audio models are subject to their own license terms. See https://huggingface.co/pyannote

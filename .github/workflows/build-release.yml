@@ -345,16 +345,26 @@ jobs:
 
             ---
 
-            ### Supported input formats
+            ### What's new in v1.0.0
+
+            **Speaker identification** — working end-to-end with pyannote.audio 4.x:
+            - Tick **Identify speakers** to detect and label each speaker in the transcript
+            - After diarization completes, a popup lets you name each speaker — play a short audio sample to identify who is speaking, then type their name
+            - Names replace generic labels (`Speaker 1`, `Speaker 2`, …) in the output file
+
+            **Improved timestamps**
+            - Segments are now grouped into natural-pause blocks (~2 s gap threshold)
+            - Each block gets a single `[HH:MM:SS]` header instead of a timestamp on every line
+            - With speakers + timestamps: `[00:01:23] [Alice]` header at every speaker change or lull
+
+            **Supported input formats**
             mp4, mkv, mov, avi, webm, mp3, wav, m4a, flac, ogg, opus, aac
+
+            ---
 
             ### GPU acceleration
             NVIDIA GPU is used automatically — CUDA 12 runtime DLLs (cublas, cudart, cudnn) are bundled.
             Falls back to CPU if no compatible GPU is found.
-
-            ### Speaker identification
-            Tick the **Identify speakers** checkbox before transcribing to label each speaker (SPEAKER_00, SPEAKER_01, …).
-            Requires the model.zip to be extracted.
 
             ### First launch note
             Windows Defender SmartScreen may show **"Windows protected your PC"** — click **More info → Run anyway**.
