@@ -33,6 +33,15 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 # Belt-and-suspenders: block proxy at OS level for this process
 os.environ["NO_PROXY"] = "*"
+# Disable pyannote.audio OpenTelemetry telemetry.
+# The real block is the sys.modules injection in diarizer.py — these are
+# belt-and-suspenders in case any library checks them.
+os.environ["PYANNOTE_METRICS_ENABLED"] = "false"
+os.environ["OTEL_SDK_DISABLED"] = "true"
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:1"  # unreachable
+# Disable any other library telemetry / analytics calls
+os.environ["DO_NOT_TRACK"] = "1"            # standard opt-out signal
+os.environ["SCARF_NO_ANALYTICS"] = "true"   # Scarf analytics (used by some HF libs)
 
 # ─── App metadata ─────────────────────────────────────────────────────────────
 
