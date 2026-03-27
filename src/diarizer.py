@@ -76,14 +76,42 @@ class DiarizationEngine:
         log_callback("[Diarize] Running speaker identification…")
         logger.info(f"Running diarization on: {audio_path.name}")
 
+        # pyannote 4.x requires torchcodec for file-path input (not bundled).
+        # Pre-load the WAV using the stdlib `wave` module and pass as a
+        # {'waveform': tensor, 'sample_rate': int} dict — bypasses torchcodec.
         try:
-            diarization = self._pipeline(str(audio_path))  # type: ignore[misc]
+            import wave as _wave
+            import numpy as _np
+            import torch as _torch
+            with _wave.open(str(audio_path), "rb") as _wf:
+                _nch = _wf.getnchannels()
+                _sw = _wf.getsampwidth()
+                _sr = _wf.getframerate()
+                _raw = _wf.readframes(_wf.getnframes())
+            _dtype = _np.int16 if _sw == 2 else (_np.int32 if _sw == 4 else _np.int8)
+            _scale = 32768.0 if _sw == 2 else (2147483648.0 if _sw == 4 else 128.0)
+            _data = _np.frombuffer(_raw, dtype=_dtype).astype(_np.float32) / _scale
+            if _nch > 1:
+                _data = _data.reshape(-1, _nch).mean(axis=1)
+            _waveform = _torch.tensor(_data).unsqueeze(0)  # (1, time)
+            audio_input = {"waveform": _waveform, "sample_rate": _sr}
+            logger.info(f"Audio pre-loaded: {_waveform.shape}, sr={_sr}")
+        except Exception as exc:
+            logger.warning(f"Could not pre-load audio, falling back to path: {exc}")
+            audio_input = str(audio_path)  # type: ignore[assignment]
+
+        try:
+            diarization = self._pipeline(audio_input)  # type: ignore[misc]
         except Exception as exc:
             logger.exception("Diarization pipeline failed")
             raise DiarizationError(f"Speaker diarization failed: {exc}") from exc
 
+        # pyannote 4.x returns DiarizeOutput(speaker_diarization=Annotation, ...)
+        # pyannote 3.x returned an Annotation directly — handle both.
+        annotation = getattr(diarization, "speaker_diarization", diarization)
+
         turns: list[tuple[float, float, str]] = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
             turns.append((turn.start, turn.end, speaker))
 
         turns.sort(key=lambda t: t[0])
