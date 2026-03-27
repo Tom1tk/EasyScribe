@@ -433,12 +433,18 @@ class TranscriptionEngine:
                 turns = _diarizer.diarize(audio_path, log_callback)
                 assigned = _diarizer.assign_speakers(raw_segments, turns)
                 # assigned: list of (speaker, text, start, end)
+                # Build a stable mapping from pyannote IDs (e.g. SPEAKER_00) to
+                # human-friendly 1-indexed names (Speaker 1, Speaker 2, …).
+                # Order by first appearance so the first speaker heard is always Speaker 1.
+                speaker_map: dict[str, str] = {}
+                for speaker, _text, _s, _e in assigned:
+                    if speaker not in speaker_map:
+                        speaker_map[speaker] = f"Speaker {len(speaker_map) + 1}"
                 # Build output lines grouped by consecutive speaker
                 output_lines: list[str] = []
                 prev_speaker: str | None = None
                 for speaker, text, start, end in assigned:
-                    # Normalise label: SPEAKER_00 → Speaker 0
-                    label = speaker.replace("SPEAKER_", "Speaker ").replace("_", " ").title()
+                    label = speaker_map.get(speaker, speaker)
                     if add_timestamps:
                         line = f"[{label}] [{_format_timestamp(start)} --> {_format_timestamp(end)}] {text}"
                     elif label != prev_speaker:
