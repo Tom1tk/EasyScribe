@@ -31,6 +31,7 @@ class DiarizationEngine:
 
     def __init__(self) -> None:
         self._pipeline = None
+        self._pipeline_on_gpu: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
@@ -95,10 +96,31 @@ class DiarizationEngine:
                 _data = _data.reshape(-1, _nch).mean(axis=1)
             _waveform = _torch.tensor(_data).unsqueeze(0)  # (1, time)
             audio_input = {"waveform": _waveform, "sample_rate": _sr}
+            _audio_duration_sec = _waveform.shape[1] / _sr
             logger.info(f"Audio pre-loaded: {_waveform.shape}, sr={_sr}")
         except Exception as exc:
             logger.warning(f"Could not pre-load audio, falling back to path: {exc}")
             audio_input = str(audio_path)  # type: ignore[assignment]
+            _audio_duration_sec = 0.0
+
+        # Warn about expected CPU runtime. Measured ~0.6× audio duration on CPU
+        # (e.g. 14 min audio ≈ 8–9 min). GPU would be ~10–20× faster but requires
+        # CUDA torch, which exceeds the 2 GB GitHub release file-size limit.
+        if _audio_duration_sec > 0 and not self._pipeline_on_gpu:
+            est_sec = _audio_duration_sec * 0.6
+            if est_sec >= 60:
+                est_str = f"~{int(est_sec / 60)} min"
+            else:
+                est_str = f"~{int(est_sec)} sec"
+            if _audio_duration_sec >= 60:
+                audio_dur_str = f"{int(_audio_duration_sec / 60)} min"
+            else:
+                audio_dur_str = f"{int(_audio_duration_sec)} sec"
+            log_callback(
+                f"[Diarize] Running on CPU — estimated wait: {est_str} "
+                f"for {audio_dur_str} of audio. Please wait…"
+            )
+            logger.info(f"CPU diarization estimate: {est_str} for {_audio_duration_sec:.0f}s audio")
 
         try:
             diarization = self._pipeline(audio_input)  # type: ignore[misc]
@@ -331,12 +353,15 @@ class DiarizationEngine:
             import torch as _torch
             if _torch.cuda.is_available():
                 pipeline = pipeline.to(_torch.device("cuda"))
+                self._pipeline_on_gpu = True
                 logger.info("Diarization pipeline moved to CUDA GPU")
                 log_callback("[Diarize] Using GPU for speaker identification")
             else:
+                self._pipeline_on_gpu = False
                 logger.info("No CUDA GPU — diarization will run on CPU (may be slow)")
                 log_callback("[Diarize] No GPU found — using CPU (may be slow for long files)")
         except Exception as _gpu_exc:
+            self._pipeline_on_gpu = False
             logger.warning(f"Could not move pipeline to GPU: {_gpu_exc}")
 
         self._pipeline = pipeline
