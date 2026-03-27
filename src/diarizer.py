@@ -214,12 +214,6 @@ class DiarizationEngine:
             log_callback(f"[Diarize] {key}: {Path(local).name}")
             logger.info(f"Resolved {key}: {repo_id} -> {local}")
 
-        # Disable PLDA: config references pyannote/speaker-diarization-community-1
-        # which is a separate hub model we don't bundle.  Without PLDA the pipeline
-        # falls back to cosine similarity for speaker clustering — still accurate.
-        if OmegaConf.select(config, "pipeline.params.plda") is not None:
-            OmegaConf.update(config, "pipeline.params.plda", None)
-            logger.info("PLDA disabled (not bundled) — using cosine similarity for clustering")
 
         # Write the patched config to a temp directory and load from there.
         # We copy ALL files from the main snapshot into tmp (params.yaml,
@@ -229,8 +223,15 @@ class DiarizationEngine:
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
+                # Copy all snapshot files EXCEPT params.yaml.
+                # params.yaml contains calibrated params including a `plda` key
+                # that references pyannote/speaker-diarization-community-1 — an
+                # unbundled hub model.  Pipeline.from_pretrained merges params.yaml
+                # into constructor kwargs before Klass(**params), triggering the
+                # PLDA hub download.  Without params.yaml the pipeline uses default
+                # uncalibrated params (cosine similarity clustering) — still accurate.
                 for f in snapshot_dirs[0].iterdir():
-                    if f.is_file():
+                    if f.is_file() and f.name != "params.yaml":
                         shutil.copy2(f, tmp_path / f.name)
                 OmegaConf.save(config, tmp_path / "config.yaml")
                 pipeline = Pipeline.from_pretrained(str(tmp_path))
