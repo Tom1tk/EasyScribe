@@ -11,12 +11,14 @@ for subsequent calls, avoiding long startup delays.
 import logging
 import threading
 import time
+import wave
 from pathlib import Path
 from typing import Callable
 
 from config import (
     MODELS_DIR,
     REQUIRED_MODEL_FILES,
+    TEMP_DIR,
     WHISPER_BEAM_SIZE,
     WHISPER_LANGUAGE,
     WHISPER_VAD_FILTER,
@@ -45,11 +47,179 @@ class CancelledError(RuntimeError):
 
 
 def _format_timestamp(seconds: float) -> str:
-    """Format seconds as HH:MM:SS.mmm for timestamped output."""
+    """Format seconds as HH:MM:SS.mmm (kept for internal use)."""
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+
+def _format_hms(seconds: float) -> str:
+    """Format seconds as HH:MM:SS for block headers in output files."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+# Gap threshold: consecutive segments further apart than this start a new block
+_BLOCK_GAP_SEC: float = 2.0
+
+
+def _build_plain_transcript(
+    raw_segments: list[tuple[float, float, str]],
+    add_timestamps: bool,
+) -> str:
+    """
+    Build a plain (no speaker labels) transcript string.
+
+    Without timestamps: all text joined with spaces.
+    With timestamps:    segments grouped into blocks where gap < _BLOCK_GAP_SEC;
+                        each block gets one [HH:MM:SS] header on its own line,
+                        followed by all block text; blocks separated by blank lines.
+    """
+    if not raw_segments:
+        return ""
+
+    if not add_timestamps:
+        return " ".join(text for _, _, text in raw_segments)
+
+    # Group into blocks by natural pauses
+    blocks: list[tuple[float, list[str]]] = []
+    block_start = raw_segments[0][0]
+    block_texts: list[str] = []
+    prev_end = 0.0
+
+    for start, end, text in raw_segments:
+        if block_texts and (start - prev_end) >= _BLOCK_GAP_SEC:
+            blocks.append((block_start, block_texts))
+            block_start = start
+            block_texts = []
+        block_texts.append(text)
+        prev_end = end
+
+    if block_texts:
+        blocks.append((block_start, block_texts))
+
+    parts: list[str] = []
+    for ts, texts in blocks:
+        parts.append(f"[{_format_hms(ts)}]\n" + " ".join(texts))
+    return "\n\n".join(parts)
+
+
+def _build_diarized_transcript(
+    assigned: list[tuple[str, str, float, float]],
+    speaker_map: dict[str, str],
+    add_timestamps: bool,
+) -> str:
+    """
+    Build a diarized transcript string.
+
+    assigned: list of (speaker_raw, text, start, end)
+
+    No timestamps:  [Speaker N] header on speaker change; blank line between
+                    consecutive same-speaker blocks; text flows within a block.
+    With timestamps:[HH:MM:SS] [Speaker N] header on speaker change OR gap
+                    >= _BLOCK_GAP_SEC; blank line between all blocks.
+    """
+    if not assigned:
+        return ""
+
+    parts: list[str] = []
+
+    if not add_timestamps:
+        block_label = speaker_map.get(assigned[0][0], assigned[0][0])
+        block_texts: list[str] = [assigned[0][1]]
+
+        for speaker_raw, text, _s, _e in assigned[1:]:
+            label = speaker_map.get(speaker_raw, speaker_raw)
+            if label == block_label:
+                block_texts.append(text)
+            else:
+                parts.append(f"[{block_label}]\n" + " ".join(block_texts))
+                block_label = label
+                block_texts = [text]
+        parts.append(f"[{block_label}]\n" + " ".join(block_texts))
+
+    else:
+        block_label = speaker_map.get(assigned[0][0], assigned[0][0])
+        block_start = assigned[0][2]
+        block_texts = [assigned[0][1]]
+        prev_end = assigned[0][3]
+
+        for speaker_raw, text, start, end in assigned[1:]:
+            label = speaker_map.get(speaker_raw, speaker_raw)
+            speaker_changed = (label != block_label)
+            new_block = speaker_changed or (start - prev_end) >= _BLOCK_GAP_SEC
+
+            if new_block:
+                parts.append(
+                    f"[{_format_hms(block_start)}] [{block_label}]\n"
+                    + " ".join(block_texts)
+                )
+                block_label = label
+                block_start = start
+                block_texts = [text]
+            else:
+                block_texts.append(text)
+            prev_end = end
+
+        parts.append(
+            f"[{_format_hms(block_start)}] [{block_label}]\n"
+            + " ".join(block_texts)
+        )
+
+    return "\n\n".join(parts)
+
+
+def _extract_speaker_clip(
+    audio_path: Path,
+    turns: list[tuple[float, float, str]],
+    speaker: str,
+    out_path: Path,
+    max_duration: float = 5.0,
+) -> bool:
+    """
+    Extract the longest turn (up to max_duration sec) for *speaker* from
+    *audio_path* and write it to *out_path* as a WAV file.
+
+    Uses only the stdlib wave module — no dependencies.
+    Returns True on success, False if nothing could be extracted.
+    """
+    best_start = best_end = None
+    best_dur = 0.0
+    for t_start, t_end, t_speaker in turns:
+        if t_speaker == speaker:
+            dur = t_end - t_start
+            if dur > best_dur:
+                best_dur = dur
+                best_start, best_end = t_start, t_end
+
+    if best_start is None:
+        return False
+
+    clip_end = min(best_end, best_start + max_duration)  # type: ignore[arg-type]
+
+    try:
+        with wave.open(str(audio_path), "rb") as wf:
+            n_ch = wf.getnchannels()
+            s_w = wf.getsampwidth()
+            sr = wf.getframerate()
+            start_frame = int(best_start * sr)
+            n_frames = int((clip_end - best_start) * sr)
+            wf.setpos(start_frame)
+            raw = wf.readframes(n_frames)
+
+        with wave.open(str(out_path), "wb") as wf_out:
+            wf_out.setnchannels(n_ch)
+            wf_out.setsampwidth(s_w)
+            wf_out.setframerate(sr)
+            wf_out.writeframes(raw)
+
+        return True
+    except Exception as exc:
+        logger.warning(f"Could not extract speaker clip for {speaker}: {exc}")
+        return False
 
 
 def _fmt_seconds(s: float) -> str:
@@ -156,23 +326,6 @@ def validate_model_directory() -> list[str]:
         if not (MODELS_DIR / fname).exists():
             missing.append(fname)
     return missing
-
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _build_plain_transcript(
-    raw_segments: list[tuple[float, float, str]],
-    add_timestamps: bool,
-) -> str:
-    """Build a plain (no speaker labels) transcript string from raw segments."""
-    if add_timestamps:
-        lines = [
-            f"[{_format_timestamp(start)} --> {_format_timestamp(end)}] {text}"
-            for start, end, text in raw_segments
-        ]
-        return "\n".join(lines)
-    return " ".join(text for _, _, text in raw_segments)
 
 
 # ─── Engine ───────────────────────────────────────────────────────────────────
@@ -303,6 +456,7 @@ class TranscriptionEngine:
         progress_callback: Callable[[float], None],
         log_callback: Callable[[str], None],
         diarize: bool = False,
+        speaker_name_callback: Callable[[dict, dict], None] | None = None,
     ) -> None:
         """
         Transcribe *audio_path* and write the result to *output_path*.
@@ -314,7 +468,8 @@ class TranscriptionEngine:
         output_path:
             Destination .txt file path.
         add_timestamps:
-            If True, prefix each segment with [HH:MM:SS.mmm --> HH:MM:SS.mmm].
+            If True, group segments into natural-pause blocks, each prefixed
+            with a [HH:MM:SS] timestamp header.
         cancel_event:
             Threading event; checked after each segment. Raises CancelledError.
         status_callback:
@@ -323,6 +478,10 @@ class TranscriptionEngine:
             Called with float 0.0–1.0 to update the progress bar.
         log_callback:
             Called with each transcribed segment text for the GUI log box.
+        speaker_name_callback:
+            Optional callable(speaker_map, clips_dict) called after diarization.
+            speaker_map is mutated in-place with any custom names entered by the
+            user before this function returns.
 
         Raises
         ------
@@ -432,29 +591,30 @@ class TranscriptionEngine:
                 _diarizer = DiarizationEngine()
                 turns = _diarizer.diarize(audio_path, log_callback)
                 assigned = _diarizer.assign_speakers(raw_segments, turns)
-                # assigned: list of (speaker, text, start, end)
-                # Build a stable mapping from pyannote IDs (e.g. SPEAKER_00) to
-                # human-friendly 1-indexed names (Speaker 1, Speaker 2, …).
-                # Order by first appearance so the first speaker heard is always Speaker 1.
+                # Build stable first-appearance mapping: SPEAKER_00 → Speaker 1
                 speaker_map: dict[str, str] = {}
                 for speaker, _text, _s, _e in assigned:
                     if speaker not in speaker_map:
                         speaker_map[speaker] = f"Speaker {len(speaker_map) + 1}"
-                # Build output lines grouped by consecutive speaker
-                output_lines: list[str] = []
-                prev_speaker: str | None = None
-                for speaker, text, start, end in assigned:
-                    label = speaker_map.get(speaker, speaker)
-                    if add_timestamps:
-                        line = f"[{label}] [{_format_timestamp(start)} --> {_format_timestamp(end)}] {text}"
-                    elif label != prev_speaker:
-                        output_lines.append(f"\n[{label}]")
-                        line = text
-                    else:
-                        line = text
-                    output_lines.append(line)
-                    prev_speaker = label
-                transcript_text = " ".join(output_lines).strip()
+
+                # Let the user rename speakers via the GUI popup (blocks until done)
+                if speaker_name_callback is not None:
+                    status_callback("Naming Speakers")
+                    clips_dict: dict[str, Path] = {}
+                    for raw_spk in speaker_map:
+                        clip_path = TEMP_DIR / f"spk_clip_{raw_spk}.wav"
+                        if _extract_speaker_clip(audio_path, turns, raw_spk, clip_path):
+                            clips_dict[raw_spk] = clip_path
+                    speaker_name_callback(speaker_map, clips_dict)
+                    for p in clips_dict.values():
+                        try:
+                            p.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+
+                transcript_text = _build_diarized_transcript(
+                    assigned, speaker_map, add_timestamps
+                )
             except Exception as exc:
                 logger.warning(f"Diarization failed, falling back to plain transcript: {exc}")
                 log_callback(f"[Diarize] Warning: {exc} — writing plain transcript")

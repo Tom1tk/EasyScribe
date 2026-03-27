@@ -63,11 +63,134 @@ _STATUS_COLOURS: dict[str, str] = {
     "Extracting Audio": "#2196F3",
     "Transcribing": "#2196F3",
     "Identifying Speakers": "#2196F3",
+    "Naming Speakers": "#9C27B0",
     "Writing Transcript": "#2196F3",
     "Done": "#4CAF50",
     "Cancelled": "#FF9800",
     "Failed": "#F44336",
 }
+
+
+# ─── Speaker naming dialog ────────────────────────────────────────────────────
+
+
+class SpeakerNamingDialog(ctk.CTkToplevel):
+    """
+    Modal popup shown after diarization so the user can rename each speaker.
+
+    Presents one row per detected speaker: a default label, a ▶ Play button
+    (plays a short audio clip of that speaker), and an editable name field.
+
+    When the user clicks "Use These Names" (or closes the window), the
+    speaker_map dict is mutated in-place and done_event is set, unblocking
+    the transcription worker thread that is waiting on done_event.
+    """
+
+    def __init__(
+        self,
+        parent: ctk.CTk,
+        speaker_map: dict[str, str],
+        clips_dict: dict[str, Path],
+        done_event: threading.Event,
+    ) -> None:
+        super().__init__(parent)
+        self._speaker_map = speaker_map
+        self._clips_dict = clips_dict
+        self._done_event = done_event
+        self._entries: dict[str, ctk.CTkEntry] = {}
+
+        self.title("Name the Speakers")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Centre over parent window
+        self.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width()  - self.winfo_width())  // 2
+        py = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{max(0, px)}+{max(0, py)}")
+
+    def _build(self) -> None:
+        pad = {"padx": 16, "pady": 6}
+
+        ctk.CTkLabel(
+            self,
+            text="Identify the Speakers",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=0, column=0, columnspan=3, padx=16, pady=(16, 4), sticky="w")
+
+        ctk.CTkLabel(
+            self,
+            text="Play a sample to identify each speaker, then enter their name.",
+            text_color="gray60",
+        ).grid(row=1, column=0, columnspan=3, padx=16, pady=(0, 12), sticky="w")
+
+        # Header row
+        for col, heading in enumerate(("Speaker", "Sample", "Name")):
+            ctk.CTkLabel(
+                self, text=heading, font=ctk.CTkFont(weight="bold")
+            ).grid(row=2, column=col, **pad, sticky="w" if col != 1 else "")
+
+        for i, (raw_label, default_name) in enumerate(self._speaker_map.items(), start=3):
+            ctk.CTkLabel(self, text=default_name).grid(
+                row=i, column=0, **pad, sticky="w"
+            )
+
+            clip_path = self._clips_dict.get(raw_label)
+            ctk.CTkButton(
+                self,
+                text="▶ Play",
+                width=80,
+                state="normal" if clip_path else "disabled",
+                command=lambda p=clip_path: self._play_clip(p),
+            ).grid(row=i, column=1, **pad)
+
+            entry = ctk.CTkEntry(self, width=200, placeholder_text=default_name)
+            entry.insert(0, default_name)
+            entry.grid(row=i, column=2, **pad, sticky="ew")
+            self._entries[raw_label] = entry
+
+        confirm_row = 3 + len(self._speaker_map)
+        ctk.CTkButton(
+            self,
+            text="Use These Names",
+            font=ctk.CTkFont(weight="bold"),
+            width=220,
+            command=self._on_confirm,
+        ).grid(row=confirm_row, column=0, columnspan=3, padx=16, pady=(12, 20))
+
+    def _play_clip(self, clip_path: "Path | None") -> None:
+        if clip_path is None:
+            return
+        try:
+            import sys as _sys
+            if _sys.platform == "win32":
+                import winsound
+                winsound.PlaySound(
+                    str(clip_path),
+                    winsound.SND_FILENAME | winsound.SND_ASYNC,
+                )
+        except Exception as exc:
+            logger.warning(f"Clip playback failed: {exc}")
+
+    def _on_confirm(self) -> None:
+        for raw_label, entry in self._entries.items():
+            name = entry.get().strip()
+            if name:
+                self._speaker_map[raw_label] = name
+        self._dismiss()
+
+    def _on_close(self) -> None:
+        # Keep defaults — just unblock the worker
+        self._dismiss()
+
+    def _dismiss(self) -> None:
+        self.grab_release()
+        self.destroy()
+        self._done_event.set()
 
 
 class TranscriberApp(_AppBase):  # type: ignore
@@ -480,6 +603,11 @@ class TranscriberApp(_AppBase):  # type: ignore
                     progress_callback=self._safe_set_progress,
                     log_callback=self._safe_append_log,
                     diarize=self._diarize_var.get(),
+                    speaker_name_callback=(
+                        self._make_speaker_naming_callback()
+                        if self._diarize_var.get()
+                        else None
+                    ),
                 )
 
             except (FFmpegCancelledError, TranscribeCancelledError):
@@ -532,6 +660,27 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._safe_update_status(final_status)
         self._safe_set_batch_label("")
         self.after(0, lambda: self._set_ui_state("idle"))
+
+    def _make_speaker_naming_callback(self) -> Callable:
+        """
+        Return a callback that blocks the worker thread until the user
+        has named all speakers in the SpeakerNamingDialog.
+
+        The callback is called from the transcription worker thread with
+        (speaker_map, clips_dict).  It schedules the dialog on the main
+        thread, then waits for the user to dismiss it before returning.
+        speaker_map is mutated in-place by the dialog.
+        """
+        def callback(speaker_map: dict, clips_dict: dict) -> None:
+            done_event = threading.Event()
+            self.after(
+                0,
+                lambda sm=speaker_map, cd=clips_dict, ev=done_event:
+                    SpeakerNamingDialog(self, sm, cd, ev),
+            )
+            done_event.wait()
+
+        return callback
 
     # ─────────────────────────────────────────────────────────────────────────
     # Thread-safe GUI helpers
