@@ -148,6 +148,20 @@ class DiarizationEngine:
                 "Re-build with diarization support enabled."
             ) from exc
 
+        # Patch get_plda in the speaker_diarization module globals to prevent a
+        # hub download for pyannote/speaker-diarization-community-1 (unbundled PLDA
+        # model).  SpeakerDiarization.__init__ calls get_plda(plda, ...) where
+        # `plda` is a non-None DEFAULT PARAMETER referencing that hub model.
+        # Python resolves get_plda at call time from SpeakerDiarization.__init__.__globals__
+        # (= speaker_diarization module dict), so patching the module attribute here
+        # intercepts the call even though it was already imported.
+        try:
+            import pyannote.audio.pipelines.speaker_diarization as _sd_module
+            _sd_module.get_plda = lambda *args, **kwargs: None
+            logger.info("Patched get_plda → None (PLDA model not bundled)")
+        except Exception as _patch_exc:
+            logger.warning(f"Could not patch get_plda: {_patch_exc}")
+
         hub_dir = BASE_DIR / "models" / "hf_cache" / "hub"
 
         def _find_local_snapshot(repo_id: str) -> str | None:
