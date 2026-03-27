@@ -168,6 +168,45 @@ class DiarizationEngine:
 
         logger.info(f"Loading diarization pipeline from: {DIARIZATION_MODELS_DIR}")
 
+        # Block pyannote.audio telemetry BEFORE importing pyannote.
+        # pyannote 4.x imports opentelemetry at module load time and immediately
+        # starts a background thread (PeriodicExportingMetricReader) that POSTs
+        # usage metrics to otel.pyannote.ai:443 every 60 seconds.
+        # Injecting a no-op fake module into sys.modules prevents the exporter
+        # and its background thread from ever being created.
+        try:
+            import sys as _sys
+            import types as _types
+
+            _fake_metrics = _types.ModuleType("pyannote.audio.telemetry.metrics")
+            for _fn in (
+                "track_model_init",
+                "track_pipeline_init",
+                "track_pipeline_apply",
+                "set_telemetry_metrics",
+                "set_opentelemetry_log_level",
+            ):
+                setattr(_fake_metrics, _fn, lambda *a, **k: None)
+            _fake_metrics.is_metrics_enabled = lambda: False  # type: ignore[attr-defined]
+
+            _fake_telemetry = _types.ModuleType("pyannote.audio.telemetry")
+            _fake_telemetry.__path__ = []  # type: ignore[attr-defined]  # marks it as a package
+            _fake_telemetry.__package__ = "pyannote.audio.telemetry"  # type: ignore[attr-defined]
+            for _fn in (
+                "track_model_init",
+                "track_pipeline_init",
+                "track_pipeline_apply",
+                "set_telemetry_metrics",
+                "set_opentelemetry_log_level",
+            ):
+                setattr(_fake_telemetry, _fn, lambda *a, **k: None)
+
+            _sys.modules["pyannote.audio.telemetry.metrics"] = _fake_metrics
+            _sys.modules["pyannote.audio.telemetry"] = _fake_telemetry
+            logger.info("Blocked pyannote telemetry (no-op module injected)")
+        except Exception as _tel_exc:
+            logger.warning(f"Could not block pyannote telemetry: {_tel_exc}")
+
         try:
             from pyannote.audio import Pipeline  # type: ignore[import]
         except ImportError as exc:
@@ -285,6 +324,20 @@ class DiarizationEngine:
             raise DiarizationError(
                 f"Could not load diarization pipeline from {DIARIZATION_MODELS_DIR}:\n{exc}"
             ) from exc
+
+        # Move pipeline to GPU if available — CPU diarization on long audio is
+        # extremely slow (can take longer than the audio itself).
+        try:
+            import torch as _torch
+            if _torch.cuda.is_available():
+                pipeline = pipeline.to(_torch.device("cuda"))
+                logger.info("Diarization pipeline moved to CUDA GPU")
+                log_callback("[Diarize] Using GPU for speaker identification")
+            else:
+                logger.info("No CUDA GPU — diarization will run on CPU (may be slow)")
+                log_callback("[Diarize] No GPU found — using CPU (may be slow for long files)")
+        except Exception as _gpu_exc:
+            logger.warning(f"Could not move pipeline to GPU: {_gpu_exc}")
 
         self._pipeline = pipeline
         log_callback("[Diarize] Pipeline loaded")
