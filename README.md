@@ -1,4 +1,4 @@
-# Transcriber7
+# EasyScribe
 
 A portable, fully offline Windows desktop application for transcribing any media file to plain text using [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) (`faster-whisper-large-v3-turbo`) with optional speaker identification powered by [pyannote.audio](https://github.com/pyannote/pyannote-audio).
 
@@ -96,8 +96,8 @@ After a pause, the next block starts here.
 ## Portable Folder Layout
 
 ```
-PortableTranscriber\
-  PortableTranscriber.exe
+EasyScribe\
+  EasyScribe.exe
   models\
     faster-whisper-large-v3-turbo\
       config.json

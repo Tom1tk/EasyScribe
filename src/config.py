@@ -45,7 +45,7 @@ os.environ["SCARF_NO_ANALYTICS"] = "true"   # Scarf analytics (used by some HF l
 
 # ─── App metadata ─────────────────────────────────────────────────────────────
 
-APP_NAME = "Transcriber7"
+APP_NAME = "EasyScribe"
 APP_VERSION = "1.0.0"
 MODEL_FOLDER_NAME = "faster-whisper-large-v3-turbo"
 
@@ -57,14 +57,14 @@ def get_base_dir() -> Path:
     Return the application base directory.
 
     - When running as a PyInstaller frozen executable: the folder containing
-      the .exe (dist/PortableTranscriber/).
+      the .exe (dist/EasyScribe/).
     - When running from source in development: the project root (parent of src/).
     """
     if getattr(sys, "frozen", False):
-        # sys.executable = ...PortableTranscriber/PortableTranscriber.exe
+        # sys.executable = ...EasyScribe/EasyScribe.exe
         return Path(sys.executable).parent.resolve()
     else:
-        # __file__ = .../Transcriber7/src/config.py  →  parent.parent = project root
+        # __file__ = .../EasyScribe/src/config.py  →  parent.parent = project root
         return Path(__file__).parent.parent.resolve()
 
 

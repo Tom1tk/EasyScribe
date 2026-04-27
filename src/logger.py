@@ -1,5 +1,5 @@
 """
-logger.py - Logging setup for Transcriber7.
+logger.py - Logging setup for EasyScribe.
 
 Creates a timestamped log file in the logs/ directory next to the executable
 and also streams to stdout. Rotates old log files, keeping only the most recent.

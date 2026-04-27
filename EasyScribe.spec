@@ -1,13 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# Transcriber7.spec - PyInstaller build specification
+# EasyScribe.spec - PyInstaller build specification
 #
-# Produces a ONEDIR portable build in dist/PortableTranscriber/.
+# Produces a ONEDIR portable build in dist/EasyScribe/.
 # The model files and ffmpeg binaries are NOT packed into the executable —
 # they are copied alongside it by build_windows.bat after PyInstaller runs.
 #
 # To rebuild:
-#   pyinstaller Transcriber7.spec --noconfirm
+#   pyinstaller EasyScribe.spec --noconfirm
 
 import sys
 from pathlib import Path
@@ -180,7 +180,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,   # ONEDIR: keep DLLs alongside exe, not packed inside
-    name="PortableTranscriber",
+    name="EasyScribe",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -201,5 +201,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="PortableTranscriber",   # dist/ subfolder name
+    name="EasyScribe",   # dist/ subfolder name
 )

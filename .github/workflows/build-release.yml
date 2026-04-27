@@ -4,8 +4,8 @@ name: Build and Publish Release
 # Provide a tag — a GitHub Release (draft) is created automatically.
 #
 # Two ZIP assets are published per release (both under GitHub's 2 GB limit):
-#   - Transcriber7-<tag>-app.zip    (~1.1 GB) — exe + nvidia CUDA DLLs + ffmpeg
-#   - Transcriber7-<tag>-model.zip  (~1.5 GB) — Whisper model + pyannote models
+#   - EasyScribe-<tag>-app.zip    (~1.1 GB) — exe + nvidia CUDA DLLs + ffmpeg
+#   - EasyScribe-<tag>-model.zip  (~1.5 GB) — Whisper model + pyannote models
 #
 # First-time install: extract both ZIPs into the same folder.
 # App updates:        re-extract app.zip only (model folder is unchanged).
@@ -154,7 +154,7 @@ jobs:
         shell: pwsh
         run: |
           & venv\Scripts\Activate.ps1
-          pyinstaller Transcriber7.spec --noconfirm
+          pyinstaller EasyScribe.spec --noconfirm
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
@@ -267,10 +267,10 @@ jobs:
           $verifyScript | venv\Scripts\python.exe
 
       # ── 7. Assemble portable app folder (no model) ────────────────────────────
-      - name: Assemble PortableTranscriber folder
+      - name: Assemble EasyScribe folder
         shell: pwsh
         run: |
-          $dist = "dist\PortableTranscriber"
+          $dist = "dist\EasyScribe"
 
           # Copy ffmpeg
           $ffmpegDst = "$dist\ffmpeg"
@@ -283,7 +283,7 @@ jobs:
 
           # Placeholder so users know where to put the models
           New-Item -ItemType Directory -Force -Path "$dist\models\faster-whisper-large-v3-turbo" | Out-Null
-          $placeholder = "Extract Transcriber7-*-model.zip into this same folder to install the Whisper and speaker diarization models."
+          $placeholder = "Extract EasyScribe-*-model.zip into this same folder to install the Whisper and speaker diarization models."
           Set-Content -Path "$dist\models\EXTRACT_MODEL_ZIP_HERE.txt" -Value $placeholder -Encoding utf8
 
           # Summary
@@ -298,9 +298,9 @@ jobs:
           $tag = "${{ github.event.inputs.tag }}"
 
           # ── ZIP 1: app only (exe + CUDA DLLs + ffmpeg, no model) ─────────────
-          $zipApp = "Transcriber7-${tag}-app.zip"
+          $zipApp = "EasyScribe-${tag}-app.zip"
           Write-Host "Creating $zipApp ..."
-          Compress-Archive -Path "dist\PortableTranscriber\*" -DestinationPath $zipApp -CompressionLevel Optimal
+          Compress-Archive -Path "dist\EasyScribe\*" -DestinationPath $zipApp -CompressionLevel Optimal
           $sz1 = [math]::Round((Get-Item $zipApp).Length / 1MB, 1)
           Write-Host "  Size: ${sz1} MB"
 
@@ -309,7 +309,7 @@ jobs:
           # drops files in exactly the right place:
           #   models\faster-whisper-large-v3-turbo\     — Whisper model
           #   models\hf_cache\hub\                      — pyannote models
-          $zipModel = "Transcriber7-${tag}-model.zip"
+          $zipModel = "EasyScribe-${tag}-model.zip"
           Write-Host "Creating $zipModel ..."
           Compress-Archive -Path "models" -DestinationPath $zipModel -CompressionLevel Optimal
           $sz2 = [math]::Round((Get-Item $zipModel).Length / 1MB, 1)
@@ -320,9 +320,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag }}
-          name: "Transcriber7 ${{ github.event.inputs.tag }}"
+          name: "EasyScribe ${{ github.event.inputs.tag }}"
           body: |
-            ## Transcriber7 — Portable Offline Speech-to-Text
+            ## EasyScribe — Portable Offline Speech-to-Text
 
             Two downloads — both required for a first-time install:
 
@@ -338,7 +338,7 @@ jobs:
             2. Create a folder anywhere (Desktop, USB stick, etc.)
             3. Extract **app.zip** into that folder
             4. Extract **model.zip** into the **same folder** — the `models\` directory will merge automatically
-            5. Double-click **PortableTranscriber.exe**
+            5. Double-click **EasyScribe.exe**
 
             ### Updating the app
             Only re-download and re-extract `...-app.zip` — your model folder stays untouched.
@@ -370,8 +370,8 @@ jobs:
             Windows Defender SmartScreen may show **"Windows protected your PC"** — click **More info → Run anyway**.
             This is expected for unsigned PyInstaller executables.
           files: |
-            Transcriber7-${{ github.event.inputs.tag }}-app.zip
-            Transcriber7-${{ github.event.inputs.tag }}-model.zip
+            EasyScribe-${{ github.event.inputs.tag }}-app.zip
+            EasyScribe-${{ github.event.inputs.tag }}-model.zip
           draft: true
           prerelease: false
         env:

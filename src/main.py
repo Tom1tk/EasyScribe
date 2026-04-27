@@ -1,5 +1,5 @@
 """
-main.py - Transcriber7 application entry point.
+main.py - EasyScribe application entry point.
 
 Import order matters:
   1. config  → sets offline env vars + creates runtime dirs
