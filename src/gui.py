@@ -1,5 +1,5 @@
 """
-gui.py - CustomTkinter main window for Transcriber7.
+gui.py - CustomTkinter main window for EasyScribe.
 
 All transcription work runs in a daemon background thread. The GUI
 communicates with the worker thread exclusively via thread-safe

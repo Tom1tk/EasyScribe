@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 :: ============================================================
-:: Transcriber7 - Windows Build Script
+:: EasyScribe - Windows Build Script
 ::
 :: Requirements before running:
 ::   1. Python 3.10+ installed and on PATH
@@ -32,7 +32,7 @@ cd /d "%SCRIPT_DIR%"
 
 set PYTHON=python
 set VENV_DIR=venv
-set DIST_NAME=PortableTranscriber
+set DIST_NAME=EasyScribe
 set DIST_DIR=dist\%DIST_NAME%
 set MODEL_NAME=faster-whisper-large-v3-turbo
 set MODEL_SRC=models\%MODEL_NAME%
@@ -57,7 +57,7 @@ if "%~1"=="--cuda" (
 
 echo.
 echo ============================================================
-echo  Transcriber7 Build Script
+echo  EasyScribe Build Script
 if defined CUDA_VERSION (
     echo  Mode: GPU ^(CUDA !CUDA_VERSION!^)
 ) else (
@@ -191,7 +191,7 @@ echo.
 echo [Step 6/8] Running PyInstaller...
 :: ─────────────────────────────────────────────────────────────────────────────
 if exist "dist\%DIST_NAME%" rmdir /s /q "dist\%DIST_NAME%"
-pyinstaller Transcriber7.spec --noconfirm
+pyinstaller EasyScribe.spec --noconfirm
 if errorlevel 1 (echo ERROR: PyInstaller build failed && exit /b 1)
 echo   PyInstaller build complete
 
@@ -227,7 +227,7 @@ echo.
 echo Folder contents:
 dir /B "%DIST_DIR%"
 echo.
-echo To run: double-click %DIST_DIR%\PortableTranscriber.exe
+echo To run: double-click %DIST_DIR%\EasyScribe.exe
 echo To distribute: zip the entire %DIST_DIR%\ folder.
 echo.
 

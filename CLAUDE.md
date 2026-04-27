@@ -1,4 +1,4 @@
-# Transcriber7 — Development Rules & Lessons
+# EasyScribe — Development Rules & Lessons
 
 This file is automatically loaded by Claude Code. Rules here are derived from real mistakes
 made during development. Read before making any build or packaging changes.
@@ -9,7 +9,7 @@ made during development. Read before making any build or packaging changes.
 
 ### Rule 1: `excludes` overrides `collect_all()` — never exclude ML transitive deps
 
-**The mistake we kept making:** Adding a package to `excludes` in `Transcriber7.spec` to
+**The mistake we kept making:** Adding a package to `excludes` in `EasyScribe.spec` to
 reduce bundle size, not realising it was a transitive runtime dependency of `pyannote.audio`.
 This caused a whack-a-mole series of `No module named '<X>'` errors on live builds:
 - scipy → removed from excludes
@@ -37,7 +37,7 @@ It never ran because PyInstaller only triggers hooks when it statically analyzes
 
 **The rule:** For DLLs loaded via C++ (not Python imports), collect them directly in the
 spec file using a function that runs unconditionally at build time (like `_collect_nvidia_dlls()`
-in `Transcriber7.spec`). Do not rely on hooks for packages that aren't Python-imported.
+in `EasyScribe.spec`). Do not rely on hooks for packages that aren't Python-imported.
 
 ---
 

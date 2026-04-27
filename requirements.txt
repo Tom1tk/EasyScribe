@@ -1,4 +1,4 @@
-# Transcriber7 - Python dependencies
+# EasyScribe - Python dependencies
 #
 # IMPORTANT: Install PyTorch separately before the other packages.
 # Use one of the commands below (copy into PowerShell or cmd):
