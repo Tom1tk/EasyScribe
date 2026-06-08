@@ -12,7 +12,7 @@ name: Build and Publish Release
 #
 # Cache strategy (skips re-downloading on repeat builds):
 #   ffmpeg              ~70 MB    key: ffmpeg-win64-gpl-static-v1
-#   venv                ~2-3 GB   key: venv-win64-py3.11-v6              (bump to refresh)
+#   venv                ~2-3 GB   key: venv-win64-py3.11-v7              (bump to refresh)
 #   whisper model       ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
 #   diarization models  ~35 MB    key: sherpa-onnx-diarization-v1
 on:
@@ -110,13 +110,13 @@ jobs:
 
       # ── 5. Cache Python venv (~1-1.5 GB) ──────────────────────────────────────
       # sherpa-onnx (CPU or CUDA-provider) + nvidia-*-cu12 packages for CUDA DLLs.
-      # Bump v6 → v7 (etc.) to force a clean reinstall (e.g. after adding a package).
+      # Bump v7 → v8 (etc.) to force a clean reinstall (e.g. after adding a package).
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v6-cuda${{ inputs.cuda }}
+          key: venv-win64-py3.11-v7-cuda${{ inputs.cuda }}
 
       # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
@@ -128,16 +128,20 @@ jobs:
 
           python -m pip install --upgrade pip --quiet
 
-          # Separate nvidia CUDA 12 packages — provide cublas/cudart/cudnn DLLs
-          # that ctranslate2 needs for GPU transcription inference.
-          # hook-nvidia.py collects these into nvidia/<pkg>/bin/ in the bundle;
-          # cuda_setup.py calls os.add_dll_directory() on them at startup.
+          # Separate nvidia CUDA 12 packages — provide cublas/cudart/cudnn/cufft
+          # DLLs needed by ctranslate2 (GPU transcription) and, via the same
+          # PATH-prepend mechanism, by sherpa-onnx's bundled CUDA execution
+          # provider (onnxruntime_providers_cuda.dll depends on cufft64_11.dll —
+          # NVIDIA kept cuFFT's SONAME at 11 even in CUDA 12.x toolkits).
+          # The spec's _collect_nvidia_dlls() bundles these into nvidia/<pkg>/bin/;
+          # cuda_setup.py prepends them to os.environ["PATH"] at startup.
           Write-Host "Installing nvidia CUDA 12 runtime packages..."
           pip install `
             nvidia-cublas-cu12 `
             nvidia-cuda-runtime-cu12 `
             nvidia-cudnn-cu12 `
             nvidia-cuda-nvrtc-cu12 `
+            nvidia-cufft-cu12 `
             --quiet
 
           if ("${{ inputs.cuda }}" -eq "true") {
