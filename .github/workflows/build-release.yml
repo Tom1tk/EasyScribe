@@ -5,16 +5,16 @@ name: Build and Publish Release
 #
 # Two ZIP assets are published per release (both under GitHub's 2 GB limit):
 #   - EasyScribe-<tag>-app.zip    (~1.1 GB) — exe + nvidia CUDA DLLs + ffmpeg
-#   - EasyScribe-<tag>-model.zip  (~1.5 GB) — Whisper model + pyannote models
+#   - EasyScribe-<tag>-model.zip  (~1.5 GB) — Whisper model + diarization models
 #
 # First-time install: extract both ZIPs into the same folder.
 # App updates:        re-extract app.zip only (model folder is unchanged).
 #
 # Cache strategy (skips re-downloading on repeat builds):
-#   ffmpeg          ~70 MB    key: ffmpeg-win64-gpl-static-v1
-#   venv            ~2-3 GB   key: venv-win64-py3.11-v5              (bump v5 to refresh)
-#   whisper model   ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
-#   pyannote models ~200 MB   key: pyannote-speaker-diarization-3.1-v3
+#   ffmpeg              ~70 MB    key: ffmpeg-win64-gpl-static-v1
+#   venv                ~2-3 GB   key: venv-win64-py3.11-v6              (bump to refresh)
+#   whisper model       ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
+#   diarization models  ~35 MB    key: sherpa-onnx-diarization-v1
 on:
   workflow_dispatch:
     inputs:
@@ -22,6 +22,11 @@ on:
         description: 'Release tag (e.g. v1.0.0)'
         required: true
         default: 'v1.0.0'
+      cuda:
+        description: 'Bundle GPU-capable sherpa-onnx (CUDA provider) for speaker diarization'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write   # required to create releases and upload assets
@@ -103,15 +108,15 @@ jobs:
 
           $script | python
 
-      # ── 5. Cache Python venv (~2-3 GB) ────────────────────────────────────────
-      # CPU-only torch + torchaudio + separate nvidia-*-cu12 packages for CUDA DLLs.
-      # Bump v4 → v5 (etc.) to force a clean reinstall (e.g. after adding a package).
+      # ── 5. Cache Python venv (~1-1.5 GB) ──────────────────────────────────────
+      # sherpa-onnx (CPU or CUDA-provider) + nvidia-*-cu12 packages for CUDA DLLs.
+      # Bump v6 → v7 (etc.) to force a clean reinstall (e.g. after adding a package).
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v5
+          key: venv-win64-py3.11-v6-cuda${{ inputs.cuda }}
 
       # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
@@ -122,12 +127,6 @@ jobs:
           & venv\Scripts\Activate.ps1
 
           python -m pip install --upgrade pip --quiet
-
-          # CPU-only torch + torchaudio — used by pyannote.audio for diarization.
-          # torch_cuda.dll (~1.5 GB) is NOT included this way, keeping app.zip small.
-          # torchaudio must be CPU-only too, otherwise it drags in large CUDA binaries.
-          Write-Host "Installing CPU-only PyTorch + torchaudio..."
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
 
           # Separate nvidia CUDA 12 packages — provide cublas/cudart/cudnn DLLs
           # that ctranslate2 needs for GPU transcription inference.
@@ -141,10 +140,16 @@ jobs:
             nvidia-cuda-nvrtc-cu12 `
             --quiet
 
+          if ("${{ inputs.cuda }}" -eq "true") {
+            Write-Host "Installing sherpa-onnx (CUDA provider) for GPU diarization..."
+            pip install sherpa-onnx --pre -f https://k2-fsa.github.io/sherpa/onnx/cuda.html --quiet
+          } else {
+            Write-Host "Installing sherpa-onnx (CPU)..."
+            pip install sherpa-onnx --quiet
+          }
+
           Write-Host "Installing core dependencies..."
-          # einops: required by pyannote.audio at import time (tensor ops)
-          # omegaconf: required by diarizer.py at runtime for config.yaml patching; explicit to ensure venv has it
-          pip install faster-whisper pyannote.audio einops omegaconf customtkinter tkinterdnd2 pyinstaller --quiet
+          pip install faster-whisper customtkinter tkinterdnd2 pyinstaller --quiet
 
           Write-Host "Installed packages:"
           pip list --format=columns
@@ -158,111 +163,57 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
-      # ── 6b. Cache pyannote models (~200 MB) ──────────────────────────────────
-      - name: Cache pyannote models
-        id: pyannote-cache
+      # ── 6b. Cache diarization models (~35 MB) ────────────────────────────────
+      - name: Cache diarization models
+        id: diarization-cache
         uses: actions/cache@v4
         with:
-          path: models/hf_cache/hub
-          key: pyannote-speaker-diarization-3.1-v3
+          path: models/diarization
+          key: sherpa-onnx-diarization-v1
 
-      # ── 6c. Download pyannote models (skipped on cache hit) ───────────────────
-      # Downloads speaker-diarization-3.1 and its sub-models (segmentation-3.0,
-      # wespeaker-voxceleb-resnet34-LM) into the HF hub cache format.
-      # At runtime, HF_HOME points here and HF_HUB_OFFLINE=1 ensures no network.
-      # Requires HF_TOKEN secret with access to pyannote gated models.
-      - name: Download pyannote models
-        if: steps.pyannote-cache.outputs.cache-hit != 'true'
+      # ── 6c. Download diarization models (skipped on cache hit) ───────────────
+      # Public sherpa-onnx GitHub release assets — no authentication required
+      # (unlike the gated pyannote HF repos this replaces).
+      #   - segmentation: ONNX export of pyannote/segmentation-3.0
+      #   - embedding:    WeSpeaker ResNet34-LM (same model family used previously)
+      - name: Download diarization models
+        if: steps.diarization-cache.outputs.cache-hit != 'true'
         shell: pwsh
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_HOME: ${{ github.workspace }}/models/hf_cache
         run: |
-          & venv\Scripts\Activate.ps1
+          New-Item -ItemType Directory -Force -Path "models/diarization" | Out-Null
 
-          $script = @"
-          import os
-          from huggingface_hub import snapshot_download
+          Write-Host "Downloading segmentation model..."
+          Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2" -OutFile "segmentation.tar.bz2"
+          tar xjf segmentation.tar.bz2
+          Move-Item -Force "sherpa-onnx-pyannote-segmentation-3-0/model.onnx" "models/diarization/segmentation.onnx"
+          Remove-Item -Recurse -Force "sherpa-onnx-pyannote-segmentation-3-0", "segmentation.tar.bz2"
 
-          token = os.environ.get('HF_TOKEN') or None
-          if not token:
-              print('WARNING: HF_TOKEN not set — skipping pyannote model download.')
-              print('Speaker diarization will be unavailable in this build.')
-              print('Add HF_TOKEN secret with pyannote gated-model access to enable it.')
-              exit(0)
+          Write-Host "Downloading embedding model..."
+          Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx" -OutFile "models/diarization/embedding.onnx"
 
-          models = [
-              'pyannote/speaker-diarization-3.1',
-              'pyannote/segmentation-3.0',
-              'pyannote/wespeaker-voxceleb-resnet34-LM',
-          ]
+          Write-Host "Diarization models downloaded."
 
-          for repo_id in models:
-              print(f'Downloading {repo_id} ...')
-              snapshot_download(
-                  repo_id=repo_id,
-                  token=token,
-                  ignore_patterns=['*.gitattributes', '*.md', '.git*'],
-              )
-              print(f'  Done: {repo_id}')
-
-          print('All pyannote models downloaded.')
-          "@
-
-          $script | python
-
-      # ── 6d. Verify pyannote model cache structure ─────────────────────────────
-      # Runs ~1 second. Confirms all snapshot dirs and weight files exist before
-      # we spend 40+ minutes building and testing only to hit a cache error.
-      - name: Verify pyannote model cache
+      # ── 6d. Verify diarization model cache ────────────────────────────────────
+      - name: Verify diarization model cache
         shell: pwsh
         run: |
           $verifyScript = @"
           import sys
           from pathlib import Path
-          from omegaconf import OmegaConf
 
-          hub_dir = Path('models/hf_cache/hub')
-          required = [
-              'models--pyannote--speaker-diarization-3.1',
-              'models--pyannote--segmentation-3.0',
-              'models--pyannote--wespeaker-voxceleb-resnet34-LM',
-          ]
+          d = Path('models/diarization')
           ok = True
-          for model_dir_name in required:
-              snaps = hub_dir / model_dir_name / 'snapshots'
-              if not snaps.is_dir():
-                  print(f'FAIL: snapshots dir missing: {snaps}')
-                  ok = False
-                  continue
-              snap_dirs = sorted(snaps.iterdir())
-              if not snap_dirs:
-                  print(f'FAIL: snapshots dir is empty: {snaps}')
-                  ok = False
-                  continue
-              snap = snap_dirs[0]
-              files = [f.name for f in snap.iterdir()]
-              print(f'OK  {model_dir_name} -> {snap.name}: {files}')
-              if model_dir_name != 'models--pyannote--speaker-diarization-3.1':
-                  has_weights = any(f in files for f in ('pytorch_model.bin', 'model.safetensors'))
-                  if not has_weights:
-                      print(f'FAIL: no weight file in {snap}')
-                      ok = False
-
-          main_snaps = sorted((hub_dir / 'models--pyannote--speaker-diarization-3.1' / 'snapshots').iterdir())
-          cfg = OmegaConf.load(main_snaps[0] / 'config.yaml')
-          for key in ('segmentation', 'embedding'):
-              repo_id = str(getattr(cfg.pipeline.params, key, ''))
-              dir_name = 'models--' + repo_id.replace('/', '--')
-              if not (hub_dir / dir_name / 'snapshots').is_dir():
-                  print(f'FAIL: pipeline config references {repr(repo_id)} but {dir_name} not downloaded')
+          for name in ('segmentation.onnx', 'embedding.onnx'):
+              f = d / name
+              if not f.is_file():
+                  print(f'FAIL: missing {f}')
                   ok = False
               else:
-                  print(f'OK  pipeline.params.{key} = {repo_id} -> found locally')
+                  print(f'OK  {f} ({f.stat().st_size / 1e6:.1f} MB)')
 
           if not ok:
               sys.exit(1)
-          print('Model cache verification PASSED')
+          print('Diarization model verification PASSED')
           "@
           $verifyScript | venv\Scripts\python.exe
 
@@ -308,7 +259,7 @@ jobs:
           # Zipped as models\* so extracting into the same folder as app.zip
           # drops files in exactly the right place:
           #   models\faster-whisper-large-v3-turbo\     — Whisper model
-          #   models\hf_cache\hub\                      — pyannote models
+          #   models\diarization\                       — speaker diarization models
           $zipModel = "EasyScribe-${tag}-model.zip"
           Write-Host "Creating $zipModel ..."
           Compress-Archive -Path "models" -DestinationPath $zipModel -CompressionLevel Optimal

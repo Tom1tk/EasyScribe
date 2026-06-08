@@ -240,25 +240,11 @@ def list_gpus() -> list[dict[str, str | int]]:
       - index (int): CUDA device index
       - name  (str): GPU display name
 
-    Tries torch first (gives proper GPU names); falls back to ctranslate2
-    so the app works without torch installed (as in the pre-built release).
+    Uses ctranslate2 for enumeration (always present; gives no GPU names).
     Returns an empty list if no CUDA GPUs are available.
     """
     gpus: list[dict[str, str | int]] = []
 
-    # ── Primary: torch (provides GPU names) ──────────────────────────────────
-    try:
-        import torch  # type: ignore
-        if torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
-                gpus.append({"index": i, "name": torch.cuda.get_device_name(i)})
-            return gpus
-    except ImportError:
-        pass  # torch not installed — use ctranslate2 fallback
-    except Exception as exc:
-        logger.debug(f"torch GPU enumeration failed: {exc}")
-
-    # ── Fallback: ctranslate2 (always present, no GPU names) ─────────────────
     try:
         import ctranslate2  # type: ignore
         count = ctranslate2.get_cuda_device_count()
@@ -285,7 +271,6 @@ def _detect_device(gpu_index: int | None = None) -> tuple[str, str, int | None]:
       - ("cuda", "float16", N)  if a CUDA-capable GPU is available
       - ("cpu", "int8", None)   otherwise
 
-    Works with or without torch installed; ctranslate2 is the fallback.
     """
     if gpu_index == -1:
         logger.info("CPU explicitly selected by user")

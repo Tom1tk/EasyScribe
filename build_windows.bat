@@ -17,11 +17,11 @@ setlocal enabledelayedexpansion
 :: ffmpeg is downloaded automatically if not already present.
 ::
 :: Usage:
-::   build_windows.bat              (CPU build - default)
-::   build_windows.bat --cuda 11.8  (CUDA 11.8 build)
-::   build_windows.bat --cuda 12.1  (CUDA 12.1 build)
-::   build_windows.bat --cuda 12.4  (CUDA 12.4 build)
-::   build_windows.bat --cuda 12.6  (CUDA 12.6 build)
+::   build_windows.bat        (CPU-only diarization build - default)
+::   build_windows.bat --cuda (bundles sherpa-onnx's CUDA provider so speaker
+::                            diarization can run on the GPU; ctranslate2
+::                            transcription is always GPU-capable regardless,
+::                            via the bundled nvidia-* CUDA DLLs)
 ::
 :: TIP: Run this script from cmd.exe, not PowerShell.
 ::      PowerShell treats > as a redirect operator which breaks pip version specs.
@@ -39,18 +39,12 @@ set MODEL_SRC=models\%MODEL_NAME%
 set FFMPEG_SRC=tools\ffmpeg
 set TOOLS_DIR=tools
 
-:: Parse optional --cuda argument
-set CUDA_VERSION=
-set TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+:: Parse optional --cuda flag (bundles GPU-capable sherpa-onnx for diarization)
+set SHERPA_CUDA=
 
 :parse_args
 if "%~1"=="--cuda" (
-    set CUDA_VERSION=%~2
-    if "!CUDA_VERSION!"=="11.8"  set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu118
-    if "!CUDA_VERSION!"=="12.1"  set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
-    if "!CUDA_VERSION!"=="12.4"  set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
-    if "!CUDA_VERSION!"=="12.6"  set TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126
-    shift
+    set SHERPA_CUDA=1
     shift
     goto parse_args
 )
@@ -170,17 +164,17 @@ echo [Step 5/8] Installing Python dependencies...
 python -m pip install --upgrade pip --quiet
 if errorlevel 1 (echo ERROR: pip upgrade failed && exit /b 1)
 
-:: Install PyTorch (CPU or CUDA variant)
-if defined CUDA_VERSION (
-    echo   Installing PyTorch with CUDA !CUDA_VERSION! from !TORCH_INDEX_URL!...
-    pip install torch torchaudio --index-url !TORCH_INDEX_URL! --quiet
+:: Install sherpa-onnx (CPU or CUDA-provider variant)
+if defined SHERPA_CUDA (
+    echo   Installing sherpa-onnx ^(CUDA provider^)...
+    pip install sherpa-onnx --pre -f https://k2-fsa.github.io/sherpa/onnx/cuda.html --quiet
 ) else (
-    echo   Installing PyTorch ^(CPU^)...
-    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
+    echo   Installing sherpa-onnx ^(CPU^)...
+    pip install sherpa-onnx --quiet
 )
-if errorlevel 1 (echo ERROR: PyTorch installation failed && exit /b 1)
+if errorlevel 1 (echo ERROR: sherpa-onnx installation failed && exit /b 1)
 
-:: Install remaining dependencies (excluding torch — already done above)
+:: Install remaining dependencies (sherpa-onnx already installed above)
 echo   Installing remaining dependencies...
 pip install faster-whisper customtkinter tkinterdnd2 pyinstaller --quiet
 if errorlevel 1 (echo ERROR: Dependency installation failed && exit /b 1)

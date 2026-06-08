@@ -13,7 +13,7 @@ faster_whisper or huggingface_hub code is imported.
 # ── Import order is critical ──────────────────────────────────────────────────
 import config      # 1st: sets HF_HOME + offline env vars before any HF import
 import cuda_setup  # 2nd: registers CUDA DLL dirs via os.add_dll_directory()
-                   #      must run before ctranslate2 / pyannote are imported
+                   #      must run before ctranslate2 / sherpa_onnx are imported
 
 import atexit
 import logging

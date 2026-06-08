@@ -1,29 +1,11 @@
 # EasyScribe - Python dependencies
-#
-# IMPORTANT: Install PyTorch separately before the other packages.
-# Use one of the commands below (copy into PowerShell or cmd):
-#
-#   CPU only (smaller download, slower transcription):
-#     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-#
-#   NVIDIA GPU — CUDA 11.8:
-#     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
-#
-#   NVIDIA GPU — CUDA 12.1:
-#     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-#
-#   NVIDIA GPU — CUDA 12.4 (latest):
-#     pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-#
-# PowerShell warning: NEVER write "torch>=2.3.0" unquoted in PowerShell — the >
-# character is a redirect operator and will silently break the install.
-# Always quote: pip install "torch>=2.3.0" ...  or just omit the version pin.
-#
-# The build script (build_windows.bat) handles torch installation automatically.
-# Pass --cuda 11.8 / --cuda 12.1 / --cuda 12.4 to select a CUDA build.
 
 # Speech-to-text engine (uses ctranslate2 under the hood)
 faster-whisper>=1.0.3
+
+# Speaker diarization engine (ONNX Runtime — supports CPU and CUDA via 'provider')
+# CUDA builds use the '+cuda' wheel variant — see build_windows.bat.
+sherpa-onnx>=1.10.0
 
 # GUI framework
 customtkinter>=5.2.2
@@ -33,7 +15,3 @@ tkinterdnd2>=0.3.0
 
 # Portable executable builder
 pyinstaller>=6.10.0
-
-# PyTorch (CPU version — see notes above to switch to CUDA)
-# Installed separately in build_windows.bat to allow index-url override
-# torch>=2.3.0

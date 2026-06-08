@@ -9,20 +9,21 @@ made during development. Read before making any build or packaging changes.
 
 ### Rule 1: `excludes` overrides `collect_all()` — never exclude ML transitive deps
 
-**The mistake we kept making:** Adding a package to `excludes` in `EasyScribe.spec` to
-reduce bundle size, not realising it was a transitive runtime dependency of `pyannote.audio`.
-This caused a whack-a-mole series of `No module named '<X>'` errors on live builds:
+**The mistake we kept making (pre-v2.0.0, when diarization ran on `pyannote.audio`):**
+Adding a package to `excludes` in `EasyScribe.spec` to reduce bundle size, not realising
+it was a transitive runtime dependency of `pyannote.audio`. This caused a whack-a-mole
+series of `No module named '<X>'` errors on live builds:
 - scipy → removed from excludes
 - torchaudio → removed from excludes
 - pandas → removed from excludes
 - sklearn, matplotlib → removed from excludes
 
 **The rule:** Before adding any package to `excludes`, verify it does NOT appear in the
-transitive dependency tree of: `pyannote.audio`, `speechbrain`, `asteroid_filterbanks`,
-`faster_whisper`, or `ctranslate2`. If in doubt, leave it out of excludes.
+transitive dependency tree of `sherpa_onnx`, `faster_whisper`, or `ctranslate2`. If in
+doubt, leave it out of excludes.
 
 **How PyInstaller processes excludes:** The `excludes` list is applied *after* analysis,
-including after `collect_all()`. So even if `collect_all('pyannote.audio')` discovers a
+including after `collect_all()`. So even if `collect_all('sherpa_onnx')` discovers a
 package, an explicit `excludes` entry will strip it from the final bundle. There is no
 warning — the package just silently disappears and crashes at runtime.
 
@@ -58,9 +59,9 @@ See `src/cuda_setup.py` for the working implementation.
 
 **The rule:** If a package has compiled Cython or C extensions (`.pyd` on Windows, `.so`
 on Linux), adding it to `hiddenimports` imports the top-level package but does NOT copy
-the compiled binaries. Use `collect_all('<package>')` instead. Key packages this applies to:
-- `sklearn` (scikit-learn) — dozens of `.pyd` files across subpackages
-- `speechbrain`, `asteroid_filterbanks` — already in `collect_all` loop
+the compiled binaries. Use `collect_all('<package>')` instead. Key package this applies to:
+- `sherpa_onnx` — ships compiled `.so`/`.pyd` extensions plus a `.libs` directory;
+  see the `collect_all('sherpa_onnx')` call in `EasyScribe.spec`
 
 Packages with PyInstaller built-in hooks (`pandas`, `matplotlib`) can use `hiddenimports`
 since the hook handles their binaries automatically.
@@ -91,3 +92,4 @@ this means the old cached venv is used and changes don't take effect.
 | v1.0.13 | Fix: pass pytorch_model.bin path not snapshot dir to Model.from_pretrained |
 | v1.0.14 | Fix: copy all snapshot files to tmp (params.yaml etc.); add traceback logging |
 | v1.0.15 | Fix: disable PLDA (references unbundled pyannote/speaker-diarization-community-1) |
+| v1.1.0 | Replace pyannote.audio diarization backend with sherpa-onnx (ONNX Runtime, GPU-capable via `provider="cuda"`, no PyTorch dependency); remove torch/torchaudio entirely |

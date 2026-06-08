@@ -1,6 +1,6 @@
 # EasyScribe
 
-A portable, fully offline Windows desktop application for transcribing any media file to plain text using [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) (`faster-whisper-large-v3-turbo`) with optional speaker identification powered by [pyannote.audio](https://github.com/pyannote/pyannote-audio).
+A portable, fully offline Windows desktop application for transcribing any media file to plain text using [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) (`faster-whisper-large-v3-turbo`) with optional speaker identification powered by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
 
 - **No internet required at runtime** — works completely offline
 - **No installer** — copy the folder to any Windows machine or USB stick and run
@@ -19,7 +19,7 @@ Converts any audio or video file to a plain UTF-8 text file. Uses the `faster-wh
 Group output into natural-pause blocks, each headed with a `[HH:MM:SS]` timestamp. Blocks break when there is a ~2-second gap in speech.
 
 ### Speaker Identification
-Uses pyannote.audio's `speaker-diarization-3.1` pipeline to detect and separate speakers. The transcript is formatted with `[Speaker N]` headers at each speaker change. When combined with timestamps, headers include both time and speaker: `[00:01:23] [Speaker 1]`.
+Uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)'s offline speaker diarization pipeline (segmentation + speaker embedding + clustering, running through ONNX Runtime — CPU or GPU via CUDA, no PyTorch required) to detect and separate speakers. The transcript is formatted with `[Speaker N]` headers at each speaker change. When combined with timestamps, headers include both time and speaker: `[00:01:23] [Speaker 1]`.
 
 ### Speaker Naming
 After diarization completes, a popup lets you name each speaker. For each detected speaker you can play a short audio sample (to identify whose voice it is), then type a custom name. Names replace the generic `Speaker 1` labels in the output file.
@@ -105,11 +105,9 @@ EasyScribe\
       preprocessor_config.json
       tokenizer.json
       vocabulary.json
-    hf_cache\
-      hub\
-        models--pyannote--speaker-diarization-3.1\
-        models--pyannote--segmentation-3.0\
-        models--pyannote--wespeaker-voxceleb-resnet34-LM\
+    diarization\
+      segmentation.onnx
+      embedding.onnx
   ffmpeg\
     ffmpeg.exe
     ffprobe.exe
@@ -142,7 +140,7 @@ src/
   logger.py          Rotating log file setup
   ffmpeg_wrapper.py  Subprocess ffmpeg with cancellation polling
   transcriber.py     Faster Whisper engine (lazy load, GPU/CPU detection)
-  diarizer.py        pyannote.audio speaker diarization engine
+  diarizer.py        sherpa-onnx speaker diarization engine
   gui.py             CustomTkinter UI with threaded worker
 ```
 
@@ -182,4 +180,4 @@ FFmpeg is included under the GPL v3 license. See https://ffmpeg.org/legal.html
 
 Whisper model weights: MIT License — https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
 
-pyannote.audio models are subject to their own license terms. See https://huggingface.co/pyannote
+sherpa-onnx and its bundled diarization models (pyannote segmentation-3.0 ONNX export, WeSpeaker ResNet34-LM embedding) are subject to their own license terms. See https://github.com/k2-fsa/sherpa-onnx
