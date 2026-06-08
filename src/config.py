@@ -12,7 +12,7 @@ from pathlib import Path
 
 # ─── Offline enforcement ──────────────────────────────────────────────────────
 # Set these BEFORE any huggingface/transformers/faster-whisper import.
-# HF_HOME must be set before HF_HUB_OFFLINE so that pyannote.audio finds its
+# HF_HOME must be set before HF_HUB_OFFLINE so that faster-whisper finds its
 # bundled models in our local cache rather than the user's home directory.
 #
 # NOTE: get_base_dir() is defined below; we need a forward reference here.
@@ -33,12 +33,6 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 # Belt-and-suspenders: block proxy at OS level for this process
 os.environ["NO_PROXY"] = "*"
-# Disable pyannote.audio OpenTelemetry telemetry.
-# The real block is the sys.modules injection in diarizer.py — these are
-# belt-and-suspenders in case any library checks them.
-os.environ["PYANNOTE_METRICS_ENABLED"] = "false"
-os.environ["OTEL_SDK_DISABLED"] = "true"
-os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:1"  # unreachable
 # Disable any other library telemetry / analytics calls
 os.environ["DO_NOT_TRACK"] = "1"            # standard opt-out signal
 os.environ["SCARF_NO_ANALYTICS"] = "true"   # Scarf analytics (used by some HF libs)
@@ -72,12 +66,10 @@ BASE_DIR: Path = get_base_dir()
 
 # Core runtime directories
 MODELS_DIR: Path = BASE_DIR / "models" / MODEL_FOLDER_NAME
-# Hub cache directory for the pyannote speaker-diarization-3.1 model.
-# snapshot_download() in CI writes to this path; at runtime HF_HUB_OFFLINE=1
-# ensures pyannote loads from here without any network access.
-DIARIZATION_MODELS_DIR: Path = (
-    BASE_DIR / "models" / "hf_cache" / "hub" / "models--pyannote--speaker-diarization-3.1"
-)
+# Bundled sherpa-onnx speaker diarization models (segmentation + embedding).
+DIARIZATION_DIR: Path = BASE_DIR / "models" / "diarization"
+DIARIZATION_SEGMENTATION_MODEL: Path = DIARIZATION_DIR / "segmentation.onnx"
+DIARIZATION_EMBEDDING_MODEL: Path = DIARIZATION_DIR / "embedding.onnx"
 FFMPEG_DIR: Path = BASE_DIR / "ffmpeg"
 FFMPEG_BIN: Path = FFMPEG_DIR / "ffmpeg.exe"
 FFPROBE_BIN: Path = FFMPEG_DIR / "ffprobe.exe"

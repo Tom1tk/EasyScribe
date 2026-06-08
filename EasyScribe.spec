@@ -69,37 +69,28 @@ if _ctk_dir:
 if _dnd_dir:
     _datas.append((_dnd_dir, "tkinterdnd2"))
 
-# ── Collect pyannote.audio and dependencies via collect_all ──────────────────
-# hiddenimports alone doesn't find data files or native sub-modules inside
-# complex packages like pyannote.  collect_all() does the full sweep.
-# scipy is also required by pyannote at runtime — do NOT exclude it below.
+# ── Collect sherpa-onnx via collect_all ──────────────────────────────────────
+# It ships compiled extensions (.so/.pyd) plus a .libs directory — hiddenimports
+# alone won't copy the binaries. See CLAUDE.md Rule 4.
 from PyInstaller.utils.hooks import collect_all as _collect_all
 
-_pyannote_binaries: list = []
-_pyannote_hidden: list = []
-for _pkg in [
-    "pyannote.audio",
-    "pyannote.core",
-    "pyannote.pipeline",
-    "asteroid_filterbanks",
-    "speechbrain",
-    "sklearn",      # has Cython .pyd extensions — collect_all required, not just hiddenimports
-]:
-    try:
-        _d, _b, _h = _collect_all(_pkg)
-        _datas += _d
-        _pyannote_binaries += _b
-        _pyannote_hidden += _h
-        print(f"[spec] collect_all({_pkg!r}): {len(_d)} datas, {len(_b)} bins, {len(_h)} hidden")
-    except Exception as _e:
-        print(f"[spec] Warning: could not collect {_pkg!r}: {_e}")
+_sherpa_binaries: list = []
+_sherpa_hidden: list = []
+try:
+    _d, _b, _h = _collect_all("sherpa_onnx")
+    _datas += _d
+    _sherpa_binaries += _b
+    _sherpa_hidden += _h
+    print(f"[spec] collect_all('sherpa_onnx'): {len(_d)} datas, {len(_b)} bins, {len(_h)} hidden")
+except Exception as _e:
+    print(f"[spec] Warning: could not collect 'sherpa_onnx': {_e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 
 a = Analysis(
     ["src/main.py"],
     pathex=["src"],          # so imports like `from config import ...` resolve
-    binaries=_collect_nvidia_dlls() + _pyannote_binaries,
+    binaries=_collect_nvidia_dlls() + _sherpa_binaries,
     datas=_datas,
     hiddenimports=[
         # ctranslate2 loads DLLs dynamically; PyInstaller misses them without this
@@ -115,46 +106,18 @@ a = Analysis(
         # tokenizer backend
         "tokenizers",
         "tokenizers.models",
-        # huggingface_hub is imported by faster-whisper and pyannote internally
+        # huggingface_hub is imported by faster-whisper internally
         "huggingface_hub",
         "huggingface_hub.utils",
-        # pyannote.audio speaker diarization (optional feature)
-        "pyannote.audio",
-        "pyannote.audio.pipelines",
-        "pyannote.core",
-        "asteroid_filterbanks",
-        "speechbrain",
-        # torch + torchaudio: CPU versions, required by pyannote.audio
-        "torch",
-        "torch.nn",
-        "torchaudio",
-        # pyannote.audio runtime deps that PyInstaller may miss (lazy imports)
-        "einops",
-        "omegaconf",
-        "soundfile",
+        # sherpa-onnx speaker diarization (optional feature)
+        "sherpa_onnx",
         # tkinterdnd2
         "tkinterdnd2",
-        # pyannote.metrics core deps (pyinstaller built-in hooks handle their C extensions)
-        "pandas",
-        "matplotlib",
-        "matplotlib.backends.backend_agg",
-        # sklearn top-level (binaries collected via collect_all above)
-        "sklearn",
-        "sklearn.utils",
-    ] + _pyannote_hidden,
+    ] + _sherpa_hidden,
     hookspath=["hooks"],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # torch_cuda.dll is ~1.5 GB — excluded to keep app.zip under 2 GB.
-        # ctranslate2 GPU inference uses the CUDA runtime DLLs from the
-        # separate nvidia-* packages collected by _collect_nvidia_dlls().
-        # pyannote runs on CPU torch + CPU torchaudio (both kept).
-        # NOTE: torchaudio is NOT excluded — pyannote.audio imports it at load time.
-        # Reduce size — safe to exclude (not in pyannote's transitive dep tree)
-        # WARNING: Do NOT add pandas, sklearn, matplotlib, scipy, or torchaudio here —
-        # all are runtime deps of pyannote.audio and will cause "No module named" crashes.
-        # See CLAUDE.md Rule 1 for full explanation.
         "numpy.distutils",
         "PIL",
         "notebook",
@@ -167,11 +130,6 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
-
-# ── Strip torch_cuda.dll (~1.5 GB) — ctranslate2 uses CUDA via nvidia packages
-import re as _re
-_cuda_dll = _re.compile(r'torch_cuda.*\.dll', _re.IGNORECASE)
-a.binaries = TOC([b for b in a.binaries if not _cuda_dll.search(b[0])])
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

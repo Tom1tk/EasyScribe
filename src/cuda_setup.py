@@ -3,8 +3,8 @@ cuda_setup.py - CUDA runtime DLL path registration for Windows.
 
 Adapted from Buzz (https://github.com/chidiwilliams/buzz).
 
-MUST be imported before any torch or CUDA-dependent library (ctranslate2,
-pyannote) is imported.  Calling os.add_dll_directory() registers the nvidia
+MUST be imported before any CUDA-dependent library (ctranslate2, sherpa_onnx)
+is imported.  Calling os.add_dll_directory() registers the nvidia
 package lib directories in the Windows DLL search path so that calls like
 LoadLibrary("cublas64_12.dll") succeed regardless of where the calling code
 is located inside the bundle.
