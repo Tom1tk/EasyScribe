@@ -77,6 +77,39 @@ this means the old cached venv is used and changes don't take effect.
 
 ---
 
+### Rule 6: A bundled native library's *runtime* DLL deps aren't always obvious from its package name
+
+**The mistake:** We bundled `nvidia-cublas-cu12`, `nvidia-cuda-runtime-cu12`,
+`nvidia-cudnn-cu12`, `nvidia-cuda-nvrtc-cu12` for ctranslate2 and assumed that covered
+"CUDA 12 DLLs" generally. When sherpa-onnx's bundled `onnxruntime_providers_cuda.dll`
+tried to load on a real GPU machine, it failed with
+`OrtSessionOptionsAppendExecutionProvider_Cuda: Failed to load shared library` — silently
+falling back to CPU (the code's graceful-degradation path masked the real error; only the
+rotating file log's `logger.warning(...)` line had the actual exception text).
+
+The actual cause: `onnxruntime_providers_cuda.dll` depends on `cufft64_11.dll`
+(cuFFT — NVIDIA kept cuFFT's SONAME at `11` even inside CUDA 12.x toolkits, so the
+"11" in the filename does NOT mean "needs CUDA 11"). No `nvidia-cufft-cu12` package was
+installed, so `LoadLibraryA` failed with "module not found" on that dependency.
+
+**The rule:** When bundling a precompiled native library that talks to CUDA
+(`onnxruntime_providers_cuda.dll`, ctranslate2's CUDA stubs, etc.), don't assume the
+nvidia-*-cu12 package set you already have covers it — **PyInstaller's build-time
+warnings tell you exactly which DLLs it couldn't resolve**:
+```
+WARNING: Library not found: could not resolve 'cufft64_11.dll', dependency of
+'...\sherpa_onnx\lib\onnxruntime_providers_cuda.dll'.
+```
+Grep the PyInstaller build log for `Library not found` after adding any new
+CUDA-touching package, map each missing DLL name to its `nvidia-<x>-cu12` pip package
+(`cufft64_11.dll` → `nvidia-cufft-cu12`, `cusparse64_12.dll` → `nvidia-cusparse-cu12`,
+etc. — NVIDIA's library SONAMEs are stable across toolkit versions and don't match the
+CUDA major version), and add it to the install list. Ignore warnings for optional
+providers you never request (e.g. `onnxruntime_providers_tensorrt.dll` wanting
+`nvinfer_10.dll` — TensorRT is opt-in and irrelevant if you only use `provider="cuda"`).
+
+---
+
 ## Version History
 
 | Version | Key changes |
@@ -93,3 +126,4 @@ this means the old cached venv is used and changes don't take effect.
 | v1.0.14 | Fix: copy all snapshot files to tmp (params.yaml etc.); add traceback logging |
 | v1.0.15 | Fix: disable PLDA (references unbundled pyannote/speaker-diarization-community-1) |
 | v1.1.0 | Replace pyannote.audio diarization backend with sherpa-onnx (ONNX Runtime, GPU-capable via `provider="cuda"`, no PyTorch dependency); remove torch/torchaudio entirely |
+| v1.1.0 (fix) | GPU diarization silently fell back to CPU on real hardware — `onnxruntime_providers_cuda.dll` needs `cufft64_11.dll`; add `nvidia-cufft-cu12` to bundled packages; bump venv cache v6→v7 |
