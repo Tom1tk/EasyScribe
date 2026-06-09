@@ -192,7 +192,7 @@ jobs:
           & venv\Scripts\Activate.ps1
           pyinstaller launcher/launcher.spec --noconfirm
           if ($LASTEXITCODE -ne 0) { throw "launcher build failed" }
-          Write-Host "launcher.exe: $((Get-Item dist\launcher\launcher.exe).Length / 1MB | ForEach-Object { [math]::Round($_, 1) }) MB"
+          Write-Host "launcher.exe: $((Get-Item dist\launcher.exe).Length / 1MB | ForEach-Object { [math]::Round($_, 1) }) MB"
 
       # ── 10. Build main EasyScribe app ─────────────────────────────────────────
       - name: Build EasyScribe (${{ matrix.variant }})
@@ -263,7 +263,7 @@ jobs:
 
           # Create 7z payload: launcher.exe + app.bundle
           Write-Host "Creating payload.7z..."
-          7z a payload.7z dist\launcher\launcher.exe app.bundle
+          7z a payload.7z dist\launcher.exe app.bundle
 
           # Write SFX config (ASCII, no BOM)
           $cfg = @"
