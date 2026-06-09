@@ -1,51 +1,81 @@
 # EasyScribe
 
-A portable, fully offline Windows desktop application for transcribing any media file to plain text using [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) (`faster-whisper-large-v3-turbo`) with optional speaker identification powered by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+A portable, fully offline Windows desktop application for transcribing media files and live microphone audio to plain text. Uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) for all inference — transcription, speaker diarization, and voice activity detection — with GPU acceleration via Vulkan (any GPU, no CUDA required).
 
 - **No internet required at runtime** — works completely offline
-- **No installer** — copy the folder to any Windows machine or USB stick and run
+- **Single .exe installer** — runs on any Windows 10/11 machine, no setup wizard
 - **No Python required** on the target machine — everything is bundled
-- **GPU-accelerated** on NVIDIA GPUs, automatic CPU fallback
+- **GPU-accelerated** on any Vulkan-capable GPU (NVIDIA, AMD, Intel), automatic CPU fallback
+- **Live microphone transcription** — real-time VAD-chunked transcription with crash-safe recording
 - **Speaker diarization** — identify who said what, with optional name assignment
+
+---
+
+## Installation
+
+Run `EasyScribe-v2.0.0-whisper.exe` (or `-parakeet.exe`). On first run it extracts the application to `%LOCALAPPDATA%\EasyScribe\2.0.0\` and launches automatically. Subsequent runs launch in under a second from the same file.
+
+> **SmartScreen warning:** PyInstaller executables are unsigned. Click "More info → Run anyway" to proceed.
+
+---
+
+## Model Variants
+
+Two builds are released. They are otherwise identical in features.
+
+| Variant | Model | Notes |
+|---|---|---|
+| `whisper` | Whisper ONNX distil-large-v3 (English, int8) | Higher accuracy, ~700 MB |
+| `parakeet` | Parakeet TDT 0.6B v3 int8 (English) | Faster inference, ~700 MB |
 
 ---
 
 ## Features
 
-### Transcription
-Converts any audio or video file to a plain UTF-8 text file. Uses the `faster-whisper-large-v3-turbo` model with voice activity detection (VAD) to skip silence and avoid hallucinations.
+### File Transcription
+Converts any audio or video file to a plain UTF-8 `.txt` file. Audio is decoded via bundled ffmpeg, resampled to 16 kHz mono, then processed in 30-second overlapping chunks.
+
+### Live Microphone Recording
+Record directly from any input device. Voice activity detection (Silero VAD) automatically segments speech — only non-silent segments are transcribed. Recording writes crash-safe `.pcm` + `.json` sidecar files; if the app closes unexpectedly, the next launch offers to recover the audio.
 
 ### Timestamps
-Group output into natural-pause blocks, each headed with a `[HH:MM:SS]` timestamp. Blocks break when there is a ~2-second gap in speech.
+Group output into natural-pause blocks, each headed with a `[HH:MM:SS]` timestamp.
 
 ### Speaker Identification
-Uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)'s offline speaker diarization pipeline (segmentation + speaker embedding + clustering, running through ONNX Runtime — CPU or GPU via CUDA, no PyTorch required) to detect and separate speakers. The transcript is formatted with `[Speaker N]` headers at each speaker change. When combined with timestamps, headers include both time and speaker: `[00:01:23] [Speaker 1]`.
+Offline speaker diarization via sherpa-onnx (pyannote segmentation-3.0 ONNX + WeSpeaker ResNet34-LM embedding). Detects and separates speakers; output is formatted with `[Speaker N]` headers at each speaker change. Speaker identification is available for file transcription only (not live recording).
 
 ### Speaker Naming
-After diarization completes, a popup lets you name each speaker. For each detected speaker you can play a short audio sample (to identify whose voice it is), then type a custom name. Names replace the generic `Speaker 1` labels in the output file.
+After diarization completes, a popup lets you name each speaker. Play a short audio clip to identify each voice, then type a name. Names replace the generic `Speaker N` labels in the output file.
 
 ---
 
 ## Usage
 
+### Transcribe a file
+
 1. Click **Select File(s)** or drag and drop media files onto the drop zone
 2. Optionally click **Select Folder** to choose where transcripts are saved
-   (defaults to the same folder as each input file)
-3. Choose a device from the **Device** dropdown (auto-detected GPUs are listed)
+   (defaults to `Documents\EasyScribe Recordings\`)
+3. Choose a device from the **Device** dropdown — Vulkan-capable GPUs are listed; select **CPU** to force CPU mode
 4. Tick options as needed:
    - **Include timestamps** — adds `[HH:MM:SS]` block headers
-   - **Identify speakers** — runs speaker diarization (requires bundled models)
+   - **Identify speakers** — runs speaker diarization
 5. Click **Transcribe**
-6. If speaker identification is enabled, a popup will appear when diarization is done — play samples and enter names, then click **Use These Names**
+6. If speaker identification is enabled, a popup appears when diarization completes — play samples, enter names, then click **Use These Names**
 7. Click **Open Output Folder** when done
 
-### Batch mode
+### Record from microphone
 
+1. Choose a microphone from the **Mic** dropdown
+2. Click **Record** — the button turns red and shows **Stop Recording**
+3. Speak; transcribed segments appear in the log box in real time
+4. Click **Stop Recording** — the final transcript is saved to `Documents\EasyScribe Recordings\`
+
+### Batch mode
 Select multiple files at once — each gets its own `.txt` transcript. If one file fails, transcription continues for the remaining files.
 
 ### Cancel
-
-Click **Cancel** at any time to stop the current job cleanly.
+Click **Cancel** at any time to stop the current transcription job cleanly.
 
 ---
 
@@ -93,28 +123,35 @@ After a pause, the next block starts here.
 
 ---
 
-## Portable Folder Layout
+## Installed Layout
+
+On first run, the `.exe` extracts to:
 
 ```
-EasyScribe\
+%LOCALAPPDATA%\EasyScribe\2.0.0\
   EasyScribe.exe
+  _internal\               <- PyInstaller runtime (DLLs, .pyd files)
   models\
-    faster-whisper-large-v3-turbo\
-      config.json
-      model.bin
-      preprocessor_config.json
-      tokenizer.json
-      vocabulary.json
+    whisper\               <- (whisper variant only)
+      distil-large-v3-encoder.int8.onnx
+      distil-large-v3-decoder.int8.onnx
+      distil-large-v3-tokens.txt
+    parakeet\              <- (parakeet variant only)
+      encoder.int8.onnx
+      decoder.int8.onnx
+      joiner.int8.onnx
+      tokens.txt
     diarization\
       segmentation.onnx
       embedding.onnx
+    silero_vad.onnx
+    variant.json           <- baked in at build time: {"variant": "whisper"}
   ffmpeg\
     ffmpeg.exe
     ffprobe.exe
-  logs\              <- log files written here at runtime
-  temp\              <- temporary WAV files (auto-cleaned)
-  (PyInstaller DLLs and .pyd files alongside the exe)
 ```
+
+Transcripts and recordings are saved to `%USERPROFILE%\Documents\EasyScribe Recordings\` (created on first use).
 
 ---
 
@@ -124,8 +161,7 @@ EasyScribe\
 |---|---|
 | Windows 10/11 64-bit | Build and target platform |
 | Python 3.11 | Must be on PATH |
-| Model files | See CI workflow for download commands |
-| Internet access | Only needed during build |
+| Internet access | Only needed during build — CI downloads models |
 
 The GitHub Actions CI workflow handles all model downloads, dependency installs, and packaging automatically on every tagged release.
 
@@ -135,26 +171,41 @@ The GitHub Actions CI workflow handles all model downloads, dependency installs,
 
 ```
 src/
-  main.py            Entry point; validates deps, launches GUI
-  config.py          Path resolution, constants, offline env vars
+  main.py            Entry point; creates output dir, runs orphan recovery, launches GUI
+  config.py          Path resolution, constants, model variant detection
   logger.py          Rotating log file setup
   ffmpeg_wrapper.py  Subprocess ffmpeg with cancellation polling
-  transcriber.py     Faster Whisper engine (lazy load, GPU/CPU detection)
+  transcriber.py     sherpa-onnx OfflineRecognizer (Vulkan/CPU, Whisper or Parakeet)
+  vulkan_probe.py    ctypes-based Vulkan GPU enumeration (no pip dependency)
   diarizer.py        sherpa-onnx speaker diarization engine
-  gui.py             CustomTkinter UI with threaded worker
+  mic_recorder.py    sounddevice capture + crash-safe PCM writer
+  live_transcriber.py  Silero VAD loop + OfflineRecognizer for live mode
+  recovery.py        Orphaned .pcm file scanner and WAV recovery
+  gui.py             CustomTkinter UI with threaded workers
+
+launcher/
+  launcher.py        AppData extract-once installer (compiled separately, ~5 MB)
+  launcher.spec      PyInstaller ONEFILE spec for launcher
 ```
+
+### GPU acceleration
+
+`provider="vulkan"` is passed to `sherpa_onnx.OfflineRecognizerConfig`. Vulkan uses the system GPU driver — no additional DLLs need to be bundled. If Vulkan initialisation fails (e.g. on a headless machine), the engine transparently retries with `provider="cpu"`.
 
 ### Offline guarantee
 
-Three independent layers prevent any network access at runtime:
+All models are loaded from absolute local paths inside the install directory. No HuggingFace Hub, no network calls, no telemetry.
 
-1. **Environment variables** set in `config.py` before any library import:
-   `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_DATASETS_OFFLINE=1`, etc.
+### Distribution
 
-2. **Explicit API argument**: `WhisperModel(..., local_files_only=True)`
+```
+EasyScribe-v2.0.0-whisper.exe
+  = [7zSD.sfx] + [config.txt] + [payload.7z]
+                                    ├── launcher.exe  (~5 MB)
+                                    └── app.bundle    (zip: EasyScribe.exe + _internal/ + models/)
+```
 
-3. **Local path loading**: models are always loaded from absolute local paths,
-   never from hub alias strings
+The SFX extracts to `%TEMP%\EasyScribe_Setup` and runs `launcher.exe`, which copies the app to AppData and then deletes the temp files.
 
 ---
 
@@ -162,13 +213,15 @@ Three independent layers prevent any network access at runtime:
 
 | Problem | Solution |
 |---|---|
-| "Model files missing" on startup | Copy Whisper model files to `models\faster-whisper-large-v3-turbo\` next to the exe |
-| "ffmpeg.exe not found" | Copy `ffmpeg.exe` and `ffprobe.exe` to `ffmpeg\` next to the exe |
-| "Identify speakers" checkbox is greyed out | Diarization models not bundled; use a release build from CI |
+| SmartScreen blocks the exe | Click "More info → Run anyway" — the exe is unsigned but safe |
+| "Model files missing" on startup | Re-run the installer; extraction may have been interrupted |
+| "ffmpeg.exe not found" | Re-run the installer |
+| No GPU listed in Device dropdown | No Vulkan-capable GPU detected; CPU mode will be used |
+| "Identify speakers" checkbox is greyed out | Diarization models not found; re-run the installer |
+| Mic dropdown shows no devices | No audio input devices found; check Windows sound settings |
+| Recovery dialog on launch | A previous recording was interrupted; choose Recover to save the audio or Delete to discard |
 | Antivirus flags the exe | PyInstaller executables may trigger false positives; add an exclusion |
-| Very slow transcription | No NVIDIA GPU detected; CPU mode is slower by design |
-| Out of memory on large files | Try CPU mode |
-| "Access denied" writing transcript | Close the output .txt file in any other program |
+| Slow transcription | CPU mode is slower by design; a Vulkan-capable GPU significantly improves speed |
 
 ---
 
@@ -178,6 +231,4 @@ This project is released under the MIT License.
 
 FFmpeg is included under the GPL v3 license. See https://ffmpeg.org/legal.html
 
-Whisper model weights: MIT License — https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
-
-sherpa-onnx and its bundled diarization models (pyannote segmentation-3.0 ONNX export, WeSpeaker ResNet34-LM embedding) are subject to their own license terms. See https://github.com/k2-fsa/sherpa-onnx
+sherpa-onnx and its bundled models (Whisper ONNX, Parakeet TDT, pyannote segmentation-3.0 ONNX export, WeSpeaker ResNet34-LM embedding, Silero VAD) are subject to their own license terms. See https://github.com/k2-fsa/sherpa-onnx
