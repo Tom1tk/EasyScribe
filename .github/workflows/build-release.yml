@@ -190,20 +190,7 @@ jobs:
         shell: pwsh
         run: |
           & venv\Scripts\Activate.ps1
-          python -c "
-import sounddevice, importlib.util
-from pathlib import Path
-
-sd_spec = importlib.util.find_spec('sounddevice')
-sd_origin = Path(sd_spec.origin)
-sd_dir = sd_origin.parent
-
-print(f'sounddevice version: {sounddevice.__version__}')
-print(f'sounddevice __file__: {sd_origin}')
-print(f'directory: {sd_dir}')
-for f in sorted(sd_dir.iterdir()):
-    print(f'  {f.name}  ({f.stat().st_size} B)')
-"
+          python tests/diagnose_sounddevice.py
 
       # ── 10. Build main EasyScribe app ─────────────────────────────────────────
       - name: Build EasyScribe (${{ matrix.variant }})
