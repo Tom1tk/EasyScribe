@@ -110,6 +110,36 @@ providers you never request (e.g. `onnxruntime_providers_tensorrt.dll` wanting
 
 ---
 
+## v2.0 Packaging Rules
+
+### Rule 7: sherpa-onnx Vulkan provider — no DLL bundling needed
+
+Unlike CUDA, Vulkan uses the system GPU driver. `provider="vulkan"` in `OfflineRecognizerConfig`
+works on any machine with a GPU driver installed, with no additional DLLs required.
+If Vulkan fails at runtime (e.g. headless CI), catch `RuntimeError` from `OfflineRecognizer(cfg)`
+and retry with `provider="cpu"`.
+
+### Rule 8: Silero VAD model must be downloaded and bundled explicitly
+
+`sherpa_onnx.get_default_vad_model()` does NOT exist in sherpa-onnx 1.13.2.
+Download `silero_vad.onnx` from the sherpa-onnx GitHub releases and reference it via
+`config.VAD_MODEL_PATH`. Bundle as `("models/silero_vad.onnx", "models")` in both specs.
+
+### Rule 9: Parakeet TDT uses OfflineTransducerModelConfig, not a CTC config
+
+`OfflineNemoCtcModelConfig` does not exist as of sherpa-onnx 1.13.2.
+Parakeet TDT 0.6B v3 int8 is a transducer model — use `OfflineTransducerModelConfig`
+with `encoder_filename`, `decoder_filename`, `joiner_filename`.
+The real NeMo CTC class is `OfflineNemoEncDecCtcModelConfig` but it is not used here.
+
+### Rule 10: venv cache key has no variant suffix — both matrix jobs share it
+
+CI builds two variants (whisper, parakeet) in parallel. They install identical pip deps.
+Cache key `venv-win64-py3.11-v2` has no variant suffix so the second job always hits cache.
+Bump v2 → v3 etc. to force a clean rebuild after adding/removing packages.
+
+---
+
 ## Version History
 
 | Version | Key changes |
@@ -128,3 +158,4 @@ providers you never request (e.g. `onnxruntime_providers_tensorrt.dll` wanting
 | v1.1.0 | Replace pyannote.audio diarization backend with sherpa-onnx (ONNX Runtime, GPU-capable via `provider="cuda"`, no PyTorch dependency); remove torch/torchaudio entirely |
 | v1.1.0 (fix) | GPU diarization silently fell back to CPU on real hardware — `onnxruntime_providers_cuda.dll` needs `cufft64_11.dll`; add `nvidia-cufft-cu12` to bundled packages; bump venv cache v6→v7 |
 | v1.1.0 (fix 2) | GPU diarization still fell back to CPU — `onnxruntime 1.26.0` (CPU) installed as faster-whisper dep; both it and sherpa_onnx bundle `onnxruntime.dll`; Windows caches by name so whichever loads first wins; fix by prepending `sherpa_onnx/lib/` to PATH in `cuda_setup.py` so the GPU version is cached first; bump venv cache v7→v8 |
+| v2.0.0 | Full rewrite: sherpa-onnx for all inference (transcription + diarization + VAD); Vulkan GPU provider (no CUDA DLLs); single .exe via 7-zip SFX + AppData extract-once launcher; live microphone transcription (VAD-chunked, crash-safe PCM); two model variants (Whisper ONNX distil-large-v3, Parakeet TDT 0.6B v3 int8); removes faster-whisper, ctranslate2, nvidia-*-cu12 packages entirely |

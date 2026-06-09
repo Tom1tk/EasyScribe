@@ -1,53 +1,50 @@
 name: Build and Publish Release
 
 # Trigger manually from the GitHub Actions tab.
-# Provide a tag — a GitHub Release (draft) is created automatically.
+# Builds TWO variants (whisper + parakeet) as parallel matrix jobs.
+# Each produces a single self-extracting .exe via 7-zip SFX.
 #
-# Two ZIP assets are published per release (both under GitHub's 2 GB limit):
-#   - EasyScribe-<tag>-app.zip    (~1.1 GB) — exe + nvidia CUDA DLLs + ffmpeg
-#   - EasyScribe-<tag>-model.zip  (~1.5 GB) — Whisper model + diarization models
-#
-# First-time install: extract both ZIPs into the same folder.
-# App updates:        re-extract app.zip only (model folder is unchanged).
-#
-# Cache strategy (skips re-downloading on repeat builds):
-#   ffmpeg              ~70 MB    key: ffmpeg-win64-gpl-static-v1
-#   venv                ~2-3 GB   key: venv-win64-py3.11-v8              (bump to refresh)
-#   whisper model       ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
-#   diarization models  ~35 MB    key: sherpa-onnx-diarization-v1
+# Cache strategy:
+#   ffmpeg              ~70 MB    key: ffmpeg-win64-gpl-static-v1        (shared)
+#   Python venv         ~1-2 GB   key: venv-win64-py3.11-v2              (shared — no variant suffix)
+#   Whisper ONNX model  ~600 MB   key: sherpa-onnx-whisper-distil-large-v3-v1 (whisper only)
+#   Parakeet TDT model  ~600 MB   key: sherpa-onnx-parakeet-tdt-0.6b-v3-v1   (parakeet only)
+#   Silero VAD model    ~1 MB     key: sherpa-onnx-silero-vad-v1         (shared)
+#   Diarization models  ~35 MB    key: sherpa-onnx-diarization-v1        (shared, reuse from v1.x)
+
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.0)'
+        description: 'Release tag (e.g. v2.0.0)'
         required: true
-        default: 'v1.0.0'
-      cuda:
-        description: 'Bundle GPU-capable sherpa-onnx (CUDA provider) for speaker diarization'
-        type: boolean
-        required: false
-        default: false
+        default: 'v2.0.0'
 
 permissions:
-  contents: write   # required to create releases and upload assets
+  contents: write
 
 jobs:
   build:
-    name: Build portable Windows release
+    name: Build ${{ matrix.variant }} variant
     runs-on: windows-latest
 
+    strategy:
+      matrix:
+        variant: [whisper, parakeet]
+      fail-fast: false
+
     steps:
-      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      # ── 1. Checkout ───────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Python setup ──────────────────────────────────────────────────────
+      # ── 2. Python setup ───────────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # ── 3. Cache ffmpeg (~70 MB, rarely changes) ──────────────────────────────
+      # ── 3. ffmpeg cache (~70 MB) ──────────────────────────────────────────────
       - name: Cache ffmpeg
         id: ffmpeg-cache
         uses: actions/cache@v4
@@ -55,278 +52,279 @@ jobs:
           path: tools\ffmpeg
           key: ffmpeg-win64-gpl-static-v1
 
-      # ── 3b. Download ffmpeg (skipped on cache hit) ────────────────────────────
       - name: Download ffmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-          Write-Host "Downloading ffmpeg..."
           $ProgressPreference = 'SilentlyContinue'
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
           Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
           New-Item -ItemType Directory -Force -Path tools\ffmpeg | Out-Null
-          $binFile = Get-ChildItem ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-          $binDir  = $binFile.DirectoryName
-          Copy-Item "$binDir\ffmpeg.exe"  tools\ffmpeg\ffmpeg.exe
-          Copy-Item "$binDir\ffprobe.exe" tools\ffmpeg\ffprobe.exe
-          Remove-Item ffmpeg_tmp -Recurse -Force
-          Remove-Item ffmpeg.zip -Force
+          $bin = (Get-ChildItem ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          Copy-Item "$bin\ffmpeg.exe"  tools\ffmpeg\ffmpeg.exe
+          Copy-Item "$bin\ffprobe.exe" tools\ffmpeg\ffprobe.exe
+          Remove-Item ffmpeg_tmp, ffmpeg.zip -Recurse -Force
           Write-Host "ffmpeg ready."
 
-      # ── 4. Cache model (~1.5 GB, content never changes) ──────────────────────
-      - name: Cache Faster Whisper model
-        id: model-cache
-        uses: actions/cache@v4
-        with:
-          path: models/faster-whisper-large-v3-turbo
-          key: faster-whisper-large-v3-turbo-mobiuslabs-v1
-
-      # ── 4b. Download model from HuggingFace (skipped on cache hit) ────────────
-      - name: Download Faster Whisper model
-        if: steps.model-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          pip install huggingface_hub --quiet
-
-          $script = @"
-          import os
-          from huggingface_hub import snapshot_download
-          token = os.environ.get('HF_TOKEN') or None
-          local_dir = 'models/faster-whisper-large-v3-turbo'
-          print(f'Downloading model to {local_dir} ...')
-          snapshot_download(
-              repo_id='mobiuslabsgmbh/faster-whisper-large-v3-turbo',
-              local_dir=local_dir,
-              ignore_patterns=['*.gitattributes', '*.md', '.git*', '*.gitignore'],
-              token=token,
-          )
-          print('Model download complete.')
-          "@
-
-          $script | python
-
-      # ── 5. Cache Python venv (~1-1.5 GB) ──────────────────────────────────────
-      # sherpa-onnx (CPU or CUDA-provider) + nvidia-*-cu12 packages for CUDA DLLs.
-      # Bump v8 → v9 (etc.) to force a clean reinstall (e.g. after adding a package).
+      # ── 4. Python venv cache (~1-2 GB, shared across both variants) ───────────
+      # No variant suffix — second job always hits the cache.
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v8-cuda${{ inputs.cuda }}
+          key: venv-win64-py3.11-v2
 
-      # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies
         if: steps.venv-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           python -m venv venv
           & venv\Scripts\Activate.ps1
-
           python -m pip install --upgrade pip --quiet
-
-          # Separate nvidia CUDA 12 packages — provide cublas/cudart/cudnn/cufft
-          # DLLs needed by ctranslate2 (GPU transcription) and, via the same
-          # PATH-prepend mechanism, by sherpa-onnx's bundled CUDA execution
-          # provider (onnxruntime_providers_cuda.dll depends on cufft64_11.dll —
-          # NVIDIA kept cuFFT's SONAME at 11 even in CUDA 12.x toolkits).
-          # The spec's _collect_nvidia_dlls() bundles these into nvidia/<pkg>/bin/;
-          # cuda_setup.py prepends them to os.environ["PATH"] at startup.
-          Write-Host "Installing nvidia CUDA 12 runtime packages..."
-          pip install `
-            nvidia-cublas-cu12 `
-            nvidia-cuda-runtime-cu12 `
-            nvidia-cudnn-cu12 `
-            nvidia-cuda-nvrtc-cu12 `
-            nvidia-cufft-cu12 `
-            --quiet
-
-          if ("${{ inputs.cuda }}" -eq "true") {
-            Write-Host "Installing sherpa-onnx (CUDA provider) for GPU diarization..."
-            pip install sherpa-onnx --pre -f https://k2-fsa.github.io/sherpa/onnx/cuda.html --quiet
-          } else {
-            Write-Host "Installing sherpa-onnx (CPU)..."
-            pip install sherpa-onnx --quiet
-          }
-
-          Write-Host "Installing core dependencies..."
-          pip install faster-whisper customtkinter tkinterdnd2 pyinstaller --quiet
-
+          pip install sherpa-onnx sounddevice customtkinter tkinterdnd2 pyinstaller --quiet
           Write-Host "Installed packages:"
           pip list --format=columns
 
-      # ── 6. Build with PyInstaller ─────────────────────────────────────────────
-      - name: Build with PyInstaller
+      # ── 5. ASR model cache (variant-specific) ─────────────────────────────────
+      - name: Cache Whisper ONNX model
+        if: matrix.variant == 'whisper'
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: models\whisper
+          key: sherpa-onnx-whisper-distil-large-v3-v1
+
+      - name: Download Whisper ONNX model
+        if: matrix.variant == 'whisper' && steps.whisper-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          & venv\Scripts\Activate.ps1
-          pyinstaller EasyScribe.spec --noconfirm
-          if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
-          Write-Host "PyInstaller build complete."
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force -Path "models\whisper" | Out-Null
+          $url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-distil-large-v3.tar.bz2"
+          Write-Host "Downloading Whisper distil-large-v3..."
+          Invoke-WebRequest -Uri $url -OutFile whisper.tar.bz2
+          tar xjf whisper.tar.bz2
+          Copy-Item "sherpa-onnx-whisper-distil-large-v3\distil-large-v3-encoder.int8.onnx" "models\whisper\"
+          Copy-Item "sherpa-onnx-whisper-distil-large-v3\distil-large-v3-decoder.int8.onnx" "models\whisper\"
+          Copy-Item "sherpa-onnx-whisper-distil-large-v3\distil-large-v3-tokens.txt"         "models\whisper\"
+          Remove-Item "sherpa-onnx-whisper-distil-large-v3", "whisper.tar.bz2" -Recurse -Force
+          Write-Host "Whisper model ready."
 
-      # ── 6b. Cache diarization models (~35 MB) ────────────────────────────────
+      - name: Cache Parakeet TDT model
+        if: matrix.variant == 'parakeet'
+        id: parakeet-cache
+        uses: actions/cache@v4
+        with:
+          path: models\parakeet
+          key: sherpa-onnx-parakeet-tdt-0.6b-v3-v1
+
+      - name: Download Parakeet TDT model
+        if: matrix.variant == 'parakeet' && steps.parakeet-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force -Path "models\parakeet" | Out-Null
+          $url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2"
+          Write-Host "Downloading Parakeet TDT 0.6B v3 int8..."
+          Invoke-WebRequest -Uri $url -OutFile parakeet.tar.bz2
+          tar xjf parakeet.tar.bz2
+          $extracted = Get-ChildItem -Directory | Where-Object { $_.Name -like "*parakeet*" } | Select-Object -First 1
+          Get-ChildItem $extracted.FullName | Copy-Item -Destination "models\parakeet\"
+          Remove-Item $extracted.FullName, "parakeet.tar.bz2" -Recurse -Force
+          Write-Host "Parakeet model ready."
+          Get-ChildItem "models\parakeet"
+
+      # ── 6. Silero VAD model cache (shared) ────────────────────────────────────
+      - name: Cache Silero VAD model
+        id: vad-cache
+        uses: actions/cache@v4
+        with:
+          path: models\silero_vad.onnx
+          key: sherpa-onnx-silero-vad-v1
+
+      - name: Download Silero VAD model
+        if: steps.vad-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force -Path "models" | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" -OutFile "models\silero_vad.onnx"
+          Write-Host "Silero VAD model ready."
+
+      # ── 7. Diarization models cache (shared, reuse from v1.x) ─────────────────
       - name: Cache diarization models
         id: diarization-cache
         uses: actions/cache@v4
         with:
-          path: models/diarization
+          path: models\diarization
           key: sherpa-onnx-diarization-v1
 
-      # ── 6c. Download diarization models (skipped on cache hit) ───────────────
-      # Public sherpa-onnx GitHub release assets — no authentication required
-      # (unlike the gated pyannote HF repos this replaces).
-      #   - segmentation: ONNX export of pyannote/segmentation-3.0
-      #   - embedding:    WeSpeaker ResNet34-LM (same model family used previously)
       - name: Download diarization models
         if: steps.diarization-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "models/diarization" | Out-Null
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force -Path "models\diarization" | Out-Null
 
           Write-Host "Downloading segmentation model..."
           Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2" -OutFile "segmentation.tar.bz2"
           tar xjf segmentation.tar.bz2
-          Move-Item -Force "sherpa-onnx-pyannote-segmentation-3-0/model.onnx" "models/diarization/segmentation.onnx"
-          Remove-Item -Recurse -Force "sherpa-onnx-pyannote-segmentation-3-0", "segmentation.tar.bz2"
+          Move-Item -Force "sherpa-onnx-pyannote-segmentation-3-0\model.onnx" "models\diarization\segmentation.onnx"
+          Remove-Item "sherpa-onnx-pyannote-segmentation-3-0", "segmentation.tar.bz2" -Recurse -Force
 
           Write-Host "Downloading embedding model..."
-          Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx" -OutFile "models/diarization/embedding.onnx"
+          Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx" -OutFile "models\diarization\embedding.onnx"
+          Write-Host "Diarization models ready."
 
-          Write-Host "Diarization models downloaded."
-
-      # ── 6d. Verify diarization model cache ────────────────────────────────────
-      - name: Verify diarization model cache
+      # ── 8. Bake variant.json ──────────────────────────────────────────────────
+      - name: Write models/variant.json
         shell: pwsh
         run: |
-          $verifyScript = @"
-          import sys
-          from pathlib import Path
+          '{"variant": "${{ matrix.variant }}"}' | Set-Content -Path "models\variant.json" -Encoding utf8NoBOM
+          Write-Host "variant.json: $(Get-Content models\variant.json)"
 
-          d = Path('models/diarization')
-          ok = True
-          for name in ('segmentation.onnx', 'embedding.onnx'):
-              f = d / name
-              if not f.is_file():
-                  print(f'FAIL: missing {f}')
-                  ok = False
-              else:
-                  print(f'OK  {f} ({f.stat().st_size / 1e6:.1f} MB)')
+      # ── 9. Build launcher.exe ─────────────────────────────────────────────────
+      - name: Build launcher.exe
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          pyinstaller launcher/launcher.spec --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw "launcher build failed" }
+          Write-Host "launcher.exe: $((Get-Item dist\launcher\launcher.exe).Length / 1MB | ForEach-Object { [math]::Round($_, 1) }) MB"
 
-          if not ok:
-              sys.exit(1)
-          print('Diarization model verification PASSED')
-          "@
-          $verifyScript | venv\Scripts\python.exe
+      # ── 10. Build main EasyScribe app ─────────────────────────────────────────
+      - name: Build EasyScribe (${{ matrix.variant }})
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          pyinstaller EasyScribe_${{ matrix.variant }}.spec --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
+          Write-Host "PyInstaller build complete."
 
-      # ── 7. Assemble portable app folder (no model) ────────────────────────────
-      - name: Assemble EasyScribe folder
+      # ── 11. Assemble dist/EasyScribe with models + ffmpeg ─────────────────────
+      - name: Assemble app bundle contents
         shell: pwsh
         run: |
           $dist = "dist\EasyScribe"
 
-          # Copy ffmpeg
-          $ffmpegDst = "$dist\ffmpeg"
-          New-Item -ItemType Directory -Force -Path $ffmpegDst | Out-Null
-          Copy-Item "tools\ffmpeg\*" $ffmpegDst -Force
+          # ffmpeg
+          New-Item -ItemType Directory -Force -Path "$dist\ffmpeg" | Out-Null
+          Copy-Item "tools\ffmpeg\*" "$dist\ffmpeg" -Force
 
-          # Create runtime dirs
+          # Models (variant-specific + shared)
+          New-Item -ItemType Directory -Force -Path "$dist\models" | Out-Null
+          Copy-Item "models\variant.json"    "$dist\models\variant.json"
+          Copy-Item "models\silero_vad.onnx" "$dist\models\silero_vad.onnx"
+
+          if ("${{ matrix.variant }}" -eq "whisper") {
+            Copy-Item "models\whisper" "$dist\models\whisper" -Recurse -Force
+          } else {
+            Copy-Item "models\parakeet" "$dist\models\parakeet" -Recurse -Force
+          }
+
+          Copy-Item "models\diarization" "$dist\models\diarization" -Recurse -Force
+
+          # Runtime dirs
           New-Item -ItemType Directory -Force -Path "$dist\logs" | Out-Null
           New-Item -ItemType Directory -Force -Path "$dist\temp" | Out-Null
 
-          # Placeholder so users know where to put the models
-          New-Item -ItemType Directory -Force -Path "$dist\models\faster-whisper-large-v3-turbo" | Out-Null
-          $placeholder = "Extract EasyScribe-*-model.zip into this same folder to install the Whisper and speaker diarization models."
-          Set-Content -Path "$dist\models\EXTRACT_MODEL_ZIP_HERE.txt" -Value $placeholder -Encoding utf8
-
-          # Summary
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "App folder size: $([math]::Round($totalMB, 0)) MB"
-          Get-ChildItem $dist | Select-Object Name
 
-      # ── 8. Create release ZIPs ────────────────────────────────────────────────
-      - name: Create release ZIPs
+      # ── 12. Download 7zSD.sfx ─────────────────────────────────────────────────
+      - name: Download 7-zip SFX stub
         shell: pwsh
         run: |
-          $tag = "${{ github.event.inputs.tag }}"
+          $ProgressPreference = 'SilentlyContinue'
+          # 7zSD.sfx from 7-zip extras package (Win64, LZMA)
+          Invoke-WebRequest -Uri "https://github.com/nicowillis/7zip-sfx/raw/master/7zSD.sfx" -OutFile "7zSD.sfx"
+          Write-Host "7zSD.sfx: $((Get-Item 7zSD.sfx).Length) bytes"
 
-          # ── ZIP 1: app only (exe + CUDA DLLs + ffmpeg, no model) ─────────────
-          $zipApp = "EasyScribe-${tag}-app.zip"
-          Write-Host "Creating $zipApp ..."
-          Compress-Archive -Path "dist\EasyScribe\*" -DestinationPath $zipApp -CompressionLevel Optimal
-          $sz1 = [math]::Round((Get-Item $zipApp).Length / 1MB, 1)
-          Write-Host "  Size: ${sz1} MB"
+      # ── 13. Install 7-zip CLI ─────────────────────────────────────────────────
+      - name: Install 7-zip
+        shell: pwsh
+        run: |
+          choco install 7zip -y --no-progress
+          7z i
 
-          # ── ZIP 2: model only ─────────────────────────────────────────────────
-          # Zipped as models\* so extracting into the same folder as app.zip
-          # drops files in exactly the right place:
-          #   models\faster-whisper-large-v3-turbo\     — Whisper model
-          #   models\diarization\                       — speaker diarization models
-          $zipModel = "EasyScribe-${tag}-model.zip"
-          Write-Host "Creating $zipModel ..."
-          Compress-Archive -Path "models" -DestinationPath $zipModel -CompressionLevel Optimal
-          $sz2 = [math]::Round((Get-Item $zipModel).Length / 1MB, 1)
-          Write-Host "  Size: ${sz2} MB"
+      # ── 14. Create 7-zip SFX installer ───────────────────────────────────────
+      - name: Create SFX installer
+        shell: pwsh
+        run: |
+          $tag    = "${{ github.event.inputs.tag }}"
+          $variant = "${{ matrix.variant }}"
+          $outExe = "EasyScribe-${tag}-${variant}.exe"
 
-      # ── 9. Publish GitHub Release ────────────────────────────────────────────
-      - name: Create GitHub Release
+          # Compress app folder → app.bundle (zip format for launcher's zipfile.ZipFile)
+          Write-Host "Creating app.bundle..."
+          Compress-Archive -Path "dist\EasyScribe\*" -DestinationPath "app.bundle" -CompressionLevel Optimal
+
+          # Create 7z payload: launcher.exe + app.bundle
+          Write-Host "Creating payload.7z..."
+          7z a payload.7z dist\launcher\launcher.exe app.bundle
+
+          # Write SFX config (ASCII, no BOM)
+          $cfg = @"
+          ;!@Install@!UTF-8!
+          Title="EasyScribe"
+          ExtractPath="%TEMP%\EasyScribe_Setup"
+          RunProgram="launcher.exe"
+          ;!@InstallEnd@!
+          "@
+          # Write without BOM
+          [System.IO.File]::WriteAllText("config.txt", $cfg, [System.Text.Encoding]::ASCII)
+
+          # Concatenate: sfx + config + payload
+          Write-Host "Building SFX: $outExe ..."
+          cmd /c "copy /b 7zSD.sfx + config.txt + payload.7z $outExe"
+          if (-not (Test-Path $outExe)) { throw "SFX creation failed" }
+
+          $sizeMB = [math]::Round((Get-Item $outExe).Length / 1MB, 1)
+          Write-Host "Created $outExe ($sizeMB MB)"
+
+      # ── 15. Publish GitHub Release ────────────────────────────────────────────
+      - name: Create GitHub Release (${{ matrix.variant }})
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag }}
           name: "EasyScribe ${{ github.event.inputs.tag }}"
           body: |
-            ## EasyScribe — Portable Offline Speech-to-Text
+            ## EasyScribe ${{ github.event.inputs.tag }} — Portable Offline Speech-to-Text
 
-            Two downloads — both required for a first-time install:
+            Single-file installer — self-extracts to AppData on first run.
 
-            | Asset | Size | Contents |
+            | Asset | Model | Description |
             |---|---|---|
-            | `...-app.zip` | ~1.1 GB | Exe + CUDA 12 DLLs + ffmpeg (re-download on updates) |
-            | `...-model.zip` | ~1.6 GB | Whisper model + speaker diarization models (download once) |
+            | `...-whisper.exe` | Whisper ONNX distil-large-v3 | Best accuracy |
+            | `...-parakeet.exe` | Parakeet TDT 0.6B v3 | Faster inference |
 
-            ---
+            ### Install
+            1. Download one of the .exe files above
+            2. Double-click — it extracts automatically on first run
+            3. EasyScribe launches from `%LOCALAPPDATA%\EasyScribe\${{ github.event.inputs.tag }}\`
 
-            ### First-time install
-            1. Download both ZIPs
-            2. Create a folder anywhere (Desktop, USB stick, etc.)
-            3. Extract **app.zip** into that folder
-            4. Extract **model.zip** into the **same folder** — the `models\` directory will merge automatically
-            5. Double-click **EasyScribe.exe**
-
-            ### Updating the app
-            Only re-download and re-extract `...-app.zip` — your model folder stays untouched.
-
-            ---
-
-            ### What's new in v1.0.0
-
-            **Speaker identification** — working end-to-end with pyannote.audio 4.x:
-            - Tick **Identify speakers** to detect and label each speaker in the transcript
-            - After diarization completes, a popup lets you name each speaker — play a short audio sample to identify who is speaking, then type their name
-            - Names replace generic labels (`Speaker 1`, `Speaker 2`, …) in the output file
-
-            **Improved timestamps**
-            - Segments are now grouped into natural-pause blocks (~2 s gap threshold)
-            - Each block gets a single `[HH:MM:SS]` header instead of a timestamp on every line
-            - With speakers + timestamps: `[00:01:23] [Alice]` header at every speaker change or lull
-
-            **Supported input formats**
-            mp4, mkv, mov, avi, webm, mp3, wav, m4a, flac, ogg, opus, aac
-
-            ---
+            ### Re-running
+            Double-click the same .exe — detects existing install and launches immediately (~1 second).
 
             ### GPU acceleration
-            NVIDIA GPU is used automatically — CUDA 12 runtime DLLs (cublas, cudart, cudnn) are bundled.
-            Falls back to CPU if no compatible GPU is found.
+            Vulkan GPU provider is used automatically when a compatible GPU driver is installed.
+            Falls back to CPU if no GPU is detected.
 
-            ### First launch note
-            Windows Defender SmartScreen may show **"Windows protected your PC"** — click **More info → Run anyway**.
-            This is expected for unsigned PyInstaller executables.
-          files: |
-            EasyScribe-${{ github.event.inputs.tag }}-app.zip
-            EasyScribe-${{ github.event.inputs.tag }}-model.zip
+            ### SmartScreen
+            Windows Defender SmartScreen may show **"Windows protected your PC"** — click
+            **More info → Run anyway**. Expected for unsigned executables.
+
+            ---
+            ### What's new in v2.0.0
+            - **sherpa-onnx** replaces faster-whisper — no CUDA DLL headaches
+            - **Vulkan GPU** acceleration — works on any GPU (NVIDIA, AMD, Intel)
+            - **Single .exe installer** — extracts once, runs instantly on repeat use
+            - **Live microphone transcription** — click Record, speak, get text
+            - **Two model variants** — Whisper ONNX (accurate) or Parakeet TDT (fast)
+            - **Crash-safe recording** — interrupted recordings are recoverable on next launch
+          files: EasyScribe-${{ github.event.inputs.tag }}-${{ matrix.variant }}.exe
           draft: true
           prerelease: false
         env:
