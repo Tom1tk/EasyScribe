@@ -53,35 +53,31 @@ except Exception as e:
     print(f"[spec] WARNING: could not collect sherpa_onnx: {e}")
 
 # ── sounddevice ───────────────────────────────────────────────────────────────
-# sounddevice's C extension may be at the site-packages root (_sounddevice.pyd)
-# OR inside the sounddevice package dir (sounddevice/_sounddevice.pyd).
-# Glob both locations so this works across sounddevice 0.4.x and 0.5.x.
+# sounddevice 0.5.x uses ctypes (no .pyd); it ships a bundled portaudio DLL.
+# Locate sounddevice's install dir and collect all .pyd/.dll/.so files from it.
 
-import site as _site
+import importlib.util as _sd_ilu
 
 _sd_binaries: list = []
 _sd_hidden: list = []
 try:
-    for _sp in _site.getsitepackages():
-        _sp_path = Path(_sp)
-        for _pyd in _sp_path.glob("_sounddevice*.pyd"):
-            _sd_binaries.append((str(_pyd), "."))
-            _sd_hidden = ["_sounddevice"]
-            print(f"[spec] sounddevice (flat): {_pyd.name}")
-        for _pyd in _sp_path.glob("sounddevice/_sounddevice*.pyd"):
-            _sd_binaries.append((str(_pyd), "sounddevice"))
-            if "_sounddevice" not in _sd_hidden:
-                _sd_hidden.append("sounddevice._sounddevice")
-            print(f"[spec] sounddevice (pkg): {_pyd.name}")
-        for _dll in list(_sp_path.glob("portaudio*.dll")) + list(_sp_path.glob("sounddevice/portaudio*.dll")):
-            dest = "sounddevice" if "sounddevice" in str(_dll.parent) else "."
-            _sd_binaries.append((str(_dll), dest))
-    if not _sd_binaries:
-        print("[spec] WARNING: no _sounddevice*.pyd found in site-packages")
+    _sd_spec = _sd_ilu.find_spec("sounddevice")
+    if _sd_spec and _sd_spec.origin:
+        _sd_origin = Path(_sd_spec.origin)
+        _sd_is_pkg = (_sd_origin.name == "__init__.py")
+        _sd_dir = _sd_origin.parent      # sounddevice/ dir  OR  site-packages/
+        _sd_dest = "sounddevice" if _sd_is_pkg else "."
+        print(f"[spec] sounddevice dir: {_sd_dir}  (is_pkg={_sd_is_pkg})")
+        for _f in _sd_dir.iterdir():
+            if _f.suffix in (".pyd", ".dll", ".so"):
+                _sd_binaries.append((str(_f), _sd_dest))
+                print(f"[spec]   bundling: {_f.name}")
+        if not _sd_binaries:
+            print("[spec] WARNING: no sounddevice binaries found in its install dir")
     else:
-        print(f"[spec] sounddevice: {len(_sd_binaries)} file(s) collected")
+        print("[spec] WARNING: sounddevice not found via find_spec")
 except Exception as e:
-    print(f"[spec] WARNING: could not collect sounddevice: {e}")
+    print(f"[spec] WARNING: sounddevice collection: {e}")
 
 # ── numpy: explicit collection to ensure .pyd extensions are bundled ─────────
 

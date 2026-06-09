@@ -66,15 +66,17 @@ def main() -> None:
         else:
             ok.append(f"{name}  (directory present)")
 
-    # sounddevice: C extension may be at _internal root (flat) or _internal/sounddevice/ (pkg)
-    sd_pyds = list(internal.glob("**/_sounddevice*.pyd"))
-    if not sd_pyds:
+    # sounddevice: 0.5.x uses ctypes (no .pyd), ships portaudio DLL instead
+    # Accept either a _sounddevice*.pyd (0.4.x) or portaudio*.dll (0.5.x)
+    sd_files = list(internal.glob("**/_sounddevice*.pyd")) + list(internal.glob("**/portaudio*.dll"))
+    if not sd_files:
         errors.append(
-            f"MISSING binaries: sounddevice  (no _sounddevice*.pyd anywhere under {internal})\n"
+            f"MISSING binaries: sounddevice  "
+            f"(no _sounddevice*.pyd or portaudio*.dll anywhere under {internal})\n"
             f"    Required for microphone recording."
         )
     else:
-        ok.append(f"sounddevice  ({sd_pyds[0].name} at {sd_pyds[0].parent.name}/)")
+        ok.append(f"sounddevice  ({sd_files[0].name} at .../{sd_files[0].parent.name}/)")
 
     _report(ok, errors)
 
