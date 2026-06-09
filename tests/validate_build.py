@@ -74,12 +74,12 @@ def main() -> None:
 
 
 def _report(ok: list[str], errors: list[str]) -> None:
-    print("\n── Build validation ─────────────────────────────────────────────────")
+    print("\n-- Build validation -----------------------------------------------------")
     for line in ok:
         print(f"  OK   {line}")
     for line in errors:
         print(f"  FAIL {line}")
-    print("─────────────────────────────────────────────────────────────────────\n")
+    print("-------------------------------------------------------------------------\n")
 
     if errors:
         print(f"BUILD VALIDATION FAILED — {len(errors)} issue(s) above.", file=sys.stderr)
