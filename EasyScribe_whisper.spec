@@ -68,24 +68,37 @@ try:
 except Exception as e:
     print(f"[spec] WARNING: could not collect sounddevice: {e}")
 
+# ── numpy: explicit collection to ensure .pyd extensions are bundled ─────────
+
+_np_binaries: list = []
+_np_hidden: list = []
+try:
+    _d, _b, _h = _collect_all("numpy")
+    _datas += _d
+    _np_binaries += _b
+    _np_hidden += _h
+    print(f"[spec] collect_all('numpy'): {len(_d)} datas, {len(_b)} bins, {len(_h)} hidden")
+except Exception as e:
+    print(f"[spec] WARNING: could not collect numpy: {e}")
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 a = Analysis(
     ["src/main.py"],
     pathex=["src"],
-    binaries=_sherpa_binaries + _sd_binaries,
+    binaries=_sherpa_binaries + _sd_binaries + _np_binaries,
     datas=_datas,
     hiddenimports=[
         "sherpa_onnx",
         "sounddevice",
         "sounddevice._sounddevice",
         "tkinterdnd2",
-    ] + _sherpa_hidden + _sd_hidden,
+        "numpy",
+    ] + _sherpa_hidden + _sd_hidden + _np_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        "numpy.distutils",
         "PIL",
         "notebook",
         "IPython",
