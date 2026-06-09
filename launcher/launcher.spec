@@ -20,11 +20,10 @@ a = Analysis(
         # Embed the pre-built app bundle — path is relative to this spec file
         ("../app.bundle", "."),
     ],
-    hiddenimports=[],
+    hiddenimports=["tkinter", "tkinter.ttk", "tkinter.filedialog"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    hiddenimports=["tkinter", "tkinter.ttk", "tkinter.filedialog"],
     excludes=[
         "customtkinter",
         "tkinterdnd2",
