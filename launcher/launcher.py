@@ -1,37 +1,28 @@
 """
-launcher.py - EasyScribe portable installer / launcher.
+launcher.py - EasyScribe portable GUI installer / launcher.
 
-Compiled as a PyInstaller ONEFILE with app.bundle embedded as a data file.
-The final .exe IS the installer — no separate SFX or 7-zip required.
+Compiled as a PyInstaller ONEFILE (console=False) with app.bundle embedded.
+On first run: shows a GUI to pick install location, extracts app.bundle there.
+On repeat runs: detects existing EasyScribe.exe and launches immediately.
 
-Behaviour:
-  1. If EasyScribe.exe already exists in INSTALL_DIR -> launch it, exit.
-  2. Otherwise: find app.bundle in sys._MEIPASS (embedded at build time).
-  3. Extract app.bundle (zip) to INSTALL_DIR with a progress print.
-  4. Launch MAIN_EXE via subprocess.Popen, exit.
-
-INSTALL_DIR = <directory containing this exe>/EasyScribe/
-This means the app installs next to wherever the user places the .exe —
-on a USB stick, a shared folder, or a local drive — with no AppData or
-admin access required.
+INSTALL_DIR defaults to <directory containing this exe>/EasyScribe/
 """
 
+import queue
 import shutil
 import subprocess
 import sys
+import threading
+import tkinter as tk
+from tkinter import filedialog, ttk
 import zipfile
 from pathlib import Path
 
 VERSION = "2.0.0"
-
-# Install next to the launcher .exe, wherever the user placed it
 _exe_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent.parent
-INSTALL_DIR = _exe_dir / "EasyScribe"
-MAIN_EXE = INSTALL_DIR / "EasyScribe.exe"
 
 
 def _find_bundle() -> Path | None:
-    """Locate app.bundle — embedded in sys._MEIPASS when frozen, or at project root in dev."""
     if getattr(sys, "frozen", False):
         candidate = Path(sys._MEIPASS) / "app.bundle"
         if candidate.is_file():
@@ -40,60 +31,158 @@ def _find_bundle() -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-def _extract_bundle(bundle_path: Path) -> bool:
-    """Extract app.bundle zip to INSTALL_DIR. Returns True on success."""
-    print(f"Installing EasyScribe {VERSION} to {INSTALL_DIR}...")
-
-    if INSTALL_DIR.exists() and not MAIN_EXE.exists():
-        print("Cleaning incomplete previous install...")
-        shutil.rmtree(INSTALL_DIR, ignore_errors=True)
-
-    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-
-    try:
-        with zipfile.ZipFile(bundle_path, "r") as zf:
-            members = zf.namelist()
-            total = len(members)
-            for i, member in enumerate(members, start=1):
-                zf.extract(member, INSTALL_DIR)
-                if i % 500 == 0 or i == total:
-                    pct = int(100 * i / total)
-                    print(f"  Extracting... {pct}%", end="\r", flush=True)
-        print("\nExtraction complete.            ")
-        return True
-    except Exception as exc:
-        print(f"\nExtraction failed: {exc}")
-        shutil.rmtree(INSTALL_DIR, ignore_errors=True)
-        return False
+def _main_exe(install_dir: Path) -> Path:
+    return install_dir / "EasyScribe.exe"
 
 
-def _launch() -> None:
-    print(f"Launching {MAIN_EXE.name}...")
-    subprocess.Popen([str(MAIN_EXE)], cwd=str(INSTALL_DIR))
+class InstallerApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title(f"EasyScribe {VERSION}")
+        self.resizable(False, False)
+        self._install_dir = tk.StringVar(value=str(_exe_dir / "EasyScribe"))
+        self._status_text = tk.StringVar()
+        self._q: queue.Queue = queue.Queue()
+        self._build_ui()
+        self._refresh_state()
+        # Centre on screen
+        self.update_idletasks()
+        w, h = self.winfo_width(), self.winfo_height()
+        x = (self.winfo_screenwidth() - w) // 2
+        y = (self.winfo_screenheight() - h) // 2
+        self.geometry(f"+{x}+{y}")
+
+    # ── UI construction ───────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        outer = tk.Frame(self, padx=20, pady=14)
+        outer.pack(fill="both", expand=True)
+
+        tk.Label(outer, text=f"EasyScribe  {VERSION}", font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        tk.Label(outer, text="Portable offline speech-to-text", fg="#555555").pack(anchor="w", pady=(0, 14))
+
+        # Install location
+        tk.Label(outer, text="Install location:", anchor="w").pack(fill="x")
+        row = tk.Frame(outer)
+        row.pack(fill="x", pady=(2, 12))
+        self._dir_entry = tk.Entry(row, textvariable=self._install_dir, width=44)
+        self._dir_entry.pack(side="left", ipady=3)
+        self._browse_btn = tk.Button(row, text="Browse…", command=self._browse)
+        self._browse_btn.pack(side="left", padx=(6, 0))
+
+        # Progress bar
+        self._bar = ttk.Progressbar(outer, length=440, mode="determinate", maximum=100)
+        self._bar.pack(fill="x", pady=(0, 6))
+
+        # Status line
+        tk.Label(outer, textvariable=self._status_text, anchor="w", fg="#333333").pack(fill="x", pady=(0, 12))
+
+        # Action button
+        self._btn = tk.Button(outer, text="Install", width=20, height=2,
+                              font=("Segoe UI", 10), command=self._on_action)
+        self._btn.pack()
+
+        # Wire up dir entry changes
+        self._install_dir.trace_add("write", lambda *_: self._refresh_state())
+
+    # ── State management ──────────────────────────────────────────────────────
+
+    def _refresh_state(self):
+        install_dir = Path(self._install_dir.get().strip())
+        if _main_exe(install_dir).is_file():
+            self._status_text.set(f"Already installed at:\n{install_dir}")
+            self._btn.config(text="Launch EasyScribe", state="normal")
+            self._bar["value"] = 100
+        else:
+            self._status_text.set("Ready to install.")
+            self._btn.config(text="Install", state="normal")
+            self._bar["value"] = 0
+
+    def _browse(self):
+        chosen = filedialog.askdirectory(
+            initialdir=self._install_dir.get() or str(_exe_dir),
+            title="Choose install location",
+        )
+        if chosen:
+            self._install_dir.set(chosen)
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+
+    def _on_action(self):
+        install_dir = Path(self._install_dir.get().strip())
+        if _main_exe(install_dir).is_file():
+            self._do_launch(install_dir)
+        else:
+            self._do_install(install_dir)
+
+    def _do_launch(self, install_dir: Path):
+        subprocess.Popen([str(_main_exe(install_dir))], cwd=str(install_dir))
+        self.destroy()
+
+    def _do_install(self, install_dir: Path):
+        bundle = _find_bundle()
+        if bundle is None:
+            self._status_text.set("ERROR: app.bundle not found. Re-download the installer.")
+            return
+        self._btn.config(state="disabled")
+        self._dir_entry.config(state="disabled")
+        self._browse_btn.config(state="disabled")
+        threading.Thread(target=self._extract_thread, args=(bundle, install_dir), daemon=True).start()
+        self.after(80, self._poll_queue)
+
+    # ── Background extraction ─────────────────────────────────────────────────
+
+    def _extract_thread(self, bundle: Path, install_dir: Path):
+        try:
+            if install_dir.exists() and not _main_exe(install_dir).is_file():
+                self._q.put(("status", "Cleaning incomplete previous install…"))
+                shutil.rmtree(install_dir, ignore_errors=True)
+            install_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(bundle, "r") as zf:
+                members = zf.namelist()
+                total = len(members)
+                for i, member in enumerate(members, start=1):
+                    zf.extract(member, install_dir)
+                    if i % 200 == 0 or i == total:
+                        pct = int(100 * i / total)
+                        self._q.put(("progress", pct))
+            self._q.put(("done", install_dir))
+        except Exception as exc:
+            shutil.rmtree(install_dir, ignore_errors=True)
+            self._q.put(("error", str(exc)))
+
+    def _poll_queue(self):
+        try:
+            while True:
+                kind, value = self._q.get_nowait()
+                if kind == "progress":
+                    self._bar["value"] = value
+                    self._status_text.set(f"Extracting… {value}%")
+                elif kind == "done":
+                    self._bar["value"] = 100
+                    self._status_text.set("Installation complete! Launching EasyScribe…")
+                    self.after(900, lambda v=value: self._do_launch(v))
+                    return
+                elif kind == "error":
+                    self._status_text.set(f"Installation failed: {value}")
+                    self._btn.config(state="normal")
+                    self._dir_entry.config(state="normal")
+                    self._browse_btn.config(state="normal")
+                    return
+        except queue.Empty:
+            pass
+        self.after(80, self._poll_queue)
 
 
-def main() -> None:
-    if MAIN_EXE.is_file():
-        _launch()
+def main():
+    # Already installed at the default location — launch silently, no GUI shown
+    default_dir = _exe_dir / "EasyScribe"
+    if _main_exe(default_dir).is_file():
+        subprocess.Popen([str(_main_exe(default_dir))], cwd=str(default_dir))
         return
-
-    bundle = _find_bundle()
-    if bundle is None:
-        print("ERROR: app.bundle not found. Re-download the installer.")
-        input("Press Enter to exit.")
-        sys.exit(1)
-
-    if not _extract_bundle(bundle):
-        print("ERROR: Installation failed. Check you have write access to this folder.")
-        input("Press Enter to exit.")
-        sys.exit(1)
-
-    if not MAIN_EXE.is_file():
-        print(f"ERROR: {MAIN_EXE} not found after extraction.")
-        input("Press Enter to exit.")
-        sys.exit(1)
-
-    _launch()
+    # First run (or non-default install) — show the installer GUI
+    app = InstallerApp()
+    app.mainloop()
 
 
 if __name__ == "__main__":

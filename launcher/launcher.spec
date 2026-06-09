@@ -24,6 +24,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
+    hiddenimports=["tkinter", "tkinter.ttk", "tkinter.filedialog"],
     excludes=[
         "customtkinter",
         "tkinterdnd2",
@@ -56,7 +57,7 @@ exe = EXE(
     strip=False,
     upx=False,          # app.bundle is already compressed — UPX won't help
     upx_exclude=[],
-    console=True,       # show extraction progress
+    console=False,      # GUI installer — no terminal window
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
