@@ -55,16 +55,25 @@ try:
 except Exception as e:
     print(f"[spec] WARNING: could not collect sherpa_onnx: {e}")
 
-# ── sounddevice: pyd extension + portaudio DLL ───────────────────────────────
+# ── sounddevice ───────────────────────────────────────────────────────────────
+# sounddevice 0.5+ is a single-file module (sounddevice.py) whose C extension
+# _sounddevice.pyd lives at the site-packages root, not inside a package dir.
+# collect_all() therefore skips binaries; we must add the .pyd explicitly.
 
 _sd_binaries: list = []
 _sd_hidden: list = []
 try:
-    _d, _b, _h = _collect_all("sounddevice")
-    _datas += _d
-    _sd_binaries += _b
-    _sd_hidden += _h
-    print(f"[spec] collect_all('sounddevice'): {len(_d)} datas, {len(_b)} bins, {len(_h)} hidden")
+    import importlib.util as _sd_ilu
+    _sd_ext = _sd_ilu.find_spec("_sounddevice")
+    if _sd_ext and _sd_ext.origin:
+        _sd_origin = Path(_sd_ext.origin)
+        _sd_binaries.append((str(_sd_origin), "."))
+        for _dll in _sd_origin.parent.glob("portaudio*.dll"):
+            _sd_binaries.append((str(_dll), "."))
+        _sd_hidden = ["_sounddevice"]
+        print(f"[spec] sounddevice: {_sd_origin.name} + {len(_sd_binaries)-1} portaudio DLL(s)")
+    else:
+        print("[spec] WARNING: _sounddevice extension not found")
 except Exception as e:
     print(f"[spec] WARNING: could not collect sounddevice: {e}")
 
@@ -91,7 +100,6 @@ a = Analysis(
     hiddenimports=[
         "sherpa_onnx",
         "sounddevice",
-        "sounddevice._sounddevice",
         "tkinterdnd2",
         "numpy",
     ] + _sherpa_hidden + _sd_hidden + _np_hidden,
