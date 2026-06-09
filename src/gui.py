@@ -1,29 +1,21 @@
 """
-gui.py - CustomTkinter main window for EasyScribe.
+gui.py - CustomTkinter main window for EasyScribe v2.0.
 
-All transcription work runs in a daemon background thread. The GUI
-communicates with the worker thread exclusively via thread-safe
-`self.after(0, lambda: ...)` callbacks — widgets are never touched
-from outside the main thread.
+All transcription and recording work runs in daemon background threads.
+The GUI communicates with worker threads exclusively via self.after(0, ...) callbacks.
 """
 
 import logging
 import os
 import shutil
 import threading
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Callable
 
 import customtkinter as ctk  # type: ignore
 
-# ── tkinterdnd2 integration ───────────────────────────────────────────────────
-# The correct way to combine tkinterdnd2 with CustomTkinter is to let CTk
-# create its Tk interpreter normally, then load the tkdnd Tcl extension into
-# that interpreter using TkinterDnD._require(root).
-# This avoids the "invalid command name tkdnd::drop_target" crash that occurs
-# when TkinterDnD.Tk.__init__ is mixed with CTk.__init__ (they fight over the
-# interpreter).
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
     _DND_AVAILABLE = True
@@ -31,9 +23,15 @@ except Exception:
     DND_FILES = None  # type: ignore
     _DND_AVAILABLE = False
 
-_AppBase = ctk.CTk  # type: ignore  # always inherit from plain CTk
+_AppBase = ctk.CTk  # type: ignore
 
-from config import APP_NAME, APP_VERSION, MIN_FREE_DISK_BYTES, SUPPORTED_EXTENSIONS
+from config import (
+    APP_NAME,
+    APP_VERSION,
+    DEFAULT_OUTPUT_DIR,
+    MIN_FREE_DISK_BYTES,
+    SUPPORTED_EXTENSIONS,
+)
 from ffmpeg_wrapper import (
     CancelledError as FFmpegCancelledError,
     FFmpegExtractionError,
@@ -48,20 +46,20 @@ from transcriber import (
     TranscriptionError,
     list_gpus,
 )
+from mic_recorder import MicRecorder
+from live_transcriber import LiveTranscriber
 
 logger = logging.getLogger(__name__)
-
-# ─── Appearance ───────────────────────────────────────────────────────────────
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# Status colours
 _STATUS_COLOURS: dict[str, str] = {
     "Ready": "#4CAF50",
     "Loading Model": "#FF9800",
     "Extracting Audio": "#2196F3",
     "Transcribing": "#2196F3",
+    "Recording": "#E91E63",
     "Identifying Speakers": "#2196F3",
     "Naming Speakers": "#9C27B0",
     "Writing Transcript": "#2196F3",
@@ -75,16 +73,7 @@ _STATUS_COLOURS: dict[str, str] = {
 
 
 class SpeakerNamingDialog(ctk.CTkToplevel):
-    """
-    Modal popup shown after diarization so the user can rename each speaker.
-
-    Presents one row per detected speaker: a default label, a ▶ Play button
-    (plays a short audio clip of that speaker), and an editable name field.
-
-    When the user clicks "Use These Names" (or closes the window), the
-    speaker_map dict is mutated in-place and done_event is set, unblocking
-    the transcription worker thread that is waiting on done_event.
-    """
+    """Modal popup for renaming speakers after diarization."""
 
     def __init__(
         self,
@@ -103,42 +92,32 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
-
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Centre over parent window
         self.update_idletasks()
-        px = parent.winfo_x() + (parent.winfo_width()  - self.winfo_width())  // 2
+        px = parent.winfo_x() + (parent.winfo_width() - self.winfo_width()) // 2
         py = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
         self.geometry(f"+{max(0, px)}+{max(0, py)}")
 
     def _build(self) -> None:
         pad = {"padx": 16, "pady": 6}
-
         ctk.CTkLabel(
-            self,
-            text="Identify the Speakers",
-            font=ctk.CTkFont(size=15, weight="bold"),
+            self, text="Identify the Speakers", font=ctk.CTkFont(size=15, weight="bold")
         ).grid(row=0, column=0, columnspan=3, padx=16, pady=(16, 4), sticky="w")
-
         ctk.CTkLabel(
             self,
             text="Play a sample to identify each speaker, then enter their name.",
             text_color="gray60",
         ).grid(row=1, column=0, columnspan=3, padx=16, pady=(0, 12), sticky="w")
 
-        # Header row
         for col, heading in enumerate(("Speaker", "Sample", "Name")):
-            ctk.CTkLabel(
-                self, text=heading, font=ctk.CTkFont(weight="bold")
-            ).grid(row=2, column=col, **pad, sticky="w" if col != 1 else "")
-
-        for i, (raw_label, default_name) in enumerate(self._speaker_map.items(), start=3):
-            ctk.CTkLabel(self, text=default_name).grid(
-                row=i, column=0, **pad, sticky="w"
+            ctk.CTkLabel(self, text=heading, font=ctk.CTkFont(weight="bold")).grid(
+                row=2, column=col, **pad, sticky="w" if col != 1 else ""
             )
 
+        for i, (raw_label, default_name) in enumerate(self._speaker_map.items(), start=3):
+            ctk.CTkLabel(self, text=default_name).grid(row=i, column=0, **pad, sticky="w")
             clip_path = self._clips_dict.get(raw_label)
             ctk.CTkButton(
                 self,
@@ -147,7 +126,6 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
                 state="normal" if clip_path else "disabled",
                 command=lambda p=clip_path: self._play_clip(p),
             ).grid(row=i, column=1, **pad)
-
             entry = ctk.CTkEntry(self, width=200, placeholder_text=default_name)
             entry.insert(0, default_name)
             entry.grid(row=i, column=2, **pad, sticky="ew")
@@ -169,10 +147,7 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
             import sys as _sys
             if _sys.platform == "win32":
                 import winsound
-                winsound.PlaySound(
-                    str(clip_path),
-                    winsound.SND_FILENAME | winsound.SND_ASYNC,
-                )
+                winsound.PlaySound(str(clip_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception as exc:
             logger.warning(f"Clip playback failed: {exc}")
 
@@ -184,13 +159,15 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
         self._dismiss()
 
     def _on_close(self) -> None:
-        # Keep defaults — just unblock the worker
         self._dismiss()
 
     def _dismiss(self) -> None:
         self.grab_release()
         self.destroy()
         self._done_event.set()
+
+
+# ─── Main window ─────────────────────────────────────────────────────────────
 
 
 class TranscriberApp(_AppBase):  # type: ignore
@@ -200,39 +177,40 @@ class TranscriberApp(_AppBase):  # type: ignore
         super().__init__()
 
         self.title(f"{APP_NAME} v{APP_VERSION}")
-        self.geometry("820x680")
-        self.minsize(700, 560)
+        self.geometry("820x720")
+        self.minsize(700, 580)
         self.resizable(True, True)
 
-        # ── State ─────────────────────────────────────────────────────────────
+        # ── State ────────────────────────────────────────────────────────────
         self._selected_files: list[Path] = []
         self._output_folder: Path | None = None
         self._cancel_event = threading.Event()
+        self._stop_recording_event = threading.Event()
         self._engine = TranscriptionEngine()
+        self._mic_recorder = MicRecorder()
+        self._live_transcriber = LiveTranscriber()
         self._last_output_folder: Path | None = None
 
-        # ── Load tkdnd Tcl extension into the existing CTk interpreter ──────────
-        # TkinterDnD._require() registers the tkdnd:: commands in whatever Tk
-        # interpreter is already running — no separate root needed.
+        # ── tkdnd ─────────────────────────────────────────────────────────────
         self._dnd_enabled: bool = False
         if _DND_AVAILABLE:
             try:
                 TkinterDnD._require(self)  # type: ignore
                 self._dnd_enabled = True
-                logger.info("tkinterdnd2 drag-and-drop enabled")
             except Exception as exc:
-                logger.warning(f"tkdnd extension failed to load — drag-and-drop disabled: {exc}")
-        else:
-            logger.warning("tkinterdnd2 not installed — drag-and-drop disabled")
+                logger.warning(f"tkdnd extension failed — drag-and-drop disabled: {exc}")
 
-        # Diarization availability (checked once at startup)
+        # ── Diarization availability ──────────────────────────────────────────
         self._diarization_available: bool = DiarizationEngine().is_available()
 
-        # GPU selector state (populated in _build_ui)
+        # ── GPU selector state ────────────────────────────────────────────────
         self._gpu_options: list[str] = []
         self._gpu_index_map: dict[str, int | None] = {}
 
-        # ── Build UI ──────────────────────────────────────────────────────────
+        # ── Mic selector state ────────────────────────────────────────────────
+        self._mic_options: list[str] = []
+        self._mic_index_map: dict[str, int | None] = {}
+
         self._build_ui()
         self._set_ui_state("idle")
         self._update_status("Ready")
@@ -245,22 +223,19 @@ class TranscriberApp(_AppBase):  # type: ignore
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(5, weight=1)  # log box expands
+        self.grid_rowconfigure(5, weight=1)
 
         # ── File selection ────────────────────────────────────────────────────
         file_frame = ctk.CTkFrame(self)
         file_frame.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="ew")
-        file_frame.grid_columnconfigure(1, weight=1)
+        file_frame.grid_columnconfigure(2, weight=1)
 
-        ctk.CTkLabel(file_frame, text="Input Files", font=ctk.CTkFont(size=13, weight="bold")).grid(
-            row=0, column=0, columnspan=3, padx=10, pady=(8, 4), sticky="w"
-        )
+        ctk.CTkLabel(
+            file_frame, text="Input Files", font=ctk.CTkFont(size=13, weight="bold")
+        ).grid(row=0, column=0, columnspan=3, padx=10, pady=(8, 4), sticky="w")
 
         self._select_files_btn = ctk.CTkButton(
-            file_frame,
-            text="Select File(s)",
-            width=130,
-            command=self._on_select_files,
+            file_frame, text="Select File(s)", width=130, command=self._on_select_files
         )
         self._select_files_btn.grid(row=1, column=0, padx=10, pady=8, sticky="w")
 
@@ -275,24 +250,23 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._clear_files_btn.grid(row=1, column=1, padx=(0, 10), pady=8, sticky="w")
 
         self._files_label = ctk.CTkLabel(
-            file_frame,
-            text="No files selected",
-            anchor="w",
-            text_color="gray70",
+            file_frame, text="No files selected", anchor="w", text_color="gray70"
         )
         self._files_label.grid(row=1, column=2, padx=10, pady=8, sticky="ew")
 
-        # Drop zone
         self._drop_zone = ctk.CTkLabel(
             file_frame,
-            text="⬇  Drop media files here" if self._dnd_enabled else "Drag & drop unavailable — use Select File(s)",
+            text=(
+                "⬇  Drop media files here"
+                if self._dnd_enabled
+                else "Drag & drop unavailable — use Select File(s)"
+            ),
             height=50,
             corner_radius=8,
             fg_color=("gray85", "gray20"),
             text_color=("gray40", "gray60"),
         )
         self._drop_zone.grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="ew")
-
         if self._dnd_enabled and DND_FILES is not None:
             self._drop_zone.drop_target_register(DND_FILES)
             self._drop_zone.dnd_bind("<<Drop>>", self._on_drop)
@@ -302,23 +276,17 @@ class TranscriberApp(_AppBase):  # type: ignore
         out_frame.grid(row=1, column=0, padx=12, pady=6, sticky="ew")
         out_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(out_frame, text="Output Folder", font=ctk.CTkFont(size=13, weight="bold")).grid(
-            row=0, column=0, columnspan=2, padx=10, pady=(8, 4), sticky="w"
-        )
+        ctk.CTkLabel(
+            out_frame, text="Output Folder", font=ctk.CTkFont(size=13, weight="bold")
+        ).grid(row=0, column=0, columnspan=2, padx=10, pady=(8, 4), sticky="w")
 
         self._select_output_btn = ctk.CTkButton(
-            out_frame,
-            text="Select Folder",
-            width=130,
-            command=self._on_select_output_folder,
+            out_frame, text="Select Folder", width=130, command=self._on_select_output_folder
         )
         self._select_output_btn.grid(row=1, column=0, padx=10, pady=8, sticky="w")
 
         self._output_label = ctk.CTkLabel(
-            out_frame,
-            text="Same folder as input file(s)",
-            anchor="w",
-            text_color="gray70",
+            out_frame, text="Same folder as input file(s)", anchor="w", text_color="gray70"
         )
         self._output_label.grid(row=1, column=1, padx=10, pady=8, sticky="ew")
 
@@ -326,15 +294,13 @@ class TranscriberApp(_AppBase):  # type: ignore
         opts_frame = ctk.CTkFrame(self)
         opts_frame.grid(row=2, column=0, padx=12, pady=6, sticky="ew")
 
-        ctk.CTkLabel(opts_frame, text="Options", font=ctk.CTkFont(size=13, weight="bold")).grid(
-            row=0, column=0, columnspan=3, padx=10, pady=(8, 4), sticky="w"
-        )
+        ctk.CTkLabel(
+            opts_frame, text="Options", font=ctk.CTkFont(size=13, weight="bold")
+        ).grid(row=0, column=0, columnspan=4, padx=10, pady=(8, 4), sticky="w")
 
         self._timestamps_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
-            opts_frame,
-            text="Include timestamps",
-            variable=self._timestamps_var,
+            opts_frame, text="Include timestamps", variable=self._timestamps_var
         ).grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
 
         self._diarize_var = ctk.BooleanVar(value=False)
@@ -363,6 +329,20 @@ class TranscriberApp(_AppBase):  # type: ignore
         )
         self._gpu_menu.grid(row=1, column=2, padx=(0, 10), pady=(0, 10), sticky="w")
 
+        # Microphone selector
+        ctk.CTkLabel(opts_frame, text="Microphone:", anchor="w").grid(
+            row=2, column=1, padx=(20, 4), pady=(0, 10), sticky="w"
+        )
+        self._mic_options, self._mic_index_map = self._build_mic_options()
+        self._mic_var = ctk.StringVar(value=self._mic_options[0])
+        self._mic_menu = ctk.CTkOptionMenu(
+            opts_frame,
+            variable=self._mic_var,
+            values=self._mic_options,
+            width=220,
+        )
+        self._mic_menu.grid(row=2, column=2, padx=(0, 10), pady=(0, 10), sticky="w")
+
         # ── Actions ───────────────────────────────────────────────────────────
         action_frame = ctk.CTkFrame(self)
         action_frame.grid(row=3, column=0, padx=12, pady=6, sticky="ew")
@@ -376,6 +356,17 @@ class TranscriberApp(_AppBase):  # type: ignore
         )
         self._transcribe_btn.grid(row=0, column=0, padx=10, pady=10)
 
+        self._record_btn = ctk.CTkButton(
+            action_frame,
+            text="Record",
+            width=140,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#E91E63",
+            hover_color="#C2185B",
+            command=self._on_record,
+        )
+        self._record_btn.grid(row=0, column=1, padx=(0, 10), pady=10)
+
         self._cancel_btn = ctk.CTkButton(
             action_frame,
             text="Cancel",
@@ -384,7 +375,7 @@ class TranscriberApp(_AppBase):  # type: ignore
             hover_color="gray30",
             command=self._on_cancel,
         )
-        self._cancel_btn.grid(row=0, column=1, padx=(0, 10), pady=10)
+        self._cancel_btn.grid(row=0, column=2, padx=(0, 10), pady=10)
 
         self._open_output_btn = ctk.CTkButton(
             action_frame,
@@ -394,7 +385,7 @@ class TranscriberApp(_AppBase):  # type: ignore
             hover_color=("gray60", "gray25"),
             command=self._on_open_output_folder,
         )
-        self._open_output_btn.grid(row=0, column=2, padx=(0, 10), pady=10)
+        self._open_output_btn.grid(row=0, column=3, padx=(0, 10), pady=10)
 
         # ── Progress & status ─────────────────────────────────────────────────
         progress_frame = ctk.CTkFrame(self)
@@ -418,11 +409,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._status_label.grid(row=0, column=0, sticky="w")
 
         self._batch_label = ctk.CTkLabel(
-            status_row,
-            text="",
-            font=ctk.CTkFont(size=12),
-            anchor="e",
-            text_color="gray60",
+            status_row, text="", font=ctk.CTkFont(size=12), anchor="e", text_color="gray60"
         )
         self._batch_label.grid(row=0, column=1, sticky="e")
 
@@ -432,9 +419,9 @@ class TranscriberApp(_AppBase):  # type: ignore
         log_frame.grid_columnconfigure(0, weight=1)
         log_frame.grid_rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(log_frame, text="Log", font=ctk.CTkFont(size=13, weight="bold")).grid(
-            row=0, column=0, padx=10, pady=(8, 2), sticky="w"
-        )
+        ctk.CTkLabel(
+            log_frame, text="Log", font=ctk.CTkFont(size=13, weight="bold")
+        ).grid(row=0, column=0, padx=10, pady=(8, 2), sticky="w")
 
         self._log_box = ctk.CTkTextbox(
             log_frame,
@@ -449,19 +436,16 @@ class TranscriberApp(_AppBase):  # type: ignore
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_drop(self, event: object) -> None:
-        """Handle files dropped onto the drop zone."""
         raw = getattr(event, "data", "")
         try:
             paths_raw: list[str] = self.tk.splitlist(raw)  # type: ignore[attr-defined]
         except Exception:
             paths_raw = raw.split()
 
-        valid: list[Path] = []
-        for p_str in paths_raw:
-            p = Path(p_str)
-            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
-                valid.append(p)
-
+        valid = [
+            Path(p) for p in paths_raw
+            if Path(p).is_file() and Path(p).suffix.lower() in SUPPORTED_EXTENSIONS
+        ]
         if valid:
             self._add_files(valid)
         else:
@@ -476,14 +460,10 @@ class TranscriberApp(_AppBase):  # type: ignore
     # ─────────────────────────────────────────────────────────────────────────
 
     def _on_select_files(self) -> None:
-        """Open a file picker for one or more media files."""
         ext_list = " ".join(f"*{e}" for e in sorted(SUPPORTED_EXTENSIONS))
         paths = filedialog.askopenfilenames(
             title="Select media file(s)",
-            filetypes=[
-                ("Media files", ext_list),
-                ("All files", "*.*"),
-            ],
+            filetypes=[("Media files", ext_list), ("All files", "*.*")],
         )
         if paths:
             self._add_files([Path(p) for p in paths])
@@ -491,7 +471,6 @@ class TranscriberApp(_AppBase):  # type: ignore
     def _on_clear_files(self) -> None:
         self._selected_files.clear()
         self._files_label.configure(text="No files selected", text_color="gray70")
-        logger.info("File selection cleared")
 
     def _on_select_output_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select output folder for transcripts")
@@ -500,15 +479,12 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._output_label.configure(
                 text=str(self._output_folder), text_color=("gray20", "gray90")
             )
-            logger.info(f"Output folder set: {self._output_folder}")
 
     def _on_transcribe(self) -> None:
-        """Validate inputs and start the transcription worker thread."""
         if not self._selected_files:
             messagebox.showwarning("No Files", "Please select at least one media file first.")
             return
 
-        # Disk space check
         check_dir = self._output_folder or self._selected_files[0].parent
         try:
             usage = shutil.disk_usage(check_dir)
@@ -527,42 +503,41 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._clear_log()
         self._progress_bar.set(0)
 
-        thread = threading.Thread(
-            target=self._transcription_worker,
-            daemon=True,
-            name="TranscriptionWorker",
-        )
-        thread.start()
-        logger.info(f"Started transcription worker for {len(self._selected_files)} file(s)")
+        threading.Thread(
+            target=self._transcription_worker, daemon=True, name="TranscriptionWorker"
+        ).start()
+
+    def _on_record(self) -> None:
+        self._stop_recording_event.clear()
+        self._set_ui_state("recording")
+        self._clear_log()
+        self._safe_append_log("[Record] Starting live recording…")
+        self._record_btn.configure(text="Stop Recording", command=self._on_stop_recording)
+
+        threading.Thread(
+            target=self._recording_worker, daemon=True, name="RecordingWorker"
+        ).start()
+
+    def _on_stop_recording(self) -> None:
+        self._stop_recording_event.set()
 
     def _on_cancel(self) -> None:
-        """Signal the worker thread to cancel."""
-        logger.info("Cancel requested by user")
         self._cancel_event.set()
         self._update_status("Cancelling…")
         self._cancel_btn.configure(state="disabled")
 
     def _on_open_output_folder(self) -> None:
-        """Open the last used output folder in Windows Explorer."""
-        folder = self._last_output_folder or self._output_folder
+        folder = self._last_output_folder or self._output_folder or DEFAULT_OUTPUT_DIR
         if folder and folder.exists():
             os.startfile(str(folder))
-        elif self._selected_files:
-            os.startfile(str(self._selected_files[0].parent))
         else:
             messagebox.showinfo("No Folder", "No output folder to open yet.")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Worker thread
+    # Transcription worker thread
     # ─────────────────────────────────────────────────────────────────────────
 
     def _transcription_worker(self) -> None:
-        """
-        Background thread: processes all selected files.
-
-        Never touches any widget directly — all GUI updates go through
-        self.after(0, lambda: ...) to ensure thread safety.
-        """
         files = list(self._selected_files)
         total = len(files)
         failed_count = 0
@@ -577,20 +552,14 @@ class TranscriberApp(_AppBase):  # type: ignore
 
             temp_wav: Path | None = None
             try:
-                # ── Step 1: Extract audio ─────────────────────────────────
                 self._safe_update_status("Extracting Audio")
                 self._safe_set_progress(0.0)
 
-                temp_wav = extract_audio(
-                    input_file,
-                    self._cancel_event,
-                    self._safe_append_log,
-                )
+                temp_wav = extract_audio(input_file, self._cancel_event, self._safe_append_log)
 
                 if self._cancel_event.is_set():
                     raise FFmpegCancelledError("Cancelled")
 
-                # ── Step 2: Transcribe ────────────────────────────────────
                 output_path = self._resolve_output_path(input_file)
                 self._last_output_folder = output_path.parent
 
@@ -604,30 +573,22 @@ class TranscriberApp(_AppBase):  # type: ignore
                     log_callback=self._safe_append_log,
                     diarize=self._diarize_var.get(),
                     speaker_name_callback=(
-                        self._make_speaker_naming_callback()
-                        if self._diarize_var.get()
-                        else None
+                        self._make_speaker_naming_callback() if self._diarize_var.get() else None
                     ),
                 )
 
             except (FFmpegCancelledError, TranscribeCancelledError):
                 self._safe_append_log("[Cancelled] Operation stopped by user")
-                logger.info("Worker cancelled")
                 break
 
             except (FFmpegNotFoundError, ModelNotFoundError) as exc:
-                # Fatal: missing dependency — stop entire batch
                 logger.exception("Fatal dependency missing")
                 self._safe_append_log(f"[Fatal] {exc}")
-                self.after(
-                    0,
-                    lambda e=str(exc): messagebox.showerror("Missing Dependency", e),
-                )
+                self.after(0, lambda e=str(exc): messagebox.showerror("Missing Dependency", e))
                 failed_count += 1
                 break
 
             except (FFmpegExtractionError, TranscriptionError) as exc:
-                # Per-file error: log and continue to next file
                 logger.error(f"File {input_file.name} failed: {exc}")
                 self._safe_append_log(f"[Error] {input_file.name}: {exc}")
                 failed_count += 1
@@ -644,7 +605,6 @@ class TranscriberApp(_AppBase):  # type: ignore
                     except OSError:
                         pass
 
-        # ── Final status ──────────────────────────────────────────────────────
         if self._cancel_event.is_set():
             final_status = "Cancelled"
         elif failed_count == 0:
@@ -652,7 +612,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         elif failed_count == total:
             final_status = "Failed"
         else:
-            final_status = "Done"  # partial success
+            final_status = "Done"
             self._safe_append_log(
                 f"\n[Summary] Completed with {failed_count} error(s) out of {total} file(s)"
             )
@@ -661,16 +621,79 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._safe_set_batch_label("")
         self.after(0, lambda: self._set_ui_state("idle"))
 
-    def _make_speaker_naming_callback(self) -> Callable:
-        """
-        Return a callback that blocks the worker thread until the user
-        has named all speakers in the SpeakerNamingDialog.
+    # ─────────────────────────────────────────────────────────────────────────
+    # Recording worker thread
+    # ─────────────────────────────────────────────────────────────────────────
 
-        The callback is called from the transcription worker thread with
-        (speaker_map, clips_dict).  It schedules the dialog on the main
-        thread, then waits for the user to dismiss it before returning.
-        speaker_map is mutated in-place by the dialog.
-        """
+    def _recording_worker(self) -> None:
+        transcript_lines: list[str] = []
+
+        def on_segment(text: str) -> None:
+            transcript_lines.append(text)
+            self._safe_append_log(text)
+
+        try:
+            self._engine._ensure_model_loaded(self._safe_update_status)
+            self._safe_update_status("Recording")
+
+            mic_label = self._mic_var.get()
+            device_index = self._mic_index_map.get(mic_label)
+
+            DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            self._mic_recorder.start(device_index, DEFAULT_OUTPUT_DIR)
+            mic_queue = self._mic_recorder.get_queue()
+
+            self._live_transcriber.start(
+                self._engine._recognizer,
+                mic_queue,
+                self._stop_recording_event,
+                on_segment,
+            )
+
+            self._safe_append_log("[Record] Listening — click Stop Recording when done")
+            self._stop_recording_event.wait()
+
+            self._live_transcriber.stop()
+            wav_path = self._mic_recorder.stop(convert_to_wav=True)
+
+            # Write accumulated transcript
+            if transcript_lines:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                txt_path = DEFAULT_OUTPUT_DIR / f"recording_{ts}.txt"
+                try:
+                    txt_path.write_text("\n".join(transcript_lines) + "\n", encoding="utf-8")
+                    self._last_output_folder = DEFAULT_OUTPUT_DIR
+                    self._safe_append_log(f"[Done] Transcript saved: {txt_path}")
+                except OSError as exc:
+                    self._safe_append_log(f"[Error] Could not write transcript: {exc}")
+
+            if wav_path:
+                self._safe_append_log(f"[Done] Audio saved: {wav_path}")
+                self._last_output_folder = DEFAULT_OUTPUT_DIR
+
+            self._safe_update_status("Done")
+
+        except ModelNotFoundError as exc:
+            logger.exception("Model not found during recording")
+            self._safe_append_log(f"[Fatal] {exc}")
+            self.after(0, lambda e=str(exc): messagebox.showerror("Missing Model", e))
+            self._safe_update_status("Failed")
+
+        except Exception as exc:
+            logger.exception("Recording worker error")
+            self._safe_append_log(f"[Error] {exc}")
+            self._safe_update_status("Failed")
+
+        finally:
+            self.after(
+                0,
+                lambda: (
+                    self._record_btn.configure(text="Record", command=self._on_record),
+                    self._set_ui_state("idle"),
+                ),
+            )
+
+    def _make_speaker_naming_callback(self) -> Callable:
         def callback(speaker_map: dict, clips_dict: dict) -> None:
             done_event = threading.Event()
             self.after(
@@ -703,40 +726,46 @@ class TranscriberApp(_AppBase):  # type: ignore
     # ─────────────────────────────────────────────────────────────────────────
 
     def _build_gpu_options(self) -> tuple[list[str], dict[str, int | None]]:
-        """
-        Build the list of device options for the GPU selector dropdown.
-
-        Returns (option_labels, label_to_device_index_map).
-        device_index -1 means CPU, None means auto-select first GPU.
-        """
         options: list[str] = ["CPU only"]
         index_map: dict[str, int | None] = {"CPU only": -1}
 
         gpus = list_gpus()
         if gpus:
             options.insert(0, "Auto (best GPU)")
-            index_map["Auto (best GPU)"] = None  # engine will auto-select GPU 0
+            index_map["Auto (best GPU)"] = None
             for gpu in gpus:
                 label = f"GPU {gpu['index']}: {gpu['name']}"
-                options.append(label) if label not in options else None
-                index_map[label] = int(gpu["index"])  # type: ignore[arg-type]
+                if label not in index_map:
+                    options.append(label)
+                    index_map[label] = int(gpu["index"])  # type: ignore[arg-type]
         else:
-            # No GPU available; only show CPU
-            logger.info("No CUDA GPUs found — device selector shows CPU only")
+            logger.info("No Vulkan GPUs found — device selector shows CPU only")
+
+        return options, index_map
+
+    def _build_mic_options(self) -> tuple[list[str], dict[str, int | None]]:
+        options: list[str] = ["Default microphone"]
+        index_map: dict[str, int | None] = {"Default microphone": None}
+
+        try:
+            devices = MicRecorder.list_devices()
+            for d in devices:
+                label = f"Mic {d['index']}: {d['name']}"
+                if label not in index_map:
+                    options.append(label)
+                    index_map[label] = int(d["index"])
+        except Exception as exc:
+            logger.warning(f"Could not enumerate microphones: {exc}")
 
         return options, index_map
 
     def _on_gpu_changed(self, selection: str) -> None:
-        """Called when the user changes the device dropdown."""
         gpu_index = self._gpu_index_map.get(selection, -1)
         self._engine.preferred_gpu_index = gpu_index
-        # Unload the cached model so it reloads with the new device on next run
         self._engine.reload_model()
-        logger.info(f"Device changed to: {selection!r} (device_index={gpu_index})")
         self._safe_append_log(f"[Device] Changed to: {selection}")
 
     def _add_files(self, paths: list[Path]) -> None:
-        """Add files to the selection, filtering duplicates and unsupported types."""
         existing = set(self._selected_files)
         added = 0
         for p in paths:
@@ -756,10 +785,8 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._files_label.configure(
                 text=f"{count} files selected", text_color=("gray20", "gray90")
             )
-        logger.info(f"Added {added} file(s); total: {count}")
 
     def _resolve_output_path(self, input_file: Path) -> Path:
-        """Determine the .txt output path for a given input file."""
         folder = self._output_folder or input_file.parent
         return folder / (input_file.stem + ".txt")
 
@@ -779,16 +806,27 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._log_box.configure(state="disabled")
 
     def _set_ui_state(self, state: str) -> None:
-        """Toggle widgets between 'idle' and 'running' states."""
-        running = state == "running"
-        self._transcribe_btn.configure(state="disabled" if running else "normal")
-        self._cancel_btn.configure(state="normal" if running else "disabled")
-        self._select_files_btn.configure(state="disabled" if running else "normal")
-        self._select_output_btn.configure(state="disabled" if running else "normal")
-        self._clear_files_btn.configure(state="disabled" if running else "normal")
+        """Toggle widgets between 'idle', 'running', and 'recording' states."""
+        is_running = state == "running"
+        is_recording = state == "recording"
+        is_busy = is_running or is_recording
+
+        self._transcribe_btn.configure(state="disabled" if is_busy else "normal")
+        self._select_files_btn.configure(state="disabled" if is_busy else "normal")
+        self._select_output_btn.configure(state="disabled" if is_busy else "normal")
+        self._clear_files_btn.configure(state="disabled" if is_busy else "normal")
+        self._gpu_menu.configure(state="disabled" if is_busy else "normal")
+        self._mic_menu.configure(state="disabled" if is_recording else "normal")
+
+        # Record button: disabled while transcription runs; becomes Stop while recording
+        self._record_btn.configure(state="disabled" if is_running else "normal")
+
+        # Cancel button: only active during file transcription
+        self._cancel_btn.configure(state="normal" if is_running else "disabled")
+
         self._open_output_btn.configure(
-            state="normal" if (not running and self._last_output_folder) else
-            ("disabled" if running else "normal")
+            state="normal" if (not is_busy and self._last_output_folder) else
+            ("disabled" if is_busy else "normal")
         )
-        if not running:
+        if not is_busy:
             self._progress_bar.set(0.0)

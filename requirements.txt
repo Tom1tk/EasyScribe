@@ -1,16 +1,15 @@
-# EasyScribe - Python dependencies
+# EasyScribe v2.0 - Python dependencies
 
-# Speech-to-text engine (uses ctranslate2 under the hood)
-faster-whisper>=1.0.3
-
-# Speaker diarization engine (ONNX Runtime — supports CPU and CUDA via 'provider')
-# CUDA builds use the '+cuda' wheel variant — see build_windows.bat.
+# Inference backend (transcription + diarization + VAD)
 sherpa-onnx>=1.10.0
+
+# Microphone capture
+sounddevice>=0.4.6
 
 # GUI framework
 customtkinter>=5.2.2
 
-# Drag-and-drop support for Tkinter
+# Drag-and-drop support
 tkinterdnd2>=0.3.0
 
 # Portable executable builder
