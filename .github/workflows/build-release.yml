@@ -185,16 +185,7 @@ jobs:
           '{"variant": "${{ matrix.variant }}"}' | Set-Content -Path "models\variant.json" -Encoding utf8NoBOM
           Write-Host "variant.json: $(Get-Content models\variant.json)"
 
-      # ── 9. Build launcher.exe ─────────────────────────────────────────────────
-      - name: Build launcher.exe
-        shell: pwsh
-        run: |
-          & venv\Scripts\Activate.ps1
-          pyinstaller launcher/launcher.spec --noconfirm
-          if ($LASTEXITCODE -ne 0) { throw "launcher build failed" }
-          Write-Host "launcher.exe: $((Get-Item dist\launcher.exe).Length / 1MB | ForEach-Object { [math]::Round($_, 1) }) MB"
-
-      # ── 10. Build main EasyScribe app ─────────────────────────────────────────
+      # ── 9. Build main EasyScribe app ──────────────────────────────────────────
       - name: Build EasyScribe (${{ matrix.variant }})
         shell: pwsh
         run: |
@@ -203,7 +194,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
-      # ── 11. Assemble dist/EasyScribe with models + ffmpeg ─────────────────────
+      # ── 10. Assemble dist/EasyScribe with models + ffmpeg ─────────────────────
       - name: Assemble app bundle contents
         shell: pwsh
         run: |
@@ -226,61 +217,43 @@ jobs:
 
           Copy-Item "models\diarization" "$dist\models\diarization" -Recurse -Force
 
-          # Runtime dirs
-          New-Item -ItemType Directory -Force -Path "$dist\logs" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$dist\temp" | Out-Null
+          # Pre-create recordings dir so it is visible after extraction
+          New-Item -ItemType Directory -Force -Path "$dist\recordings" | Out-Null
 
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "App folder size: $([math]::Round($totalMB, 0)) MB"
 
-      # ── 12. Install 7-zip and copy SFX stub ──────────────────────────────────
-      - name: Install 7-zip
+      # ── 11. Create app.bundle (must exist before building launcher) ───────────
+      - name: Create app.bundle
         shell: pwsh
         run: |
-          choco install 7zip -y --no-progress
-          # 7z.sfx ships with the standard 7-zip install and supports RunProgram=
-          $sfxSrc = "C:\Program Files\7-Zip\7z.sfx"
-          if (-not (Test-Path $sfxSrc)) { throw "7z.sfx not found at $sfxSrc" }
-          Copy-Item $sfxSrc "7zSD.sfx"
-          Write-Host "7zSD.sfx: $((Get-Item 7zSD.sfx).Length) bytes"
-          7z i
-
-      # ── 14. Create 7-zip SFX installer ───────────────────────────────────────
-      - name: Create SFX installer
-        shell: pwsh
-        run: |
-          $tag    = "${{ github.event.inputs.tag }}"
-          $variant = "${{ matrix.variant }}"
-          $outExe = "EasyScribe-${tag}-${variant}.exe"
-
-          # Compress app folder → app.bundle (zip format for launcher's zipfile.ZipFile)
-          Write-Host "Creating app.bundle..."
+          Write-Host "Compressing app.bundle..."
           Compress-Archive -Path "dist\EasyScribe\*" -DestinationPath "app.bundle" -CompressionLevel Optimal
+          $sizeMB = [math]::Round((Get-Item app.bundle).Length / 1MB, 1)
+          Write-Host "app.bundle: $sizeMB MB"
 
-          # Create 7z payload: launcher.exe + app.bundle
-          Write-Host "Creating payload.7z..."
-          7z a payload.7z dist\launcher.exe app.bundle
+      # ── 12. Build launcher.exe (embeds app.bundle as data file) ──────────────
+      - name: Build launcher.exe
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          pyinstaller launcher/launcher.spec --noconfirm
+          if ($LASTEXITCODE -ne 0) { throw "launcher build failed" }
+          $sizeMB = [math]::Round((Get-Item dist\launcher.exe).Length / 1MB, 1)
+          Write-Host "launcher.exe (with embedded app.bundle): $sizeMB MB"
 
-          # Write SFX config (ASCII, no BOM)
-          $cfg = @"
-          ;!@Install@!UTF-8!
-          Title="EasyScribe"
-          ExtractPath="%TEMP%\EasyScribe_Setup"
-          RunProgram="launcher.exe"
-          ;!@InstallEnd@!
-          "@
-          # Write without BOM
-          [System.IO.File]::WriteAllText("config.txt", $cfg, [System.Text.Encoding]::ASCII)
-
-          # Concatenate: sfx + config + payload
-          Write-Host "Building SFX: $outExe ..."
-          cmd /c "copy /b 7zSD.sfx + config.txt + payload.7z $outExe"
-          if (-not (Test-Path $outExe)) { throw "SFX creation failed" }
-
+      # ── 13. Rename to final release artifact ──────────────────────────────────
+      - name: Rename to release artifact
+        shell: pwsh
+        run: |
+          $tag     = "${{ github.event.inputs.tag }}"
+          $variant = "${{ matrix.variant }}"
+          $outExe  = "EasyScribe-${tag}-${variant}.exe"
+          Move-Item "dist\launcher.exe" $outExe
           $sizeMB = [math]::Round((Get-Item $outExe).Length / 1MB, 1)
-          Write-Host "Created $outExe ($sizeMB MB)"
+          Write-Host "Release artifact: $outExe ($sizeMB MB)"
 
-      # ── 15. Publish GitHub Release ────────────────────────────────────────────
+      # ── 14. Publish GitHub Release ────────────────────────────────────────────
       - name: Create GitHub Release (${{ matrix.variant }})
         uses: softprops/action-gh-release@v2
         with:
@@ -289,20 +262,24 @@ jobs:
           body: |
             ## EasyScribe ${{ github.event.inputs.tag }} — Portable Offline Speech-to-Text
 
-            Single-file installer — self-extracts to AppData on first run.
+            **Portable — no install required, no admin needed.**
+            Place the .exe anywhere (USB stick, shared folder, local drive) and double-click.
+            On first run it extracts an `EasyScribe/` folder next to itself and launches.
+            On subsequent runs it detects the existing folder and launches immediately.
 
             | Asset | Model | Description |
             |---|---|---|
             | `...-whisper.exe` | Whisper ONNX distil-large-v3 | Best accuracy |
             | `...-parakeet.exe` | Parakeet TDT 0.6B v3 | Faster inference |
 
-            ### Install
+            ### First run
             1. Download one of the .exe files above
-            2. Double-click — it extracts automatically on first run
-            3. EasyScribe launches from `%LOCALAPPDATA%\EasyScribe\${{ github.event.inputs.tag }}\`
+            2. Place it wherever you want the app to live
+            3. Double-click — extraction takes ~30 seconds, then EasyScribe launches
+            4. Transcripts and recordings are saved to `EasyScribe\recordings\` next to the exe
 
             ### Re-running
-            Double-click the same .exe — detects existing install and launches immediately (~1 second).
+            Double-click the same .exe — detects existing `EasyScribe\` folder and launches in ~1 second.
 
             ### GPU acceleration
             Vulkan GPU provider is used automatically when a compatible GPU driver is installed.
@@ -314,9 +291,9 @@ jobs:
 
             ---
             ### What's new in v2.0.0
+            - **Fully portable** — installs next to the .exe, works from USB, no AppData, no admin
             - **sherpa-onnx** replaces faster-whisper — no CUDA DLL headaches
             - **Vulkan GPU** acceleration — works on any GPU (NVIDIA, AMD, Intel)
-            - **Single .exe installer** — extracts once, runs instantly on repeat use
             - **Live microphone transcription** — click Record, speak, get text
             - **Two model variants** — Whisper ONNX (accurate) or Parakeet TDT (fast)
             - **Crash-safe recording** — interrupted recordings are recoverable on next launch
