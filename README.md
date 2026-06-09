@@ -13,7 +13,15 @@ A portable, fully offline Windows desktop application for transcribing media fil
 
 ## Installation
 
-Run `EasyScribe-v2.0.0-whisper.exe` (or `-parakeet.exe`). On first run it extracts the application to `%LOCALAPPDATA%\EasyScribe\2.0.0\` and launches automatically. Subsequent runs launch in under a second from the same file.
+**No installer, no admin rights required.**
+
+1. Place `EasyScribe-v2.0.0-whisper.exe` (or `-parakeet.exe`) anywhere — a local folder, a USB stick, a shared network drive.
+2. Double-click. On first run it extracts an `EasyScribe\` folder next to itself (~30 seconds). EasyScribe launches automatically.
+3. On subsequent runs the same `.exe` detects the existing `EasyScribe\` folder and launches in under a second.
+
+Transcripts and recordings are saved to `EasyScribe\recordings\` next to the `.exe`.
+
+To move the app, move both the `.exe` and the `EasyScribe\` folder together.
 
 > **SmartScreen warning:** PyInstaller executables are unsigned. Click "More info → Run anyway" to proceed.
 
@@ -123,35 +131,40 @@ After a pause, the next block starts here.
 
 ---
 
-## Installed Layout
+## Layout after first run
 
-On first run, the `.exe` extracts to:
+The `.exe` extracts an `EasyScribe\` folder next to itself:
 
 ```
-%LOCALAPPDATA%\EasyScribe\2.0.0\
-  EasyScribe.exe
-  _internal\               <- PyInstaller runtime (DLLs, .pyd files)
-  models\
-    whisper\               <- (whisper variant only)
-      distil-large-v3-encoder.int8.onnx
-      distil-large-v3-decoder.int8.onnx
-      distil-large-v3-tokens.txt
-    parakeet\              <- (parakeet variant only)
-      encoder.int8.onnx
-      decoder.int8.onnx
-      joiner.int8.onnx
-      tokens.txt
-    diarization\
-      segmentation.onnx
-      embedding.onnx
-    silero_vad.onnx
-    variant.json           <- baked in at build time: {"variant": "whisper"}
-  ffmpeg\
-    ffmpeg.exe
-    ffprobe.exe
+<wherever you placed the .exe>
+  EasyScribe-v2.0.0-whisper.exe   <- the launcher; keep this to re-run or move the app
+  EasyScribe\
+    EasyScribe.exe
+    _internal\               <- PyInstaller runtime (DLLs, .pyd files)
+    models\
+      whisper\               <- (whisper variant only)
+        distil-large-v3-encoder.int8.onnx
+        distil-large-v3-decoder.int8.onnx
+        distil-large-v3-tokens.txt
+      parakeet\              <- (parakeet variant only)
+        encoder.int8.onnx
+        decoder.int8.onnx
+        joiner.int8.onnx
+        tokens.txt
+      diarization\
+        segmentation.onnx
+        embedding.onnx
+      silero_vad.onnx
+      variant.json           <- baked in at build time: {"variant": "whisper"}
+    ffmpeg\
+      ffmpeg.exe
+      ffprobe.exe
+    recordings\              <- transcripts and mic recordings saved here
+    logs\                    <- rotating log files
+    temp\                    <- temporary WAV files (auto-cleaned)
 ```
 
-Transcripts and recordings are saved to `%USERPROFILE%\Documents\EasyScribe Recordings\` (created on first use).
+To move the app to another machine or USB stick, copy both the `.exe` and the `EasyScribe\` folder.
 
 ---
 

@@ -1,11 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# launcher.spec - PyInstaller ONEFILE spec for the EasyScribe launcher.
+# launcher.spec - PyInstaller ONEFILE spec for the EasyScribe portable launcher.
 #
-# Produces a tiny (~5 MB) single-file exe that:
-#   1. Checks if EasyScribe is already installed in AppData
-#   2. If not: extracts app.bundle (zip) to AppData
-#   3. Launches EasyScribe.exe
+# app.bundle (zip of the full EasyScribe ONEDIR build) must be created
+# BEFORE running this spec. CI creates it at the project root:
+#   Compress-Archive -Path "dist\EasyScribe\*" -DestinationPath "app.bundle"
+#
+# The embedded app.bundle is extracted to <exe_dir>/EasyScribe/ on first run.
 #
 # Build: pyinstaller launcher/launcher.spec --noconfirm
 
@@ -15,13 +16,15 @@ a = Analysis(
     ["launcher.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        # Embed the pre-built app bundle — path is relative to this spec file
+        ("../app.bundle", "."),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Exclude everything that isn't stdlib
         "customtkinter",
         "tkinterdnd2",
         "sherpa_onnx",
@@ -51,9 +54,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,          # app.bundle is already compressed — UPX won't help
     upx_exclude=[],
-    console=True,   # show progress during extraction
+    console=True,       # show extraction progress
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,

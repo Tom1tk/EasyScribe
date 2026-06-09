@@ -22,7 +22,7 @@ def get_base_dir() -> Path:
     """
     Return the application base directory.
 
-    - Frozen (PyInstaller): folder containing the .exe (AppData install dir).
+    - Frozen (PyInstaller): folder containing EasyScribe.exe (the EasyScribe/ install dir).
     - Development: project root (parent of src/).
     """
     if getattr(sys, "frozen", False):
@@ -34,7 +34,7 @@ BASE_DIR: Path = get_base_dir()
 
 # ─── Output directory ─────────────────────────────────────────────────────────
 
-DEFAULT_OUTPUT_DIR: Path = Path.home() / "Documents" / "EasyScribe Recordings"
+DEFAULT_OUTPUT_DIR: Path = BASE_DIR / "recordings"
 
 # ─── Model variant ────────────────────────────────────────────────────────────
 
