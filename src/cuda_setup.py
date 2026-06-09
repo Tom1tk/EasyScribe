@@ -29,8 +29,17 @@ def _nvidia_lib_dirs() -> list[Path]:
     candidates: list[Path] = []
 
     if getattr(sys, "frozen", False):
-        # Frozen app: hook-nvidia.py copies DLLs to _MEIPASS/nvidia/<pkg>/bin/
         meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+
+        # sherpa_onnx/lib/ is prepended FIRST so its GPU-capable onnxruntime.dll
+        # is cached by Windows before faster-whisper's VAD loads the standalone
+        # CPU onnxruntime.dll (both are named onnxruntime.dll; Windows reuses the
+        # first DLL loaded by that name for all subsequent requests).
+        sherpa_lib = meipass / "sherpa_onnx" / "lib"
+        if sherpa_lib.is_dir():
+            candidates.append(sherpa_lib)
+
+        # nvidia DLLs (placed here by _collect_nvidia_dlls() in EasyScribe.spec)
         nvidia_root = meipass / "nvidia"
         if nvidia_root.is_dir():
             for pkg_dir in nvidia_root.iterdir():

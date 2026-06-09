@@ -127,3 +127,4 @@ providers you never request (e.g. `onnxruntime_providers_tensorrt.dll` wanting
 | v1.0.15 | Fix: disable PLDA (references unbundled pyannote/speaker-diarization-community-1) |
 | v1.1.0 | Replace pyannote.audio diarization backend with sherpa-onnx (ONNX Runtime, GPU-capable via `provider="cuda"`, no PyTorch dependency); remove torch/torchaudio entirely |
 | v1.1.0 (fix) | GPU diarization silently fell back to CPU on real hardware — `onnxruntime_providers_cuda.dll` needs `cufft64_11.dll`; add `nvidia-cufft-cu12` to bundled packages; bump venv cache v6→v7 |
+| v1.1.0 (fix 2) | GPU diarization still fell back to CPU — `onnxruntime 1.26.0` (CPU) installed as faster-whisper dep; both it and sherpa_onnx bundle `onnxruntime.dll`; Windows caches by name so whichever loads first wins; fix by prepending `sherpa_onnx/lib/` to PATH in `cuda_setup.py` so the GPU version is cached first; bump venv cache v7→v8 |
