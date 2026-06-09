@@ -15,6 +15,7 @@ if engine.is_available():
 """
 
 import logging
+import sys
 from pathlib import Path
 from typing import Callable
 
