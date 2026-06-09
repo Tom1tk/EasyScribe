@@ -66,17 +66,24 @@ def main() -> None:
         else:
             ok.append(f"{name}  (directory present)")
 
-    # sounddevice: 0.5.x uses ctypes (no .pyd), ships portaudio DLL instead
-    # Accept either a _sounddevice*.pyd (0.4.x) or portaudio*.dll (0.5.x)
-    sd_files = list(internal.glob("**/_sounddevice*.pyd")) + list(internal.glob("**/portaudio*.dll"))
-    if not sd_files:
+    # sounddevice 0.5.x (CFFI): ships _sounddevice_data/ with the PortAudio DLL
+    # Accept either the CFFI data dir, a classic pyd, or a portaudio DLL
+    sd_data_dir = internal / "_sounddevice_data"
+    sd_pyds = list(internal.glob("**/_sounddevice*.pyd"))
+    sd_dlls = list(internal.glob("**/portaudio*.dll"))
+    if sd_data_dir.is_dir():
+        contents = [f.name for f in sd_data_dir.iterdir()]
+        ok.append(f"sounddevice  (_sounddevice_data/: {contents})")
+    elif sd_pyds:
+        ok.append(f"sounddevice  ({sd_pyds[0].name})")
+    elif sd_dlls:
+        ok.append(f"sounddevice  ({sd_dlls[0].name})")
+    else:
         errors.append(
-            f"MISSING binaries: sounddevice  "
-            f"(no _sounddevice*.pyd or portaudio*.dll anywhere under {internal})\n"
+            f"MISSING: sounddevice audio data  "
+            f"(no _sounddevice_data/, _sounddevice*.pyd, or portaudio*.dll under {internal})\n"
             f"    Required for microphone recording."
         )
-    else:
-        ok.append(f"sounddevice  ({sd_files[0].name} at .../{sd_files[0].parent.name}/)")
 
     _report(ok, errors)
 

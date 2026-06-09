@@ -53,8 +53,12 @@ except Exception as e:
     print(f"[spec] WARNING: could not collect sherpa_onnx: {e}")
 
 # ── sounddevice ───────────────────────────────────────────────────────────────
-# sounddevice 0.5.x uses ctypes (no .pyd); it ships a bundled portaudio DLL.
-# Locate sounddevice's install dir and collect all .pyd/.dll/.so files from it.
+# sounddevice 0.5.x is CFFI-based. Key files (all at site-packages root):
+#   sounddevice.py       — main Python module
+#   _sounddevice.py      — CFFI-generated wrapper
+#   _sounddevice_data/   — directory containing the bundled PortAudio DLL
+#   _cffi_backend.pyd    — the CFFI C extension (collected via cffi hiddenimport)
+# We must add _sounddevice_data/ as a datas entry so PyInstaller bundles the DLL.
 
 import importlib.util as _sd_ilu
 
@@ -64,16 +68,20 @@ try:
     _sd_spec = _sd_ilu.find_spec("sounddevice")
     if _sd_spec and _sd_spec.origin:
         _sd_origin = Path(_sd_spec.origin)
+        _sd_parent = _sd_origin.parent          # site-packages (flat) or sounddevice/ (pkg)
         _sd_is_pkg = (_sd_origin.name == "__init__.py")
-        _sd_dir = _sd_origin.parent      # sounddevice/ dir  OR  site-packages/
         _sd_dest = "sounddevice" if _sd_is_pkg else "."
-        print(f"[spec] sounddevice dir: {_sd_dir}  (is_pkg={_sd_is_pkg})")
-        for _f in _sd_dir.iterdir():
-            if _f.suffix in (".pyd", ".dll", ".so"):
-                _sd_binaries.append((str(_f), _sd_dest))
-                print(f"[spec]   bundling: {_f.name}")
-        if not _sd_binaries:
-            print("[spec] WARNING: no sounddevice binaries found in its install dir")
+
+        # Collect _sounddevice_data/ (contains PortAudio DLL)
+        _sd_data_dir = _sd_parent / "_sounddevice_data"
+        if _sd_data_dir.is_dir():
+            _datas.append((str(_sd_data_dir), "_sounddevice_data"))
+            _sd_dlls = [f.name for f in _sd_data_dir.iterdir()]
+            print(f"[spec] sounddevice _sounddevice_data/: {_sd_dlls}")
+        else:
+            print(f"[spec] WARNING: _sounddevice_data/ not found at {_sd_data_dir}")
+
+        _sd_hidden = ["_sounddevice", "cffi"]
     else:
         print("[spec] WARNING: sounddevice not found via find_spec")
 except Exception as e:
