@@ -53,24 +53,33 @@ except Exception as e:
     print(f"[spec] WARNING: could not collect sherpa_onnx: {e}")
 
 # ── sounddevice ───────────────────────────────────────────────────────────────
-# sounddevice 0.5+ is a single-file module (sounddevice.py) whose C extension
-# _sounddevice.pyd lives at the site-packages root, not inside a package dir.
-# collect_all() therefore skips binaries; we must add the .pyd explicitly.
+# sounddevice's C extension may be at the site-packages root (_sounddevice.pyd)
+# OR inside the sounddevice package dir (sounddevice/_sounddevice.pyd).
+# Glob both locations so this works across sounddevice 0.4.x and 0.5.x.
+
+import site as _site
 
 _sd_binaries: list = []
 _sd_hidden: list = []
 try:
-    import importlib.util as _sd_ilu
-    _sd_ext = _sd_ilu.find_spec("_sounddevice")
-    if _sd_ext and _sd_ext.origin:
-        _sd_origin = Path(_sd_ext.origin)
-        _sd_binaries.append((str(_sd_origin), "."))
-        for _dll in _sd_origin.parent.glob("portaudio*.dll"):
-            _sd_binaries.append((str(_dll), "."))
-        _sd_hidden = ["_sounddevice"]
-        print(f"[spec] sounddevice: {_sd_origin.name} + {len(_sd_binaries)-1} portaudio DLL(s)")
+    for _sp in _site.getsitepackages():
+        _sp_path = Path(_sp)
+        for _pyd in _sp_path.glob("_sounddevice*.pyd"):
+            _sd_binaries.append((str(_pyd), "."))
+            _sd_hidden = ["_sounddevice"]
+            print(f"[spec] sounddevice (flat): {_pyd.name}")
+        for _pyd in _sp_path.glob("sounddevice/_sounddevice*.pyd"):
+            _sd_binaries.append((str(_pyd), "sounddevice"))
+            if "_sounddevice" not in _sd_hidden:
+                _sd_hidden.append("sounddevice._sounddevice")
+            print(f"[spec] sounddevice (pkg): {_pyd.name}")
+        for _dll in list(_sp_path.glob("portaudio*.dll")) + list(_sp_path.glob("sounddevice/portaudio*.dll")):
+            dest = "sounddevice" if "sounddevice" in str(_dll.parent) else "."
+            _sd_binaries.append((str(_dll), dest))
+    if not _sd_binaries:
+        print("[spec] WARNING: no _sounddevice*.pyd found in site-packages")
     else:
-        print("[spec] WARNING: _sounddevice extension not found")
+        print(f"[spec] sounddevice: {len(_sd_binaries)} file(s) collected")
 except Exception as e:
     print(f"[spec] WARNING: could not collect sounddevice: {e}")
 

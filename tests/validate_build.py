@@ -66,15 +66,15 @@ def main() -> None:
         else:
             ok.append(f"{name}  (directory present)")
 
-    # sounddevice is a single-file module: _sounddevice*.pyd lives at _internal root
-    sd_pyd = list(internal.glob("_sounddevice*.pyd"))
-    if not sd_pyd:
+    # sounddevice: C extension may be at _internal root (flat) or _internal/sounddevice/ (pkg)
+    sd_pyds = list(internal.glob("**/_sounddevice*.pyd"))
+    if not sd_pyds:
         errors.append(
-            f"MISSING binaries: sounddevice  (no _sounddevice*.pyd in {internal})\n"
-            f"    This DLL is required for microphone recording."
+            f"MISSING binaries: sounddevice  (no _sounddevice*.pyd anywhere under {internal})\n"
+            f"    Required for microphone recording."
         )
     else:
-        ok.append(f"sounddevice  ({sd_pyd[0].name})")
+        ok.append(f"sounddevice  ({sd_pyds[0].name} at {sd_pyds[0].parent.name}/)")
 
     _report(ok, errors)
 
