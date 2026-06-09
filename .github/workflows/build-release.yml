@@ -74,7 +74,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v2
+          key: venv-win64-py3.11-v3
 
       - name: Install Python dependencies
         if: steps.venv-cache.outputs.cache-hit != 'true'
@@ -83,7 +83,7 @@ jobs:
           python -m venv venv
           & venv\Scripts\Activate.ps1
           python -m pip install --upgrade pip --quiet
-          pip install sherpa-onnx sounddevice customtkinter tkinterdnd2 pyinstaller --quiet
+          pip install sherpa-onnx sounddevice numpy customtkinter tkinterdnd2 pyinstaller --quiet
           Write-Host "Installed packages:"
           pip list --format=columns
 
@@ -194,7 +194,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
-      # ── 10. Assemble dist/EasyScribe with models + ffmpeg ─────────────────────
+      # ── 10. Validate build — catch missing packages before the compress step ──
+      - name: Validate build (${{ matrix.variant }})
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          python tests/validate_build.py dist\EasyScribe
+          if ($LASTEXITCODE -ne 0) { throw "Build validation failed — see output above" }
+
+      # ── 11. Assemble dist/EasyScribe with models + ffmpeg ─────────────────────
       - name: Assemble app bundle contents
         shell: pwsh
         run: |
@@ -223,7 +231,7 @@ jobs:
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "App folder size: $([math]::Round($totalMB, 0)) MB"
 
-      # ── 11. Create app.bundle (must exist before building launcher) ───────────
+      # ── 12. Create app.bundle (must exist before building launcher) ───────────
       - name: Create app.bundle
         shell: pwsh
         run: |
@@ -232,7 +240,7 @@ jobs:
           $sizeMB = [math]::Round((Get-Item app.bundle).Length / 1MB, 1)
           Write-Host "app.bundle: $sizeMB MB"
 
-      # ── 12. Build launcher.exe (embeds app.bundle as data file) ──────────────
+      # ── 13. Build launcher.exe (embeds app.bundle as data file) ──────────────
       - name: Build launcher.exe
         shell: pwsh
         run: |
@@ -242,7 +250,7 @@ jobs:
           $sizeMB = [math]::Round((Get-Item dist\launcher.exe).Length / 1MB, 1)
           Write-Host "launcher.exe (with embedded app.bundle): $sizeMB MB"
 
-      # ── 13. Rename to final release artifact ──────────────────────────────────
+      # ── 14. Rename to final release artifact ──────────────────────────────────
       - name: Rename to release artifact
         shell: pwsh
         run: |
@@ -253,7 +261,7 @@ jobs:
           $sizeMB = [math]::Round((Get-Item $outExe).Length / 1MB, 1)
           Write-Host "Release artifact: $outExe ($sizeMB MB)"
 
-      # ── 14. Publish GitHub Release ────────────────────────────────────────────
+      # ── 15. Publish GitHub Release ────────────────────────────────────────────
       - name: Create GitHub Release (${{ matrix.variant }})
         uses: softprops/action-gh-release@v2
         with:

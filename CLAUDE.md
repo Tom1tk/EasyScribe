@@ -138,6 +138,17 @@ CI builds two variants (whisper, parakeet) in parallel. They install identical p
 Cache key `venv-win64-py3.11-v2` has no variant suffix so the second job always hits cache.
 Bump v2 → v3 etc. to force a clean rebuild after adding/removing packages.
 
+### Rule 11: Always list numpy explicitly in the CI pip install command
+
+`numpy` is not a declared Python dep of `sherpa-onnx` on all platforms. If it is absent from
+the venv, `collect_all('numpy')` silently catches `ImportError` and bundles nothing, then
+`hiddenimports=["numpy"]` resolves to an empty module — the build succeeds but the exe crashes
+with `ModuleNotFoundError: No module named 'numpy'` at runtime.
+
+Always include `numpy` explicitly in the `pip install` line in the workflow. Run
+`tests/validate_build.py dist\EasyScribe` immediately after `pyinstaller` (before creating
+`app.bundle`) to catch this class of problem before the slow compress step.
+
 ---
 
 ## Version History
