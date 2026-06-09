@@ -42,33 +42,39 @@ def main() -> None:
         return
 
     # ── Per-package checks ────────────────────────────────────────────────────
-    # Each entry: (display_name, required_subdir, min_pyd_count)
-    # min_pyd_count=0 means "directory must exist, binary count not checked"
-    package_checks = [
-        ("numpy",        "numpy",       1),
-        ("sherpa_onnx",  "sherpa_onnx", 1),
-        ("sounddevice",  "sounddevice", 1),
-        ("customtkinter","customtkinter",0),
-        ("tkinterdnd2",  "tkinterdnd2", 0),
+    # Packages with their own subdirectory in _internal:
+    dir_checks = [
+        ("numpy",        "numpy",        1),   # numpy/*.pyd
+        ("sherpa_onnx",  "sherpa_onnx",  1),   # sherpa_onnx/*.pyd
+        ("customtkinter","customtkinter", 0),   # directory only
+        ("tkinterdnd2",  "tkinterdnd2",  0),   # directory only
     ]
 
-    for name, subdir, min_pyds in package_checks:
+    for name, subdir, min_pyds in dir_checks:
         pkg_dir = internal / subdir
         if not pkg_dir.is_dir():
-            errors.append(f"MISSING package: {name}  (expected {pkg_dir})")
+            errors.append(f"MISSING package dir: {name}  (expected {pkg_dir})")
             continue
-
         if min_pyds > 0:
             pyds = _find_pyds(pkg_dir)
             if len(pyds) < min_pyds:
                 errors.append(
                     f"MISSING binaries: {name}  (found {len(pyds)} .pyd files, need >= {min_pyds})"
-                    f"\n    directory: {pkg_dir}"
                 )
             else:
                 ok.append(f"{name}  ({len(pyds)} .pyd file(s))")
         else:
             ok.append(f"{name}  (directory present)")
+
+    # sounddevice is a single-file module: _sounddevice*.pyd lives at _internal root
+    sd_pyd = list(internal.glob("_sounddevice*.pyd"))
+    if not sd_pyd:
+        errors.append(
+            f"MISSING binaries: sounddevice  (no _sounddevice*.pyd in {internal})\n"
+            f"    This DLL is required for microphone recording."
+        )
+    else:
+        ok.append(f"sounddevice  ({sd_pyd[0].name})")
 
     _report(ok, errors)
 
