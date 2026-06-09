@@ -185,7 +185,27 @@ jobs:
           '{"variant": "${{ matrix.variant }}"}' | Set-Content -Path "models\variant.json" -Encoding utf8NoBOM
           Write-Host "variant.json: $(Get-Content models\variant.json)"
 
-      # ── 9. Build main EasyScribe app ──────────────────────────────────────────
+      # ── 9. Diagnose sounddevice package layout ────────────────────────────────
+      - name: Diagnose sounddevice layout
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          python -c "
+import sounddevice, importlib.util
+from pathlib import Path
+
+sd_spec = importlib.util.find_spec('sounddevice')
+sd_origin = Path(sd_spec.origin)
+sd_dir = sd_origin.parent
+
+print(f'sounddevice version: {sounddevice.__version__}')
+print(f'sounddevice __file__: {sd_origin}')
+print(f'directory: {sd_dir}')
+for f in sorted(sd_dir.iterdir()):
+    print(f'  {f.name}  ({f.stat().st_size} B)')
+"
+
+      # ── 10. Build main EasyScribe app ─────────────────────────────────────────
       - name: Build EasyScribe (${{ matrix.variant }})
         shell: pwsh
         run: |
@@ -194,7 +214,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
-      # ── 10. Validate build — catch missing packages before the compress step ──
+      # ── 11. Validate build — catch missing packages before the compress step ──
       - name: Validate build (${{ matrix.variant }})
         shell: pwsh
         run: |
