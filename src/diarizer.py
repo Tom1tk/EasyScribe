@@ -15,7 +15,6 @@ if engine.is_available():
 """
 
 import logging
-import sys
 from pathlib import Path
 from typing import Callable
 
@@ -196,14 +195,11 @@ class DiarizationEngine:
                 "Re-build with diarization support enabled."
             ) from exc
 
-        # GPU detection reuses transcriber's ctranslate2-based GPU enumeration —
-        # works without torch (torch is no longer bundled).
-        try:
-            from transcriber import list_gpus
-            _use_cuda = len(list_gpus()) > 0
-        except Exception as _gpu_detect_exc:
-            logger.warning(f"GPU detection failed, defaulting to CPU: {_gpu_detect_exc}")
-            _use_cuda = False
+        # Diarization runs CPU-only. onnxruntime's CUDA provider requires a
+        # separate CUDA DLL stack that conflicts with the transcription DLLs
+        # on Windows. CPU diarization is fast enough (~30s for a 45-min file)
+        # and avoids the entire CUDA DLL management problem.
+        _use_cuda = False
 
         def _build_pipeline(provider: str):
             seg_cfg = sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
@@ -223,44 +219,12 @@ class DiarizationEngine:
             return sherpa_onnx.OfflineSpeakerDiarization(config)
 
         pipeline = None
-        if _use_cuda:
-            # Diagnostic: test-load the CUDA provider DLL via ctypes first so that
-            # if it fails we get the exact Windows error code (e.g. [WinError 126]
-            # "module not found" = missing dep DLL, [WinError 127] = symbol mismatch).
-            if sys.platform == "win32":
-                import ctypes as _ctypes
-                _lib_dir = Path(sherpa_onnx.__file__).parent / "lib"
-                _cuda_ep = _lib_dir / "onnxruntime_providers_cuda.dll"
-                if _cuda_ep.is_file():
-                    try:
-                        _ctypes.WinDLL(str(_cuda_ep))
-                        logger.debug(f"ctypes pre-check: {_cuda_ep.name} loads OK")
-                    except OSError as _cdl_exc:
-                        logger.warning(f"ctypes pre-check: {_cuda_ep.name} FAILED: {_cdl_exc}")
-                else:
-                    logger.warning(f"ctypes pre-check: {_cuda_ep} not found")
-
-            try:
-                pipeline = _build_pipeline("cuda")
-                self._pipeline_on_gpu = True
-                logger.info("Diarization pipeline loaded on CUDA GPU")
-                log_callback("[Diarize] Using GPU for speaker identification")
-            except Exception as _gpu_exc:
-                import traceback as _tb
-                logger.warning(f"Could not load diarization pipeline on GPU: {_gpu_exc}")
-                logger.debug(f"GPU pipeline traceback:\n{_tb.format_exc()}")
-                pipeline = None
-
         if pipeline is None:
             try:
                 pipeline = _build_pipeline("cpu")
                 self._pipeline_on_gpu = False
                 logger.info("Diarization pipeline loaded on CPU")
-                log_callback(
-                    "[Diarize] No GPU found — using CPU (may be slow for long files)"
-                    if not _use_cuda
-                    else "[Diarize] GPU unavailable for diarization — using CPU"
-                )
+                log_callback("[Diarize] Running on CPU")
             except Exception as exc:
                 import traceback as _tb
                 logger.error(f"Pipeline loading traceback:\n{_tb.format_exc()}")
