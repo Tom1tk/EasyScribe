@@ -233,20 +233,16 @@ jobs:
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "App folder size: $([math]::Round($totalMB, 0)) MB"
 
-      # ── 12. Download 7zSD.sfx ─────────────────────────────────────────────────
-      - name: Download 7-zip SFX stub
-        shell: pwsh
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          # 7zSD.sfx from 7-zip extras package (Win64, LZMA)
-          Invoke-WebRequest -Uri "https://github.com/nicowillis/7zip-sfx/raw/master/7zSD.sfx" -OutFile "7zSD.sfx"
-          Write-Host "7zSD.sfx: $((Get-Item 7zSD.sfx).Length) bytes"
-
-      # ── 13. Install 7-zip CLI ─────────────────────────────────────────────────
+      # ── 12. Install 7-zip and copy SFX stub ──────────────────────────────────
       - name: Install 7-zip
         shell: pwsh
         run: |
           choco install 7zip -y --no-progress
+          # 7z.sfx ships with the standard 7-zip install and supports RunProgram=
+          $sfxSrc = "C:\Program Files\7-Zip\7z.sfx"
+          if (-not (Test-Path $sfxSrc)) { throw "7z.sfx not found at $sfxSrc" }
+          Copy-Item $sfxSrc "7zSD.sfx"
+          Write-Host "7zSD.sfx: $((Get-Item 7zSD.sfx).Length) bytes"
           7z i
 
       # ── 14. Create 7-zip SFX installer ───────────────────────────────────────
