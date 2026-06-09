@@ -12,7 +12,7 @@ name: Build and Publish Release
 #
 # Cache strategy (skips re-downloading on repeat builds):
 #   ffmpeg              ~70 MB    key: ffmpeg-win64-gpl-static-v1
-#   venv                ~2-3 GB   key: venv-win64-py3.11-v7              (bump to refresh)
+#   venv                ~2-3 GB   key: venv-win64-py3.11-v8              (bump to refresh)
 #   whisper model       ~1.5 GB   key: faster-whisper-large-v3-turbo-mobiuslabs-v1
 #   diarization models  ~35 MB    key: sherpa-onnx-diarization-v1
 on:
@@ -110,13 +110,13 @@ jobs:
 
       # ── 5. Cache Python venv (~1-1.5 GB) ──────────────────────────────────────
       # sherpa-onnx (CPU or CUDA-provider) + nvidia-*-cu12 packages for CUDA DLLs.
-      # Bump v7 → v8 (etc.) to force a clean reinstall (e.g. after adding a package).
+      # Bump v8 → v9 (etc.) to force a clean reinstall (e.g. after adding a package).
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v7-cuda${{ inputs.cuda }}
+          key: venv-win64-py3.11-v8-cuda${{ inputs.cuda }}
 
       # ── 5b. Install Python dependencies (skipped on cache hit) ───────────────
       - name: Install Python dependencies

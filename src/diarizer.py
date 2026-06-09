@@ -223,13 +223,31 @@ class DiarizationEngine:
 
         pipeline = None
         if _use_cuda:
+            # Diagnostic: test-load the CUDA provider DLL via ctypes first so that
+            # if it fails we get the exact Windows error code (e.g. [WinError 126]
+            # "module not found" = missing dep DLL, [WinError 127] = symbol mismatch).
+            if sys.platform == "win32":
+                import ctypes as _ctypes
+                _lib_dir = Path(sherpa_onnx.__file__).parent / "lib"
+                _cuda_ep = _lib_dir / "onnxruntime_providers_cuda.dll"
+                if _cuda_ep.is_file():
+                    try:
+                        _ctypes.WinDLL(str(_cuda_ep))
+                        logger.debug(f"ctypes pre-check: {_cuda_ep.name} loads OK")
+                    except OSError as _cdl_exc:
+                        logger.warning(f"ctypes pre-check: {_cuda_ep.name} FAILED: {_cdl_exc}")
+                else:
+                    logger.warning(f"ctypes pre-check: {_cuda_ep} not found")
+
             try:
                 pipeline = _build_pipeline("cuda")
                 self._pipeline_on_gpu = True
                 logger.info("Diarization pipeline loaded on CUDA GPU")
                 log_callback("[Diarize] Using GPU for speaker identification")
             except Exception as _gpu_exc:
+                import traceback as _tb
                 logger.warning(f"Could not load diarization pipeline on GPU: {_gpu_exc}")
+                logger.debug(f"GPU pipeline traceback:\n{_tb.format_exc()}")
                 pipeline = None
 
         if pipeline is None:
