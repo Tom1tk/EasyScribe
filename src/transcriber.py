@@ -240,7 +240,7 @@ def _build_recognizer_config(provider: str):
     else:
         raise ModelNotFoundError(f"Unknown model variant: {variant!r}")
 
-    return sherpa_onnx.OfflineRecognizerConfig(model=model_cfg)
+    return sherpa_onnx.OfflineRecognizerConfig(model_config=model_cfg)
 
 
 # ─── Audio loading ────────────────────────────────────────────────────────────

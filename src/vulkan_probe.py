@@ -97,7 +97,7 @@ def _enumerate() -> list[dict]:
         )
         create_info = _VkInstanceCreateInfo(
             sType=VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            pApplicationInfo=ctypes.byref(app_info),
+            pApplicationInfo=ctypes.pointer(app_info),
         )
 
         instance = ctypes.c_void_p()
