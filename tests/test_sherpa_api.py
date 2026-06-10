@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""
+Local API-shape tests for the sherpa_onnx / Vulkan integration in src/transcriber.py
+and src/vulkan_probe.py.
+
+These run fast, offline, and without real model files — they catch mismatches
+between our code and the installed sherpa_onnx version's constructor signatures
+(e.g. wrong kwargs, wrong class) before a slow CI build.
+
+Run from project root: python tests/test_sherpa_api.py
+Exits 0 on success, 1 on failure.
+"""
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+failures: list[str] = []
+
+
+def _check(name: str, fn) -> None:
+    try:
+        fn()
+        print(f"  OK   {name}")
+    except Exception as exc:
+        print(f"  FAIL {name}: {type(exc).__name__}: {exc}")
+        failures.append(name)
+
+
+def _check_recognizer_config(variant: str) -> None:
+    os.environ["EASYSCRIBE_MODEL_VARIANT"] = variant
+
+    # config and transcriber cache module-level state at import time —
+    # force a fresh import per variant.
+    for mod in ("config", "transcriber"):
+        sys.modules.pop(mod, None)
+
+    import config
+    import transcriber
+    from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRecognizer
+
+    assert config.MODEL_VARIANT == variant, config.MODEL_VARIANT
+
+    cfg = transcriber._build_recognizer_config("cpu")
+
+    import sherpa_onnx
+    assert isinstance(cfg, sherpa_onnx.OfflineRecognizerConfig), type(cfg)
+
+    # Model files don't exist (no models bundled in dev) — constructing the
+    # recognizer must fail with RuntimeError (bad path), NOT TypeError
+    # (bad constructor signature).
+    try:
+        _OfflineRecognizer(cfg)
+    except RuntimeError:
+        pass  # expected: dummy paths don't exist
+
+
+def _check_vulkan_probe() -> None:
+    sys.modules.pop("vulkan_probe", None)
+    import vulkan_probe
+
+    gpus = vulkan_probe.detect_vulkan_gpus()
+    assert isinstance(gpus, list), type(gpus)
+    for gpu in gpus:
+        assert "index" in gpu and "name" in gpu, gpu
+
+
+def main() -> None:
+    print("\n-- sherpa_onnx / vulkan API tests ----------------------------------------")
+    _check("OfflineRecognizerConfig (whisper)", lambda: _check_recognizer_config("whisper"))
+    _check("OfflineRecognizerConfig (parakeet)", lambda: _check_recognizer_config("parakeet"))
+    _check("vulkan_probe.detect_vulkan_gpus()", _check_vulkan_probe)
+    print("---------------------------------------------------------------------------\n")
+
+    if failures:
+        print(f"FAILED: {len(failures)} check(s) failed.", file=sys.stderr)
+        sys.exit(1)
+    print("All checks passed.")
+
+
+if __name__ == "__main__":
+    main()

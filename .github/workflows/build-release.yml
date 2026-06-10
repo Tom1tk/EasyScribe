@@ -87,6 +87,16 @@ jobs:
           Write-Host "Installed packages:"
           pip list --format=columns
 
+      # ── 4b. API smoke tests — catch sherpa_onnx/vulkan signature mismatches ───
+      # Fast, offline, no model files needed. Runs before the slow model
+      # downloads and PyInstaller build so bad API calls fail in seconds.
+      - name: Run sherpa_onnx/vulkan API tests
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          python tests/test_sherpa_api.py
+          if ($LASTEXITCODE -ne 0) { throw "API smoke tests failed — see output above" }
+
       # ── 5. ASR model cache (variant-specific) ─────────────────────────────────
       - name: Cache Whisper ONNX model
         if: matrix.variant == 'whisper'

@@ -86,6 +86,30 @@ def _enumerate() -> list[dict]:
         logger.debug("Vulkan library not found — no GPU enumeration")
         return []
 
+    # Declare argtypes/restype explicitly. Without them, ctypes' default integer
+    # conversion uses C `long`, which is 32-bit on 64-bit Windows (LLP64) — passing
+    # a 64-bit VkPhysicalDevice handle then raises "OverflowError: int too long to
+    # convert". c_void_p is always pointer-sized on every platform.
+    vk.vkCreateInstance.argtypes = [
+        ctypes.POINTER(_VkInstanceCreateInfo),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    vk.vkCreateInstance.restype = ctypes.c_int32
+    vk.vkEnumeratePhysicalDevices.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_void_p,
+    ]
+    vk.vkEnumeratePhysicalDevices.restype = ctypes.c_int32
+    vk.vkGetPhysicalDeviceProperties.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_VkPhysicalDeviceProperties),
+    ]
+    vk.vkGetPhysicalDeviceProperties.restype = None
+    vk.vkDestroyInstance.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    vk.vkDestroyInstance.restype = None
+
     try:
         app_info = _VkApplicationInfo(
             sType=VK_STRUCTURE_TYPE_APPLICATION_INFO,

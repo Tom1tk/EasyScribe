@@ -149,6 +149,24 @@ Always include `numpy` explicitly in the `pip install` line in the workflow. Run
 `tests/validate_build.py dist\EasyScribe` immediately after `pyinstaller` (before creating
 `app.bundle`) to catch this class of problem before the slow compress step.
 
+### Rule 12: sherpa_onnx's public `OfflineRecognizer` class has no `__init__` — use the binding class
+
+`sherpa_onnx.OfflineRecognizer` (the Python wrapper in `offline_recognizer.py`) only exposes
+`from_transducer`/`from_whisper`/etc. classmethods that build `self.recognizer` internally.
+Calling `sherpa_onnx.OfflineRecognizer(cfg)` directly raises
+`TypeError: OfflineRecognizer() takes no arguments` — it inherits `object.__init__` and was
+never given a config-based constructor. The actual config-based constructor is the binding
+class: `from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRecognizer`,
+then `_OfflineRecognizer(cfg)` where `cfg` is an `OfflineRecognizerConfig`. Also note
+`OfflineRecognizerConfig(...)` itself takes `model_config=`, not `model=`.
+
+`tests/test_sherpa_api.py` builds the config for both variants and constructs
+`_OfflineRecognizer(cfg)` against nonexistent model paths, asserting `RuntimeError`
+(bad path) rather than `TypeError` (bad constructor signature). Run it locally
+(`python tests/test_sherpa_api.py`, no model files or GPU needed) before triggering a
+build — it now also runs as an early CI step, right after `pip install`, before any
+model downloads.
+
 ---
 
 ## Version History
