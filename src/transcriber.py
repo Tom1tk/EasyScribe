@@ -294,11 +294,11 @@ class TranscriptionEngine:
             provider = _resolve_provider(self.preferred_gpu_index)
             logger.info(f"Loading {config.MODEL_VARIANT} model, provider={provider}")
 
-            import sherpa_onnx
+            from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRecognizer
 
             try:
                 cfg = _build_recognizer_config(provider)
-                self._recognizer = sherpa_onnx.OfflineRecognizer(cfg)
+                self._recognizer = _OfflineRecognizer(cfg)
                 self._provider = provider
                 logger.info(f"Model loaded: provider={provider}")
             except RuntimeError as exc:
@@ -306,7 +306,7 @@ class TranscriptionEngine:
                     logger.warning(f"Vulkan failed ({exc}); retrying on CPU")
                     status_callback("Loading Model (CPU fallback)")
                     cfg = _build_recognizer_config("cpu")
-                    self._recognizer = sherpa_onnx.OfflineRecognizer(cfg)
+                    self._recognizer = _OfflineRecognizer(cfg)
                     self._provider = "cpu"
                     logger.info("Model loaded on CPU (Vulkan fallback)")
                 else:
