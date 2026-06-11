@@ -1,9 +1,14 @@
 """
 live_transcriber.py - VAD-chunked live microphone transcription.
 
-Uses Silero VAD to detect speech segments, then feeds each segment to a
-sherpa-onnx OfflineRecognizer. Runs on a daemon thread; stops when
-cancel_event is set.
+Runs two daemon threads:
+- VAD thread: feeds mic audio through Silero VAD, applies backward-only
+  onset padding (vad.pad_live_segment), and pushes detected segments onto a
+  bounded decode queue.
+- Decode thread: pulls segments off the queue and runs the sherpa-onnx
+  recognizer, so a slow decode never blocks VAD/capture.
+
+Both stop when cancel_event is set.
 """
 
 import logging
@@ -14,23 +19,32 @@ from typing import Callable
 import numpy as np
 
 import config
+import vad
 
 logger = logging.getLogger(__name__)
+
+_DECODE_QUEUE_MAXSIZE = 8
+
+# Rolling history buffer for backward-only onset padding: must cover at least
+# vad.PAD_SAMPLES plus a margin for the VAD's own detection lag.
+_HISTORY_SAMPLES = vad.PAD_SAMPLES + 16 * config.VAD_CHUNK_SAMPLES
 
 
 class LiveTranscriber:
     """
-    Runs a Silero VAD → OfflineRecognizer pipeline on a background thread.
+    Runs a Silero VAD -> bounded decode queue -> OfflineRecognizer pipeline
+    on two background threads.
 
     Usage:
         lt = LiveTranscriber()
         lt.start(recognizer, mic_queue, stop_event, on_segment)
         stop_event.set()   # signal from recording worker
-        lt.stop()          # join thread
+        lt.stop()          # join threads
     """
 
     def __init__(self) -> None:
-        self._thread: threading.Thread | None = None
+        self._vad_thread: threading.Thread | None = None
+        self._decode_thread: threading.Thread | None = None
 
     def start(
         self,
@@ -38,46 +52,56 @@ class LiveTranscriber:
         mic_queue: queue.Queue,
         cancel_event: threading.Event,
         on_segment: Callable[[str], None],
+        on_overflow: Callable[[], None] | None = None,
     ) -> None:
-        """Launch the VAD loop on a daemon thread."""
-        self._thread = threading.Thread(
-            target=self._loop,
-            args=(recognizer, mic_queue, cancel_event, on_segment),
+        """Launch the VAD and decode loops on daemon threads."""
+        decode_queue: queue.Queue = queue.Queue(maxsize=_DECODE_QUEUE_MAXSIZE)
+        # Concurrent calls into onnxruntime from the VAD and decode sessions on
+        # different threads can trigger a fatal (uncatchable) ScatterND/
+        # GetElementType abort. Serialize all onnxruntime calls with this lock.
+        onnx_lock = threading.Lock()
+
+        self._decode_thread = threading.Thread(
+            target=self._decode_loop,
+            args=(recognizer, decode_queue, cancel_event, on_segment, onnx_lock),
             daemon=True,
-            name="LiveTranscriber",
+            name="LiveDecoder",
         )
-        self._thread.start()
+        self._vad_thread = threading.Thread(
+            target=self._vad_loop,
+            args=(mic_queue, decode_queue, cancel_event, on_overflow, onnx_lock),
+            daemon=True,
+            name="LiveVAD",
+        )
+        self._decode_thread.start()
+        self._vad_thread.start()
         logger.info("LiveTranscriber started")
 
     def stop(self) -> None:
-        """Join the VAD loop thread (cancel_event must already be set)."""
-        if self._thread is not None:
-            self._thread.join(timeout=5)
-            self._thread = None
-            logger.info("LiveTranscriber stopped")
+        """Join the VAD and decode threads (cancel_event must already be set)."""
+        if self._vad_thread is not None:
+            self._vad_thread.join(timeout=5)
+            self._vad_thread = None
+        if self._decode_thread is not None:
+            self._decode_thread.join(timeout=5)
+            self._decode_thread = None
+        logger.info("LiveTranscriber stopped")
 
-    def _loop(
-        self,
-        recognizer,
+    @staticmethod
+    def _vad_loop(
         mic_queue: queue.Queue,
+        decode_queue: queue.Queue,
         cancel_event: threading.Event,
-        on_segment: Callable[[str], None],
+        on_overflow: Callable[[], None] | None,
+        onnx_lock: threading.Lock,
     ) -> None:
-        import sherpa_onnx
-
-        # config.VAD_MODEL_PATH = BASE_DIR / "models" / "silero_vad.onnx"
-        # sherpa_onnx.get_default_vad_model() does not exist in v1.13.2 — model bundled explicitly
-        vad_config = sherpa_onnx.VadModelConfig(
-            silero_vad=sherpa_onnx.SileroVadModelConfig(
-                model=str(config.VAD_MODEL_PATH),
-                threshold=0.5,
-                min_silence_duration=0.5,
-                min_speech_duration=0.25,
-            ),
-            sample_rate=config.VAD_SAMPLE_RATE,
-        )
-        vad = sherpa_onnx.VoiceActivityDetector(vad_config, buffer_size_in_seconds=30)
+        detector = vad.build_vad(buffer_size_in_seconds=30)
         logger.debug("VAD initialised")
+
+        history = np.zeros(0, dtype=np.float32)
+        history_start = 0
+        prev_segment_end = 0
+        overflow_notified = False
 
         while not cancel_event.is_set():
             try:
@@ -85,18 +109,72 @@ class LiveTranscriber:
             except queue.Empty:
                 continue
 
-            vad.accept_waveform(chunk)
+            history = np.concatenate([history, chunk])
+            if len(history) > _HISTORY_SAMPLES:
+                trim = len(history) - _HISTORY_SAMPLES
+                history = history[trim:]
+                history_start += trim
 
-            while not vad.empty():
-                segment = vad.front
-                samples = segment.samples
+            with onnx_lock:
+                detector.accept_waveform(chunk)
 
+                while not detector.empty():
+                    segment = detector.front
+                    seg_start = segment.start
+                    samples = vad.pad_live_segment(
+                        history, history_start, prev_segment_end, seg_start, segment.samples
+                    )
+                    prev_segment_end = seg_start + len(segment.samples)
+
+                    if not _put_dropping_oldest(decode_queue, samples) and not overflow_notified:
+                        overflow_notified = True
+                        logger.warning("Live decode queue full — dropped oldest segment")
+                        if on_overflow is not None:
+                            on_overflow()
+
+                    detector.pop()
+
+    @staticmethod
+    def _decode_loop(
+        recognizer,
+        decode_queue: queue.Queue,
+        cancel_event: threading.Event,
+        on_segment: Callable[[str], None],
+        onnx_lock: threading.Lock,
+    ) -> None:
+        while True:
+            try:
+                samples = decode_queue.get(timeout=0.1)
+            except queue.Empty:
+                if cancel_event.is_set():
+                    return
+                continue
+
+            with onnx_lock:
                 stream = recognizer.create_stream()
                 stream.accept_waveform(config.VAD_SAMPLE_RATE, samples)
                 recognizer.decode_stream(stream)
-
                 text = stream.result.text.strip()
-                if text:
-                    on_segment(text)
 
-                vad.pop()
+            if text:
+                on_segment(text)
+
+
+def _put_dropping_oldest(q: queue.Queue, item: np.ndarray) -> bool:
+    """
+    Put `item` on `q`. If full, drop the oldest item to make room.
+    Returns False if an item had to be dropped, True otherwise.
+    """
+    try:
+        q.put_nowait(item)
+        return True
+    except queue.Full:
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            pass
+        return False
