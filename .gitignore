@@ -23,6 +23,9 @@ build/
 # Model files (large binaries — user must provide these)
 models/
 
+# whisper.cpp binary + GGUF model (large binaries — built/downloaded locally)
+whispercpp/
+
 # ffmpeg binaries (downloaded by build script)
 tools/ffmpeg/
 

@@ -16,6 +16,7 @@ import numpy as np
 
 import config
 import vad
+import whispercpp_wrapper
 from config import TEMP_DIR
 from vad import CancelledError
 
@@ -285,16 +286,9 @@ class TranscriptionEngine:
         if cancel_event.is_set():
             raise CancelledError("Cancelled before transcription started")
 
-        self._ensure_model_loaded(status_callback)
-
         status_callback("Transcribing")
         logger.info(f"Transcribing: {audio_path.name} → {output_path.name}")
         log_callback(f"[Transcribe] Starting: {audio_path.name}")
-        log_callback(
-            f"[Transcribe] provider: {self._provider}, "
-            f"timestamps: {'on' if add_timestamps else 'off'}, "
-            f"speakers: {'on' if diarize else 'off'}"
-        )
 
         try:
             samples, sr = _load_wav_float32(audio_path)
@@ -304,45 +298,63 @@ class TranscriptionEngine:
         duration = len(samples) / sr
         log_callback(f"[Transcribe] Audio duration: {_fmt_seconds(duration)}")
 
-        log_callback("[Transcribe] Detecting speech segments (VAD)…")
-        vad_detector = vad.build_vad()
-        bounds = vad.file_segments(vad_detector, samples, cancel_event)
-        padded_bounds = vad.pad_and_clamp(bounds, len(samples))
-        num_chunks = len(padded_bounds)
-        log_callback(f"[Transcribe] Processing {num_chunks} speech segment(s)…")
-
-        raw_segments: list[tuple[float, float, str]] = []
-        segment_count = 0
-        word_count = 0
         infer_start = time.monotonic()
+        raw_segments: list[tuple[float, float, str]]
 
-        for i, (c_start, c_end) in enumerate(padded_bounds):
-            if cancel_event.is_set():
-                raise CancelledError("Transcription cancelled by user")
-
-            seg_start = c_start / sr
-            seg_end = c_end / sr
-
-            stream = self._recognizer.create_stream()
-            stream.accept_waveform(sr, samples[c_start:c_end])
-            self._recognizer.decode_stream(stream)
-
-            text = stream.result.text.strip()
-            if text:
-                raw_segments.append((seg_start, seg_end, text))
-                segment_count += 1
-                word_count += len(text.split())
-                log_callback(text)
-
-            progress_callback((i + 1) / num_chunks)
-            elapsed = time.monotonic() - infer_start
-            speed = seg_end / elapsed if elapsed > 0 else 0
+        if whispercpp_wrapper.is_available():
             log_callback(
-                f"[Progress] segment {i+1}/{num_chunks} — "
-                f"{_fmt_seconds(seg_end)} / {_fmt_seconds(duration)} — "
-                f"{speed:.1f}x realtime"
+                f"[Transcribe] engine: whisper.cpp (beam_size={config.WHISPERCPP_BEAM_SIZE}), "
+                f"timestamps: {'on' if add_timestamps else 'off'}, "
+                f"speakers: {'on' if diarize else 'off'}"
+            )
+            raw_segments = whispercpp_wrapper.transcribe_file(
+                audio_path, cancel_event, log_callback, progress_callback
+            )
+            for _seg_start, _seg_end, text in raw_segments:
+                log_callback(text)
+        else:
+            self._ensure_model_loaded(status_callback)
+            log_callback(
+                f"[Transcribe] engine: sherpa-onnx (provider={self._provider}), "
+                f"timestamps: {'on' if add_timestamps else 'off'}, "
+                f"speakers: {'on' if diarize else 'off'}"
             )
 
+            log_callback("[Transcribe] Detecting speech segments (VAD)…")
+            vad_detector = vad.build_vad()
+            bounds = vad.file_segments(vad_detector, samples, cancel_event)
+            padded_bounds = vad.pad_and_clamp(bounds, len(samples))
+            num_chunks = len(padded_bounds)
+            log_callback(f"[Transcribe] Processing {num_chunks} speech segment(s)…")
+
+            raw_segments = []
+            for i, (c_start, c_end) in enumerate(padded_bounds):
+                if cancel_event.is_set():
+                    raise CancelledError("Transcription cancelled by user")
+
+                seg_start = c_start / sr
+                seg_end = c_end / sr
+
+                stream = self._recognizer.create_stream()
+                stream.accept_waveform(sr, samples[c_start:c_end])
+                self._recognizer.decode_stream(stream)
+
+                text = stream.result.text.strip()
+                if text:
+                    raw_segments.append((seg_start, seg_end, text))
+                    log_callback(text)
+
+                progress_callback((i + 1) / num_chunks)
+                elapsed = time.monotonic() - infer_start
+                speed = seg_end / elapsed if elapsed > 0 else 0
+                log_callback(
+                    f"[Progress] segment {i+1}/{num_chunks} — "
+                    f"{_fmt_seconds(seg_end)} / {_fmt_seconds(duration)} — "
+                    f"{speed:.1f}x realtime"
+                )
+
+        segment_count = len(raw_segments)
+        word_count = sum(len(text.split()) for _, _, text in raw_segments)
         total_elapsed = time.monotonic() - infer_start
         log_callback(
             f"[Transcribe] Complete — {segment_count} segments, "
