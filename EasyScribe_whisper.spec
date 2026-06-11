@@ -33,13 +33,11 @@ for pkg in ("customtkinter", "tkinterdnd2"):
 
 # ── Bundled models ────────────────────────────────────────────────────────────
 # Models are placed here by the CI download step before PyInstaller runs.
-# variant.json is written by CI to bake the variant into the bundle.
 
 _datas += [
     ("models/whisper/", "models/whisper"),
     ("models/silero_vad.onnx", "models"),
     ("models/diarization/", "models/diarization"),
-    ("models/variant.json", "models"),
 ]
 
 # ── sherpa-onnx: compiled extensions + .libs dir ─────────────────────────────

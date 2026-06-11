@@ -10,7 +10,6 @@ between our code and the installed sherpa_onnx version's constructor signatures
 Run from project root: python tests/test_sherpa_api.py
 Exits 0 on success, 1 on failure.
 """
-import os
 import sys
 from pathlib import Path
 
@@ -29,32 +28,22 @@ def _check(name: str, fn) -> None:
         failures.append(name)
 
 
-def _check_recognizer_config(variant: str) -> None:
-    os.environ["EASYSCRIBE_MODEL_VARIANT"] = variant
-
-    # config and transcriber cache module-level state at import time —
-    # force a fresh import per variant.
-    for mod in ("config", "transcriber"):
-        sys.modules.pop(mod, None)
-
-    import config
+def _check_recognizer_config() -> None:
     import transcriber
     from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRecognizer
-
-    assert config.MODEL_VARIANT == variant, config.MODEL_VARIANT
 
     cfg = transcriber._build_recognizer_config("cpu")
 
     import sherpa_onnx
     assert isinstance(cfg, sherpa_onnx.OfflineRecognizerConfig), type(cfg)
 
-    # Model files don't exist (no models bundled in dev) — constructing the
-    # recognizer must fail with RuntimeError (bad path), NOT TypeError
-    # (bad constructor signature).
+    # If model files aren't present (e.g. CI before the model download step),
+    # constructing the recognizer must fail with RuntimeError (bad path), NOT
+    # TypeError (bad constructor signature).
     try:
         _OfflineRecognizer(cfg)
     except RuntimeError:
-        pass  # expected: dummy paths don't exist
+        pass  # expected when model files are missing
 
 
 def _check_vulkan_probe() -> None:
@@ -69,8 +58,7 @@ def _check_vulkan_probe() -> None:
 
 def main() -> None:
     print("\n-- sherpa_onnx / vulkan API tests ----------------------------------------")
-    _check("OfflineRecognizerConfig (whisper)", lambda: _check_recognizer_config("whisper"))
-    _check("OfflineRecognizerConfig (parakeet)", lambda: _check_recognizer_config("parakeet"))
+    _check("OfflineRecognizerConfig", _check_recognizer_config)
     _check("vulkan_probe.detect_vulkan_gpus()", _check_vulkan_probe)
     print("---------------------------------------------------------------------------\n")
 

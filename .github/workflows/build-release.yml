@@ -1,16 +1,14 @@
 name: Build and Publish Release
 
 # Trigger manually from the GitHub Actions tab.
-# Builds TWO variants (whisper + parakeet) as parallel matrix jobs.
-# Each produces a single self-extracting .exe via 7-zip SFX.
+# Builds a single EasyScribe .exe via 7-zip SFX (Whisper ONNX large-v3-turbo).
 #
 # Cache strategy:
-#   ffmpeg              ~70 MB    key: ffmpeg-win64-gpl-static-v1        (shared)
-#   Python venv         ~1-2 GB   key: venv-win64-py3.11-v2              (shared — no variant suffix)
-#   Whisper ONNX model  ~600 MB   key: sherpa-onnx-whisper-distil-large-v3-v1 (whisper only)
-#   Parakeet TDT model  ~600 MB   key: sherpa-onnx-parakeet-tdt-0.6b-v3-v1   (parakeet only)
-#   Silero VAD model    ~1 MB     key: sherpa-onnx-silero-vad-v1         (shared)
-#   Diarization models  ~35 MB    key: sherpa-onnx-diarization-v1        (shared, reuse from v1.x)
+#   ffmpeg              ~70 MB    key: ffmpeg-win64-gpl-static-v1
+#   Python venv         ~1-2 GB   key: venv-win64-py3.11-v3
+#   Whisper ONNX model  ~1 GB     key: sherpa-onnx-whisper-turbo-v1
+#   Silero VAD model    ~1 MB     key: sherpa-onnx-silero-vad-v1
+#   Diarization models  ~35 MB    key: sherpa-onnx-diarization-v1        (reuse from v1.x)
 
 on:
   workflow_dispatch:
@@ -25,13 +23,8 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.variant }} variant
+    name: Build EasyScribe
     runs-on: windows-latest
-
-    strategy:
-      matrix:
-        variant: [whisper, parakeet]
-      fail-fast: false
 
     steps:
       # ── 1. Checkout ───────────────────────────────────────────────────────────
@@ -67,8 +60,7 @@ jobs:
           Remove-Item ffmpeg_tmp, ffmpeg.zip -Recurse -Force
           Write-Host "ffmpeg ready."
 
-      # ── 4. Python venv cache (~1-2 GB, shared across both variants) ───────────
-      # No variant suffix — second job always hits the cache.
+      # ── 4. Python venv cache (~1-2 GB) ────────────────────────────────────────
       - name: Cache Python venv
         id: venv-cache
         uses: actions/cache@v4
@@ -97,54 +89,29 @@ jobs:
           python tests/test_sherpa_api.py
           if ($LASTEXITCODE -ne 0) { throw "API smoke tests failed — see output above" }
 
-      # ── 5. ASR model cache (variant-specific) ─────────────────────────────────
+      # ── 5. Whisper ONNX model cache (~1 GB) ───────────────────────────────────
       - name: Cache Whisper ONNX model
-        if: matrix.variant == 'whisper'
         id: whisper-cache
         uses: actions/cache@v4
         with:
           path: models\whisper
-          key: sherpa-onnx-whisper-distil-large-v3-v1
+          key: sherpa-onnx-whisper-turbo-v1
 
       - name: Download Whisper ONNX model
-        if: matrix.variant == 'whisper' && steps.whisper-cache.outputs.cache-hit != 'true'
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
           New-Item -ItemType Directory -Force -Path "models\whisper" | Out-Null
-          $url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-distil-large-v3.tar.bz2"
-          Write-Host "Downloading Whisper distil-large-v3..."
+          $url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-turbo.tar.bz2"
+          Write-Host "Downloading Whisper large-v3-turbo..."
           Invoke-WebRequest -Uri $url -OutFile whisper.tar.bz2
           tar xjf whisper.tar.bz2
-          Copy-Item "sherpa-onnx-whisper-distil-large-v3\distil-large-v3-encoder.int8.onnx" "models\whisper\"
-          Copy-Item "sherpa-onnx-whisper-distil-large-v3\distil-large-v3-decoder.int8.onnx" "models\whisper\"
-          Copy-Item "sherpa-onnx-whisper-distil-large-v3\distil-large-v3-tokens.txt"         "models\whisper\"
-          Remove-Item "sherpa-onnx-whisper-distil-large-v3", "whisper.tar.bz2" -Recurse -Force
+          Copy-Item "sherpa-onnx-whisper-turbo\turbo-encoder.int8.onnx" "models\whisper\"
+          Copy-Item "sherpa-onnx-whisper-turbo\turbo-decoder.int8.onnx" "models\whisper\"
+          Copy-Item "sherpa-onnx-whisper-turbo\turbo-tokens.txt"        "models\whisper\"
+          Remove-Item "sherpa-onnx-whisper-turbo", "whisper.tar.bz2" -Recurse -Force
           Write-Host "Whisper model ready."
-
-      - name: Cache Parakeet TDT model
-        if: matrix.variant == 'parakeet'
-        id: parakeet-cache
-        uses: actions/cache@v4
-        with:
-          path: models\parakeet
-          key: sherpa-onnx-parakeet-tdt-0.6b-v3-v1
-
-      - name: Download Parakeet TDT model
-        if: matrix.variant == 'parakeet' && steps.parakeet-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          New-Item -ItemType Directory -Force -Path "models\parakeet" | Out-Null
-          $url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2"
-          Write-Host "Downloading Parakeet TDT 0.6B v3 int8..."
-          Invoke-WebRequest -Uri $url -OutFile parakeet.tar.bz2
-          tar xjf parakeet.tar.bz2
-          $extracted = Get-ChildItem -Directory | Where-Object { $_.Name -like "*parakeet*" } | Select-Object -First 1
-          Get-ChildItem $extracted.FullName | Copy-Item -Destination "models\parakeet\"
-          Remove-Item $extracted.FullName, "parakeet.tar.bz2" -Recurse -Force
-          Write-Host "Parakeet model ready."
-          Get-ChildItem "models\parakeet"
 
       # ── 6. Silero VAD model cache (shared) ────────────────────────────────────
       - name: Cache Silero VAD model
@@ -188,31 +155,24 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx" -OutFile "models\diarization\embedding.onnx"
           Write-Host "Diarization models ready."
 
-      # ── 8. Bake variant.json ──────────────────────────────────────────────────
-      - name: Write models/variant.json
-        shell: pwsh
-        run: |
-          '{"variant": "${{ matrix.variant }}"}' | Set-Content -Path "models\variant.json" -Encoding utf8NoBOM
-          Write-Host "variant.json: $(Get-Content models\variant.json)"
-
-      # ── 9. Diagnose sounddevice package layout ────────────────────────────────
+      # ── 8. Diagnose sounddevice package layout ────────────────────────────────
       - name: Diagnose sounddevice layout
         shell: pwsh
         run: |
           & venv\Scripts\Activate.ps1
           python tests/diagnose_sounddevice.py
 
-      # ── 10. Build main EasyScribe app ─────────────────────────────────────────
-      - name: Build EasyScribe (${{ matrix.variant }})
+      # ── 9. Build main EasyScribe app ──────────────────────────────────────────
+      - name: Build EasyScribe
         shell: pwsh
         run: |
           & venv\Scripts\Activate.ps1
-          pyinstaller EasyScribe_${{ matrix.variant }}.spec --noconfirm
+          pyinstaller EasyScribe_whisper.spec --noconfirm
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
           Write-Host "PyInstaller build complete."
 
-      # ── 11. Validate build — catch missing packages before the compress step ──
-      - name: Validate build (${{ matrix.variant }})
+      # ── 10. Validate build — catch missing packages before the compress step ──
+      - name: Validate build
         shell: pwsh
         run: |
           & venv\Scripts\Activate.ps1
@@ -229,17 +189,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$dist\ffmpeg" | Out-Null
           Copy-Item "tools\ffmpeg\*" "$dist\ffmpeg" -Force
 
-          # Models (variant-specific + shared)
+          # Models
           New-Item -ItemType Directory -Force -Path "$dist\models" | Out-Null
-          Copy-Item "models\variant.json"    "$dist\models\variant.json"
           Copy-Item "models\silero_vad.onnx" "$dist\models\silero_vad.onnx"
-
-          if ("${{ matrix.variant }}" -eq "whisper") {
-            Copy-Item "models\whisper" "$dist\models\whisper" -Recurse -Force
-          } else {
-            Copy-Item "models\parakeet" "$dist\models\parakeet" -Recurse -Force
-          }
-
+          Copy-Item "models\whisper" "$dist\models\whisper" -Recurse -Force
           Copy-Item "models\diarization" "$dist\models\diarization" -Recurse -Force
 
           # Pre-create recordings dir so it is visible after extraction
@@ -271,15 +224,14 @@ jobs:
       - name: Rename to release artifact
         shell: pwsh
         run: |
-          $tag     = "${{ github.event.inputs.tag }}"
-          $variant = "${{ matrix.variant }}"
-          $outExe  = "EasyScribe-${tag}-${variant}.exe"
+          $tag    = "${{ github.event.inputs.tag }}"
+          $outExe = "EasyScribe-${tag}-whisper.exe"
           Move-Item "dist\launcher.exe" $outExe
           $sizeMB = [math]::Round((Get-Item $outExe).Length / 1MB, 1)
           Write-Host "Release artifact: $outExe ($sizeMB MB)"
 
       # ── 15. Publish GitHub Release ────────────────────────────────────────────
-      - name: Create GitHub Release (${{ matrix.variant }})
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag }}
@@ -294,11 +246,10 @@ jobs:
 
             | Asset | Model | Description |
             |---|---|---|
-            | `...-whisper.exe` | Whisper ONNX distil-large-v3 | Best accuracy |
-            | `...-parakeet.exe` | Parakeet TDT 0.6B v3 | Faster inference |
+            | `...-whisper.exe` | Whisper ONNX large-v3-turbo | Offline transcription with speaker identification |
 
             ### First run
-            1. Download one of the .exe files above
+            1. Download the .exe file above
             2. Place it wherever you want the app to live
             3. Double-click — extraction takes ~30 seconds, then EasyScribe launches
             4. Transcripts and recordings are saved to `EasyScribe\recordings\` next to the exe
@@ -320,9 +271,9 @@ jobs:
             - **sherpa-onnx** replaces faster-whisper — no CUDA DLL headaches
             - **Vulkan GPU** acceleration — works on any GPU (NVIDIA, AMD, Intel)
             - **Live microphone transcription** — click Record, speak, get text
-            - **Two model variants** — Whisper ONNX (accurate) or Parakeet TDT (fast)
+            - **Whisper ONNX large-v3-turbo** — single model, no variant selection needed
             - **Crash-safe recording** — interrupted recordings are recoverable on next launch
-          files: EasyScribe-${{ github.event.inputs.tag }}-${{ matrix.variant }}.exe
+          files: EasyScribe-${{ github.event.inputs.tag }}-whisper.exe
           draft: true
           prerelease: false
         env:
