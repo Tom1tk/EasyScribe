@@ -8,6 +8,7 @@ On repeat runs: detects existing EasyScribe.exe and launches immediately.
 INSTALL_DIR defaults to <directory containing this exe>/EasyScribe/
 """
 
+import json
 import queue
 import shutil
 import subprocess
@@ -19,6 +20,7 @@ import zipfile
 from pathlib import Path
 
 VERSION = "2.0.0"
+MARKER_FILENAME = ".easyscribe-install.json"
 _exe_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent.parent
 
 
@@ -33,6 +35,44 @@ def _find_bundle() -> Path | None:
 
 def _main_exe(install_dir: Path) -> Path:
     return install_dir / "EasyScribe.exe"
+
+
+def _resolve_install_dir(chosen: Path) -> Path:
+    """
+    Resolve a user-picked folder to the actual install directory.
+
+    If `chosen` is already a marked EasyScribe install, or already contains
+    EasyScribe.exe (a pre-marker v2.0.0 install), install in place.
+    Otherwise, install into `chosen/EasyScribe` so the installer never
+    creates or deletes files directly inside a folder it doesn't own.
+    """
+    if (chosen / MARKER_FILENAME).is_file() or _main_exe(chosen).is_file():
+        return chosen
+    return chosen / "EasyScribe"
+
+
+def _safe_to_clean(install_dir: Path) -> bool:
+    """
+    True if install_dir may be wiped as an incomplete previous install.
+
+    Only directories this installer created (marked with MARKER_FILENAME)
+    and that do not contain a complete install (EasyScribe.exe) are safe
+    to remove. A directory that doesn't exist yet is trivially safe — there
+    is nothing to remove. Anything else (a pre-existing folder this
+    installer never marked) must never be deleted.
+    """
+    if not install_dir.exists():
+        return True
+    if _main_exe(install_dir).is_file():
+        return False
+    return (install_dir / MARKER_FILENAME).is_file()
+
+
+def _write_marker(install_dir: Path) -> None:
+    """Write the ownership marker, backfilling pre-marker v2.0.0 installs."""
+    marker = install_dir / MARKER_FILENAME
+    if not marker.is_file():
+        marker.write_text(json.dumps({"app": "EasyScribe", "version": VERSION}), encoding="utf-8")
 
 
 class InstallerApp(tk.Tk):
@@ -104,7 +144,7 @@ class InstallerApp(tk.Tk):
             title="Choose install location",
         )
         if chosen:
-            self._install_dir.set(chosen)
+            self._install_dir.set(str(_resolve_install_dir(Path(chosen))))
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -116,6 +156,7 @@ class InstallerApp(tk.Tk):
             self._do_install(install_dir)
 
     def _do_launch(self, install_dir: Path):
+        _write_marker(install_dir)  # backfill marker for pre-marker v2.0.0 installs
         subprocess.Popen([str(_main_exe(install_dir))], cwd=str(install_dir))
         self.destroy()
 
@@ -135,9 +176,18 @@ class InstallerApp(tk.Tk):
     def _extract_thread(self, bundle: Path, install_dir: Path):
         try:
             if install_dir.exists() and not _main_exe(install_dir).is_file():
-                self._q.put(("status", "Cleaning incomplete previous install…"))
-                shutil.rmtree(install_dir, ignore_errors=True)
+                if _safe_to_clean(install_dir):
+                    self._q.put(("status", "Cleaning incomplete previous install…"))
+                    shutil.rmtree(install_dir, ignore_errors=True)
+                elif any(install_dir.iterdir()):
+                    self._q.put((
+                        "error",
+                        f"'{install_dir}' is not empty and was not created by "
+                        f"EasyScribe. Please choose an empty or new folder.",
+                    ))
+                    return
             install_dir.mkdir(parents=True, exist_ok=True)
+            _write_marker(install_dir)
             with zipfile.ZipFile(bundle, "r") as zf:
                 members = zf.namelist()
                 total = len(members)
@@ -148,7 +198,8 @@ class InstallerApp(tk.Tk):
                         self._q.put(("progress", pct))
             self._q.put(("done", install_dir))
         except Exception as exc:
-            shutil.rmtree(install_dir, ignore_errors=True)
+            if _safe_to_clean(install_dir):
+                shutil.rmtree(install_dir, ignore_errors=True)
             self._q.put(("error", str(exc)))
 
     def _poll_queue(self):
@@ -178,6 +229,7 @@ def main():
     # Already installed at the default location — launch silently, no GUI shown
     default_dir = _exe_dir / "EasyScribe"
     if _main_exe(default_dir).is_file():
+        _write_marker(default_dir)  # backfill marker for pre-marker v2.0.0 installs
         subprocess.Popen([str(_main_exe(default_dir))], cwd=str(default_dir))
         return
     # First run (or non-default install) — show the installer GUI
