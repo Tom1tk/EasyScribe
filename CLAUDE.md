@@ -112,12 +112,25 @@ providers you never request (e.g. `onnxruntime_providers_tensorrt.dll` wanting
 
 ## v2.0 Packaging Rules
 
-### Rule 7: sherpa-onnx Vulkan provider — no DLL bundling needed
+### Rule 7 (corrected 2026-06-11): sherpa-onnx has NO Vulkan provider
 
-Unlike CUDA, Vulkan uses the system GPU driver. `provider="vulkan"` in `OfflineRecognizerConfig`
-works on any machine with a GPU driver installed, with no additional DLLs required.
-If Vulkan fails at runtime (e.g. headless CI), catch `RuntimeError` from `OfflineRecognizer(cfg)`
-and retry with `provider="cpu"`.
+v2.0.0 shipped believing `provider="vulkan"` gave GPU acceleration. It never did.
+
+Valid provider strings in sherpa-onnx 1.13.2: `cpu`, `cuda`, `directml`, `coreml`,
+`xnnpack`, `nnapi`. An unrecognized provider string does **not** raise — sherpa-onnx
+logs `Unsupported string: vulkan. Fallback to cpu` and silently constructs the
+recognizer on CPU. This means a `try/except RuntimeError` fallback pattern around
+`OfflineRecognizer(cfg)` can never detect a bad provider string — construction
+always "succeeds", just silently on CPU.
+
+v2.1 removes `provider="vulkan"`, the GPU device dropdown, `preferred_gpu_index`,
+`list_gpus()`, and `src/vulkan_probe.py` entirely — EasyScribe is CPU-only and says
+so. `vulkan_probe.py` lives on in git history; it's good code (note its LLP64
+ctypes fix) and gets resurrected if/when a real GPU backend (e.g. whisper.cpp
+Vulkan, see Phase 8 strategic track) is evaluated.
+
+**The lesson:** verify provider claims empirically (grep the bundled native libs,
+or check the ONNX Runtime execution-provider list) before building features on them.
 
 ### Rule 8: Silero VAD model must be downloaded and bundled explicitly
 
@@ -196,4 +209,4 @@ model downloads.
 | v1.1.0 (fix) | GPU diarization silently fell back to CPU on real hardware — `onnxruntime_providers_cuda.dll` needs `cufft64_11.dll`; add `nvidia-cufft-cu12` to bundled packages; bump venv cache v6→v7 |
 | v1.1.0 (fix 2) | GPU diarization still fell back to CPU — `onnxruntime 1.26.0` (CPU) installed as faster-whisper dep; both it and sherpa_onnx bundle `onnxruntime.dll`; Windows caches by name so whichever loads first wins; fix by prepending `sherpa_onnx/lib/` to PATH in `cuda_setup.py` so the GPU version is cached first; bump venv cache v7→v8 |
 | v2.0.0 | Full rewrite: sherpa-onnx for all inference (transcription + diarization + VAD); Vulkan GPU provider (no CUDA DLLs); single .exe via 7-zip SFX + AppData extract-once launcher; live microphone transcription (VAD-chunked, crash-safe PCM); two model variants (Whisper ONNX distil-large-v3, Parakeet TDT 0.6B v3 int8); removes faster-whisper, ctranslate2, nvidia-*-cu12 packages entirely |
-| v2.1 | Switch the Whisper model from distil-large-v3 to large-v3-turbo (A/B accuracy winner); remove the Parakeet TDT variant and all `MODEL_VARIANT`/`variant.json` machinery — single model, single CI build |
+| v2.1 | Switch the Whisper model from distil-large-v3 to large-v3-turbo (A/B accuracy winner); remove the Parakeet TDT variant and all `MODEL_VARIANT`/`variant.json` machinery — single model, single CI build; remove fictional Vulkan GPU support (`provider="vulkan"` always silently fell back to CPU) — delete `vulkan_probe.py`, GPU device dropdown, `NUM_THREADS` lifted to config.py |

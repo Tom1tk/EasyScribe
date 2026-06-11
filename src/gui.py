@@ -44,7 +44,6 @@ from transcriber import (
     ModelNotFoundError,
     TranscriptionEngine,
     TranscriptionError,
-    list_gpus,
 )
 from mic_recorder import MicRecorder
 from live_transcriber import LiveTranscriber
@@ -203,10 +202,6 @@ class TranscriberApp(_AppBase):  # type: ignore
         # ── Diarization availability ──────────────────────────────────────────
         self._diarization_available: bool = DiarizationEngine().is_available()
 
-        # ── GPU selector state ────────────────────────────────────────────────
-        self._gpu_options: list[str] = []
-        self._gpu_index_map: dict[str, int | None] = {}
-
         # ── Mic selector state ────────────────────────────────────────────────
         self._mic_options: list[str] = []
         self._mic_index_map: dict[str, int | None] = {}
@@ -313,21 +308,6 @@ class TranscriberApp(_AppBase):  # type: ignore
         _diarize_cb.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="w")
         if not self._diarization_available:
             _diarize_cb.configure(text="Identify speakers  (model not found)")
-
-        # GPU selector
-        ctk.CTkLabel(opts_frame, text="Device:", anchor="w").grid(
-            row=1, column=1, padx=(20, 4), pady=(0, 10), sticky="w"
-        )
-        self._gpu_options, self._gpu_index_map = self._build_gpu_options()
-        self._gpu_var = ctk.StringVar(value=self._gpu_options[0])
-        self._gpu_menu = ctk.CTkOptionMenu(
-            opts_frame,
-            variable=self._gpu_var,
-            values=self._gpu_options,
-            width=220,
-            command=self._on_gpu_changed,
-        )
-        self._gpu_menu.grid(row=1, column=2, padx=(0, 10), pady=(0, 10), sticky="w")
 
         # Microphone selector
         ctk.CTkLabel(opts_frame, text="Microphone:", anchor="w").grid(
@@ -725,24 +705,6 @@ class TranscriberApp(_AppBase):  # type: ignore
     # Internal helpers
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _build_gpu_options(self) -> tuple[list[str], dict[str, int | None]]:
-        options: list[str] = ["CPU only"]
-        index_map: dict[str, int | None] = {"CPU only": -1}
-
-        gpus = list_gpus()
-        if gpus:
-            options.insert(0, "Auto (best GPU)")
-            index_map["Auto (best GPU)"] = None
-            for gpu in gpus:
-                label = f"GPU {gpu['index']}: {gpu['name']}"
-                if label not in index_map:
-                    options.append(label)
-                    index_map[label] = int(gpu["index"])  # type: ignore[arg-type]
-        else:
-            logger.info("No Vulkan GPUs found — device selector shows CPU only")
-
-        return options, index_map
-
     def _build_mic_options(self) -> tuple[list[str], dict[str, int | None]]:
         options: list[str] = ["Default microphone"]
         index_map: dict[str, int | None] = {"Default microphone": None}
@@ -758,12 +720,6 @@ class TranscriberApp(_AppBase):  # type: ignore
             logger.warning(f"Could not enumerate microphones: {exc}")
 
         return options, index_map
-
-    def _on_gpu_changed(self, selection: str) -> None:
-        gpu_index = self._gpu_index_map.get(selection, -1)
-        self._engine.preferred_gpu_index = gpu_index
-        self._engine.reload_model()
-        self._safe_append_log(f"[Device] Changed to: {selection}")
 
     def _add_files(self, paths: list[Path]) -> None:
         existing = set(self._selected_files)
@@ -815,7 +771,6 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._select_files_btn.configure(state="disabled" if is_busy else "normal")
         self._select_output_btn.configure(state="disabled" if is_busy else "normal")
         self._clear_files_btn.configure(state="disabled" if is_busy else "normal")
-        self._gpu_menu.configure(state="disabled" if is_busy else "normal")
         self._mic_menu.configure(state="disabled" if is_recording else "normal")
 
         # Record button: disabled while transcription runs; becomes Stop while recording

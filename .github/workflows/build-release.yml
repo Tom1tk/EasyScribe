@@ -79,10 +79,10 @@ jobs:
           Write-Host "Installed packages:"
           pip list --format=columns
 
-      # ── 4b. API smoke tests — catch sherpa_onnx/vulkan signature mismatches ───
+      # ── 4b. API smoke tests — catch sherpa_onnx signature mismatches ──────────
       # Fast, offline, no model files needed. Runs before the slow model
       # downloads and PyInstaller build so bad API calls fail in seconds.
-      - name: Run sherpa_onnx/vulkan API tests
+      - name: Run sherpa_onnx API tests
         shell: pwsh
         run: |
           & venv\Scripts\Activate.ps1
@@ -257,10 +257,6 @@ jobs:
             ### Re-running
             Double-click the same .exe — detects existing `EasyScribe\` folder and launches in ~1 second.
 
-            ### GPU acceleration
-            Vulkan GPU provider is used automatically when a compatible GPU driver is installed.
-            Falls back to CPU if no GPU is detected.
-
             ### SmartScreen
             Windows Defender SmartScreen may show **"Windows protected your PC"** — click
             **More info → Run anyway**. Expected for unsigned executables.
@@ -269,7 +265,6 @@ jobs:
             ### What's new in v2.0.0
             - **Fully portable** — installs next to the .exe, works from USB, no AppData, no admin
             - **sherpa-onnx** replaces faster-whisper — no CUDA DLL headaches
-            - **Vulkan GPU** acceleration — works on any GPU (NVIDIA, AMD, Intel)
             - **Live microphone transcription** — click Record, speak, get text
             - **Whisper ONNX large-v3-turbo** — single model, no variant selection needed
             - **Crash-safe recording** — interrupted recordings are recoverable on next launch

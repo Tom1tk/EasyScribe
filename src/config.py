@@ -5,6 +5,7 @@ sherpa-onnx replaces faster-whisper; no HuggingFace dependencies remain.
 Single model: Whisper ONNX large-v3-turbo.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -78,6 +79,11 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
         ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".aac",
     }
 )
+
+# ─── Inference performance ─────────────────────────────────────────────────────
+# sherpa-onnx is CPU-only here (no Vulkan provider — see CLAUDE.md Rule 7).
+
+NUM_THREADS: int = min(4, os.cpu_count() or 4)
 
 # ─── Miscellaneous ────────────────────────────────────────────────────────────
 
