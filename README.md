@@ -14,7 +14,7 @@ A portable, fully offline Windows desktop application for transcribing media fil
 
 **No installer, no admin rights required.**
 
-1. Place `EasyScribe-v2.0.0-whisper.exe` (or `-parakeet.exe`) anywhere — a local folder, a USB stick, a shared network drive.
+1. Place `EasyScribe-<version>-whisper.exe` anywhere — a local folder, a USB stick, a shared network drive.
 2. Double-click. On first run it extracts an `EasyScribe\` folder next to itself (~30 seconds). EasyScribe launches automatically.
 3. On subsequent runs the same `.exe` detects the existing `EasyScribe\` folder and launches in under a second.
 
@@ -23,17 +23,6 @@ Transcripts and recordings are saved to `EasyScribe\recordings\` next to the `.e
 To move the app, move both the `.exe` and the `EasyScribe\` folder together.
 
 > **SmartScreen warning:** PyInstaller executables are unsigned. Click "More info → Run anyway" to proceed.
-
----
-
-## Model Variants
-
-Two builds are released. They are otherwise identical in features.
-
-| Variant | Model | Notes |
-|---|---|---|
-| `whisper` | Whisper ONNX distil-large-v3 (English, int8) | Higher accuracy, ~700 MB |
-| `parakeet` | Parakeet TDT 0.6B v3 int8 (English) | Faster inference, ~700 MB |
 
 ---
 
@@ -135,25 +124,19 @@ The `.exe` extracts an `EasyScribe\` folder next to itself:
 
 ```
 <wherever you placed the .exe>
-  EasyScribe-v2.0.0-whisper.exe   <- the launcher; keep this to re-run or move the app
+  EasyScribe-<version>-whisper.exe   <- the launcher; keep this to re-run or move the app
   EasyScribe\
     EasyScribe.exe
     _internal\               <- PyInstaller runtime (DLLs, .pyd files)
     models\
-      whisper\               <- (whisper variant only)
-        distil-large-v3-encoder.int8.onnx
-        distil-large-v3-decoder.int8.onnx
-        distil-large-v3-tokens.txt
-      parakeet\              <- (parakeet variant only)
-        encoder.int8.onnx
-        decoder.int8.onnx
-        joiner.int8.onnx
-        tokens.txt
+      whisper\
+        turbo-encoder.int8.onnx
+        turbo-decoder.int8.onnx
+        turbo-tokens.txt
       diarization\
         segmentation.onnx
         embedding.onnx
       silero_vad.onnx
-      variant.json           <- baked in at build time: {"variant": "whisper"}
     ffmpeg\
       ffmpeg.exe
       ffprobe.exe
@@ -183,10 +166,10 @@ The GitHub Actions CI workflow handles all model downloads, dependency installs,
 ```
 src/
   main.py            Entry point; creates output dir, runs orphan recovery, launches GUI
-  config.py          Path resolution, constants, model variant detection
+  config.py          Path resolution and constants
   logger.py          Rotating log file setup
   ffmpeg_wrapper.py  Subprocess ffmpeg with cancellation polling
-  transcriber.py     sherpa-onnx OfflineRecognizer (CPU, Whisper or Parakeet)
+  transcriber.py     sherpa-onnx OfflineRecognizer (CPU, Whisper large-v3-turbo)
   diarizer.py        sherpa-onnx speaker diarization engine
   mic_recorder.py    sounddevice capture + crash-safe PCM writer
   live_transcriber.py  Silero VAD loop + OfflineRecognizer for live mode
@@ -209,7 +192,7 @@ All models are loaded from absolute local paths inside the install directory. No
 ### Distribution
 
 ```
-EasyScribe-v2.0.0-whisper.exe
+EasyScribe-<version>-whisper.exe
   = [7zSD.sfx] + [config.txt] + [payload.7z]
                                     ├── launcher.exe  (~5 MB)
                                     └── app.bundle    (zip: EasyScribe.exe + _internal/ + models/)
@@ -240,4 +223,4 @@ This project is released under the MIT License.
 
 FFmpeg is included under the GPL v3 license. See https://ffmpeg.org/legal.html
 
-sherpa-onnx and its bundled models (Whisper ONNX, Parakeet TDT, pyannote segmentation-3.0 ONNX export, WeSpeaker ResNet34-LM embedding, Silero VAD) are subject to their own license terms. See https://github.com/k2-fsa/sherpa-onnx
+sherpa-onnx and its bundled models (Whisper ONNX large-v3-turbo, pyannote segmentation-3.0 ONNX export, WeSpeaker ResNet34-LM embedding, Silero VAD) are subject to their own license terms. See https://github.com/k2-fsa/sherpa-onnx
