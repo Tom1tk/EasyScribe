@@ -2,11 +2,9 @@
 config.py - Application configuration and path resolution for EasyScribe v2.0.
 
 sherpa-onnx replaces faster-whisper; no HuggingFace dependencies remain.
-Model variant (whisper or parakeet) is baked in via models/variant.json at build time.
+Single model: Whisper ONNX large-v3-turbo.
 """
 
-import json
-import os
 import sys
 from pathlib import Path
 
@@ -36,39 +34,14 @@ BASE_DIR: Path = get_base_dir()
 
 DEFAULT_OUTPUT_DIR: Path = BASE_DIR / "recordings"
 
-# ─── Model variant ────────────────────────────────────────────────────────────
-
-
-def _load_model_variant() -> str:
-    """Read variant from models/variant.json (frozen) or EASYSCRIBE_MODEL_VARIANT env (dev)."""
-    variant_file = BASE_DIR / "models" / "variant.json"
-    if variant_file.is_file():
-        try:
-            data = json.loads(variant_file.read_text(encoding="utf-8"))
-            return str(data.get("variant", "whisper"))
-        except Exception:
-            pass
-    return os.environ.get("EASYSCRIBE_MODEL_VARIANT", "whisper")
-
-
-MODEL_VARIANT: str = _load_model_variant()
-
-# ─── Whisper ONNX model paths (distil-large-v3) ───────────────────────────────
+# ─── Whisper ONNX model paths (large-v3-turbo) ────────────────────────────────
 
 _WHISPER_DIR: Path = BASE_DIR / "models" / "whisper"
-WHISPER_ENCODER: Path = _WHISPER_DIR / "distil-large-v3-encoder.int8.onnx"
-WHISPER_DECODER: Path = _WHISPER_DIR / "distil-large-v3-decoder.int8.onnx"
-WHISPER_TOKENS: Path = _WHISPER_DIR / "distil-large-v3-tokens.txt"
+WHISPER_ENCODER: Path = _WHISPER_DIR / "turbo-encoder.int8.onnx"
+WHISPER_DECODER: Path = _WHISPER_DIR / "turbo-decoder.int8.onnx"
+WHISPER_TOKENS: Path = _WHISPER_DIR / "turbo-tokens.txt"
 
-# ─── Parakeet TDT 0.6B v3 int8 model paths ───────────────────────────────────
-
-_PARAKEET_DIR: Path = BASE_DIR / "models" / "parakeet"
-PARAKEET_ENCODER: Path = _PARAKEET_DIR / "encoder.int8.onnx"
-PARAKEET_DECODER: Path = _PARAKEET_DIR / "decoder.int8.onnx"
-PARAKEET_JOINER: Path = _PARAKEET_DIR / "joiner.int8.onnx"
-PARAKEET_TOKENS: Path = _PARAKEET_DIR / "tokens.txt"
-
-# ─── VAD model (Silero — bundled in both variants) ───────────────────────────
+# ─── VAD model (Silero) ────────────────────────────────────────────────────────
 
 VAD_MODEL_PATH: Path = BASE_DIR / "models" / "silero_vad.onnx"
 

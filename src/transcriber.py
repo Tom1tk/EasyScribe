@@ -1,8 +1,7 @@
 """
 transcriber.py - sherpa-onnx transcription engine for EasyScribe v2.0.
 
-Replaces faster-whisper. Supports Whisper ONNX (distil-large-v3) and
-Parakeet TDT 0.6B v3 int8, selected via config.MODEL_VARIANT.
+Replaces faster-whisper. Uses Whisper ONNX large-v3-turbo.
 GPU acceleration via Vulkan provider; falls back to CPU automatically.
 """
 
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class ModelNotFoundError(RuntimeError):
-    """Raised when model files are missing or the variant is unknown."""
+    """Raised when model files are missing."""
 
 
 class TranscriptionError(RuntimeError):
@@ -189,26 +188,13 @@ def _resolve_provider(preferred_gpu_index: int | None) -> str:
 def validate_model_directory() -> list[str]:
     """Check that required model files exist. Returns list of error strings."""
     errors: list[str] = []
-    variant = config.MODEL_VARIANT
 
     if not config.VAD_MODEL_PATH.is_file():
         errors.append(f"Missing: {config.VAD_MODEL_PATH}")
 
-    if variant == "whisper":
-        for p in (config.WHISPER_ENCODER, config.WHISPER_DECODER, config.WHISPER_TOKENS):
-            if not p.is_file():
-                errors.append(f"Missing: {p}")
-    elif variant == "parakeet":
-        for p in (
-            config.PARAKEET_ENCODER,
-            config.PARAKEET_DECODER,
-            config.PARAKEET_JOINER,
-            config.PARAKEET_TOKENS,
-        ):
-            if not p.is_file():
-                errors.append(f"Missing: {p}")
-    else:
-        errors.append(f"Unknown model variant: {variant!r}")
+    for p in (config.WHISPER_ENCODER, config.WHISPER_DECODER, config.WHISPER_TOKENS):
+        if not p.is_file():
+            errors.append(f"Missing: {p}")
 
     return errors
 
@@ -216,32 +202,17 @@ def validate_model_directory() -> list[str]:
 def _build_recognizer_config(provider: str):
     import sherpa_onnx
 
-    variant = config.MODEL_VARIANT
-    if variant == "whisper":
-        model_cfg = sherpa_onnx.OfflineModelConfig(
-            whisper=sherpa_onnx.OfflineWhisperModelConfig(
-                encoder=str(config.WHISPER_ENCODER),
-                decoder=str(config.WHISPER_DECODER),
-                language="en",
-                task="transcribe",
-            ),
-            tokens=str(config.WHISPER_TOKENS),
-            provider=provider,
-            num_threads=4,
-        )
-    elif variant == "parakeet":
-        model_cfg = sherpa_onnx.OfflineModelConfig(
-            transducer=sherpa_onnx.OfflineTransducerModelConfig(
-                encoder_filename=str(config.PARAKEET_ENCODER),
-                decoder_filename=str(config.PARAKEET_DECODER),
-                joiner_filename=str(config.PARAKEET_JOINER),
-            ),
-            tokens=str(config.PARAKEET_TOKENS),
-            provider=provider,
-            num_threads=4,
-        )
-    else:
-        raise ModelNotFoundError(f"Unknown model variant: {variant!r}")
+    model_cfg = sherpa_onnx.OfflineModelConfig(
+        whisper=sherpa_onnx.OfflineWhisperModelConfig(
+            encoder=str(config.WHISPER_ENCODER),
+            decoder=str(config.WHISPER_DECODER),
+            language="en",
+            task="transcribe",
+        ),
+        tokens=str(config.WHISPER_TOKENS),
+        provider=provider,
+        num_threads=4,
+    )
 
     return sherpa_onnx.OfflineRecognizerConfig(model_config=model_cfg)
 
@@ -360,7 +331,7 @@ class TranscriptionEngine:
 
             status_callback("Loading Model")
             provider = _resolve_provider(self.preferred_gpu_index)
-            logger.info(f"Loading {config.MODEL_VARIANT} model, provider={provider}")
+            logger.info(f"Loading model, provider={provider}")
 
             from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRecognizer
 
@@ -413,7 +384,7 @@ class TranscriptionEngine:
         logger.info(f"Transcribing: {audio_path.name} → {output_path.name}")
         log_callback(f"[Transcribe] Starting: {audio_path.name}")
         log_callback(
-            f"[Transcribe] Model: {config.MODEL_VARIANT}, provider: {self._provider}, "
+            f"[Transcribe] provider: {self._provider}, "
             f"timestamps: {'on' if add_timestamps else 'off'}, "
             f"speakers: {'on' if diarize else 'off'}"
         )

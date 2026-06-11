@@ -49,7 +49,6 @@ def _check_dependencies() -> list[str]:
         errors.append(
             "Model files missing or incomplete:\n"
             + "\n".join(f"  • {e}" for e in model_errors)
-            + f"\n\nVariant: {config.MODEL_VARIANT}"
         )
 
     return errors

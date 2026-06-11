@@ -132,11 +132,19 @@ Parakeet TDT 0.6B v3 int8 is a transducer model — use `OfflineTransducerModelC
 with `encoder_filename`, `decoder_filename`, `joiner_filename`.
 The real NeMo CTC class is `OfflineNemoEncDecCtcModelConfig` but it is not used here.
 
+> **v2.1: parakeet variant removed.** Kept for historical reference only —
+> the transducer-config lesson may resurface if another transducer model is
+> evaluated in the future.
+
 ### Rule 10: venv cache key has no variant suffix — both matrix jobs share it
 
 CI builds two variants (whisper, parakeet) in parallel. They install identical pip deps.
 Cache key `venv-win64-py3.11-v2` has no variant suffix so the second job always hits cache.
 Bump v2 → v3 etc. to force a clean rebuild after adding/removing packages.
+
+> **v2.1: parakeet variant removed.** CI is now a single job; the
+> shared-cache-across-matrix-jobs concern no longer applies, but the
+> "bump the version suffix after dependency changes" lesson still does.
 
 ### Rule 11: Always list numpy explicitly in the CI pip install command
 
@@ -160,9 +168,9 @@ class: `from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRe
 then `_OfflineRecognizer(cfg)` where `cfg` is an `OfflineRecognizerConfig`. Also note
 `OfflineRecognizerConfig(...)` itself takes `model_config=`, not `model=`.
 
-`tests/test_sherpa_api.py` builds the config for both variants and constructs
-`_OfflineRecognizer(cfg)` against nonexistent model paths, asserting `RuntimeError`
-(bad path) rather than `TypeError` (bad constructor signature). Run it locally
+`tests/test_sherpa_api.py` builds the config and constructs `_OfflineRecognizer(cfg)`
+against nonexistent model paths, asserting `RuntimeError` (bad path) rather than
+`TypeError` (bad constructor signature). Run it locally
 (`python tests/test_sherpa_api.py`, no model files or GPU needed) before triggering a
 build — it now also runs as an early CI step, right after `pip install`, before any
 model downloads.
@@ -188,3 +196,4 @@ model downloads.
 | v1.1.0 (fix) | GPU diarization silently fell back to CPU on real hardware — `onnxruntime_providers_cuda.dll` needs `cufft64_11.dll`; add `nvidia-cufft-cu12` to bundled packages; bump venv cache v6→v7 |
 | v1.1.0 (fix 2) | GPU diarization still fell back to CPU — `onnxruntime 1.26.0` (CPU) installed as faster-whisper dep; both it and sherpa_onnx bundle `onnxruntime.dll`; Windows caches by name so whichever loads first wins; fix by prepending `sherpa_onnx/lib/` to PATH in `cuda_setup.py` so the GPU version is cached first; bump venv cache v7→v8 |
 | v2.0.0 | Full rewrite: sherpa-onnx for all inference (transcription + diarization + VAD); Vulkan GPU provider (no CUDA DLLs); single .exe via 7-zip SFX + AppData extract-once launcher; live microphone transcription (VAD-chunked, crash-safe PCM); two model variants (Whisper ONNX distil-large-v3, Parakeet TDT 0.6B v3 int8); removes faster-whisper, ctranslate2, nvidia-*-cu12 packages entirely |
+| v2.1 | Switch the Whisper model from distil-large-v3 to large-v3-turbo (A/B accuracy winner); remove the Parakeet TDT variant and all `MODEL_VARIANT`/`variant.json` machinery — single model, single CI build |
