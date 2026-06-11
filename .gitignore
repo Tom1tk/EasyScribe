@@ -30,6 +30,9 @@ tools/ffmpeg/
 logs/
 temp/
 
+# Test audio assets (large binaries — local only)
+tests/data/*.wav
+
 # IDE
 .vscode/
 .idea/
