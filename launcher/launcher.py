@@ -9,6 +9,7 @@ INSTALL_DIR defaults to <directory containing this exe>/EasyScribe/
 """
 
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -73,6 +74,69 @@ def _write_marker(install_dir: Path) -> None:
     marker = install_dir / MARKER_FILENAME
     if not marker.is_file():
         marker.write_text(json.dumps({"app": "EasyScribe", "version": VERSION}), encoding="utf-8")
+
+
+def _shortcuts_created(install_dir: Path) -> bool:
+    """True if Desktop/Start Menu shortcuts were already created for this install."""
+    marker = install_dir / MARKER_FILENAME
+    if not marker.is_file():
+        return False
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(data.get("shortcuts_created"))
+
+
+def _mark_shortcuts_created(install_dir: Path) -> None:
+    marker = install_dir / MARKER_FILENAME
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {"app": "EasyScribe", "version": VERSION}
+    data["shortcuts_created"] = True
+    marker.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _create_shortcut(link_path: Path, target: Path, working_dir: Path) -> None:
+    script = (
+        f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({_ps_quote(str(link_path))}); "
+        f"$s.TargetPath = {_ps_quote(str(target))}; "
+        f"$s.WorkingDirectory = {_ps_quote(str(working_dir))}; "
+        f"$s.Save()"
+    )
+    try:
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            check=True, capture_output=True, timeout=15,
+        )
+    except Exception:
+        pass  # shortcuts are a convenience; the installed exe remains usable directly
+
+
+def _create_shortcuts(install_dir: Path) -> None:
+    """Create Desktop and Start Menu shortcuts to the installed EasyScribe.exe."""
+    if sys.platform != "win32":
+        return
+    target = _main_exe(install_dir)
+    _create_shortcut(Path(os.environ["USERPROFILE"]) / "Desktop" / "EasyScribe.lnk", target, install_dir)
+    _create_shortcut(
+        Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "EasyScribe.lnk",
+        target, install_dir,
+    )
+
+
+def _ensure_shortcuts(install_dir: Path) -> None:
+    """Create shortcuts once per install, tracked via the marker file."""
+    if _shortcuts_created(install_dir):
+        return
+    _create_shortcuts(install_dir)
+    _mark_shortcuts_created(install_dir)
 
 
 class InstallerApp(tk.Tk):
@@ -157,6 +221,7 @@ class InstallerApp(tk.Tk):
 
     def _do_launch(self, install_dir: Path):
         _write_marker(install_dir)  # backfill marker for pre-marker v2.0.0 installs
+        _ensure_shortcuts(install_dir)
         subprocess.Popen([str(_main_exe(install_dir))], cwd=str(install_dir))
         self.destroy()
 
@@ -211,8 +276,11 @@ class InstallerApp(tk.Tk):
                     self._status_text.set(f"Extracting… {value}%")
                 elif kind == "done":
                     self._bar["value"] = 100
-                    self._status_text.set("Installation complete! Launching EasyScribe…")
-                    self.after(900, lambda v=value: self._do_launch(v))
+                    self._status_text.set(
+                        "Installation complete! Launching EasyScribe…\n"
+                        "Desktop and Start Menu shortcuts will be created — use those next time."
+                    )
+                    self.after(1500, lambda v=value: self._do_launch(v))
                     return
                 elif kind == "error":
                     self._status_text.set(f"Installation failed: {value}")
@@ -230,6 +298,7 @@ def main():
     default_dir = _exe_dir / "EasyScribe"
     if _main_exe(default_dir).is_file():
         _write_marker(default_dir)  # backfill marker for pre-marker v2.0.0 installs
+        _ensure_shortcuts(default_dir)  # backfill shortcuts for pre-8.3 installs
         subprocess.Popen([str(_main_exe(default_dir))], cwd=str(default_dir))
         return
     # First run (or non-default install) — show the installer GUI
