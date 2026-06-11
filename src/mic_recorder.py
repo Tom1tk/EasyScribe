@@ -26,6 +26,11 @@ _CHANNELS = 1
 _CHUNK_SAMPLES = 512
 _FSYNC_EVERY = 50  # flush and fsync after this many chunks
 
+# Memory backstop for the VAD queue: ~60s of audio. The VAD loop is fast and
+# should never approach this; if it does, drop oldest chunks rather than grow
+# unbounded (the PCM writer path is unaffected — the saved recording is complete).
+_VAD_QUEUE_MAXSIZE = 60 * _SAMPLE_RATE // _CHUNK_SAMPLES
+
 
 class MicRecorder:
     """
@@ -38,7 +43,7 @@ class MicRecorder:
 
     def __init__(self) -> None:
         self._stream = None
-        self._vad_queue: queue.Queue = queue.Queue()
+        self._vad_queue: queue.Queue = queue.Queue(maxsize=_VAD_QUEUE_MAXSIZE)
         self._pcm_queue: queue.Queue = queue.Queue()
         self._writer_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -59,6 +64,11 @@ class MicRecorder:
     def get_queue(self) -> queue.Queue:
         """Return the float32 audio queue consumed by the VAD loop."""
         return self._vad_queue
+
+    def get_session_stem(self) -> Optional[str]:
+        """Return this session's filename stem (e.g. "recording_20260611_120000"),
+        or None if start() has not been called."""
+        return self._pcm_path.stem if self._pcm_path is not None else None
 
     def start(self, device_index: Optional[int], output_dir: Path) -> None:
         """Start capture and crash-safe PCM writing."""
@@ -129,7 +139,10 @@ class MicRecorder:
         if status:
             logger.warning(f"sounddevice status: {status}")
         chunk = indata[:, 0].copy()  # shape: (frames,), dtype int16
-        self._vad_queue.put(chunk.astype(np.float32) / 32768.0)
+        try:
+            self._vad_queue.put_nowait(chunk.astype(np.float32) / 32768.0)
+        except queue.Full:
+            logger.warning("VAD queue full — dropping audio chunk from live transcription")
         self._pcm_queue.put(chunk.tobytes())
 
     def _pcm_writer_loop(self) -> None:

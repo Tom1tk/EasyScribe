@@ -15,7 +15,9 @@ from typing import Callable
 import numpy as np
 
 import config
+import vad
 from config import TEMP_DIR
+from vad import CancelledError
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +31,6 @@ class ModelNotFoundError(RuntimeError):
 
 class TranscriptionError(RuntimeError):
     """Raised when transcription fails for reasons other than cancellation."""
-
-
-class CancelledError(RuntimeError):
-    """Raised when transcription is cancelled by the user."""
 
 
 # ─── Transcript formatting helpers ───────────────────────────────────────────
@@ -226,74 +224,6 @@ def _load_wav_float32(wav_path: Path) -> tuple[np.ndarray, int]:
     return samples, sr
 
 
-# ─── VAD-based segmentation ───────────────────────────────────────────────────
-#
-# Replaces fixed-window chunking. sherpa-onnx's Whisper decoder hard-rejects any
-# chunk >= 30s ("Only waves less than 30 seconds are supported"), and a fixed
-# 30s/1s-overlap chunker both hits that limit exactly and re-transcribes the
-# overlap with no de-duplication, producing garbled/duplicated text at every
-# chunk boundary. VAD splits on natural speech/silence boundaries instead —
-# segments are capped well under 30s by SileroVadModelConfig's default
-# max_speech_duration (20s), and there is no overlap to de-duplicate.
-# Settings mirror live_transcriber.py.
-
-_VAD_THRESHOLD: float = 0.5
-_VAD_MIN_SILENCE_SEC: float = 0.5
-_VAD_MIN_SPEECH_SEC: float = 0.25
-
-# Pad each segment by this much on both sides to avoid clipping soft/short
-# onset words (e.g. "Of" in "Of course"). Must stay below half of
-# _VAD_MIN_SILENCE_SEC so padded neighboring segments can never overlap.
-_VAD_PAD_SEC: float = 0.2
-
-
-def _build_vad():
-    import sherpa_onnx
-
-    vad_config = sherpa_onnx.VadModelConfig(
-        silero_vad=sherpa_onnx.SileroVadModelConfig(
-            model=str(config.VAD_MODEL_PATH),
-            threshold=_VAD_THRESHOLD,
-            min_silence_duration=_VAD_MIN_SILENCE_SEC,
-            min_speech_duration=_VAD_MIN_SPEECH_SEC,
-        ),
-        sample_rate=config.VAD_SAMPLE_RATE,
-    )
-    return sherpa_onnx.VoiceActivityDetector(vad_config)
-
-
-def _vad_segments(
-    vad,
-    samples: np.ndarray,
-    cancel_event: threading.Event,
-) -> list[tuple[int, int]]:
-    """Split samples into speech segments. Returns (start_sample, end_sample) pairs."""
-    window = config.VAD_CHUNK_SAMPLES
-    bounds: list[tuple[int, int]] = []
-    pos = 0
-    while pos < len(samples):
-        if cancel_event.is_set():
-            raise CancelledError("Transcription cancelled by user")
-        end = min(pos + window, len(samples))
-        chunk = samples[pos:end]
-        if len(chunk) < window:
-            chunk = np.pad(chunk, (0, window - len(chunk)))
-        vad.accept_waveform(chunk)
-        pos = end
-        while not vad.empty():
-            seg = vad.front
-            bounds.append((seg.start, seg.start + len(seg.samples)))
-            vad.pop()
-
-    vad.flush()
-    while not vad.empty():
-        seg = vad.front
-        bounds.append((seg.start, seg.start + len(seg.samples)))
-        vad.pop()
-
-    return bounds
-
-
 # ─── Engine ───────────────────────────────────────────────────────────────────
 
 
@@ -335,6 +265,11 @@ class TranscriptionEngine:
             self._provider = None
             logger.info("Model unloaded")
 
+    def get_recognizer(self, status_callback: Callable[[str], None]):
+        """Public accessor for the loaded recognizer (loads on demand)."""
+        self._ensure_model_loaded(status_callback)
+        return self._recognizer
+
     def transcribe(
         self,
         audio_path: Path,
@@ -370,9 +305,10 @@ class TranscriptionEngine:
         log_callback(f"[Transcribe] Audio duration: {_fmt_seconds(duration)}")
 
         log_callback("[Transcribe] Detecting speech segments (VAD)…")
-        vad = _build_vad()
-        bounds = _vad_segments(vad, samples, cancel_event)
-        num_chunks = len(bounds)
+        vad_detector = vad.build_vad()
+        bounds = vad.file_segments(vad_detector, samples, cancel_event)
+        padded_bounds = vad.pad_and_clamp(bounds, len(samples))
+        num_chunks = len(padded_bounds)
         log_callback(f"[Transcribe] Processing {num_chunks} speech segment(s)…")
 
         raw_segments: list[tuple[float, float, str]] = []
@@ -380,16 +316,9 @@ class TranscriptionEngine:
         word_count = 0
         infer_start = time.monotonic()
 
-        pad_samples = int(_VAD_PAD_SEC * sr)
-
-        for i, (b_start, b_end) in enumerate(bounds):
+        for i, (c_start, c_end) in enumerate(padded_bounds):
             if cancel_event.is_set():
                 raise CancelledError("Transcription cancelled by user")
-
-            prev_end = bounds[i - 1][1] if i > 0 else 0
-            next_start = bounds[i + 1][0] if i + 1 < len(bounds) else len(samples)
-            c_start = max(prev_end, b_start - pad_samples)
-            c_end = min(next_start, b_end + pad_samples)
 
             seg_start = c_start / sr
             seg_end = c_end / sr

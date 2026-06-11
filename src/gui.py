@@ -9,7 +9,6 @@ import logging
 import os
 import shutil
 import threading
-from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Callable
@@ -612,8 +611,14 @@ class TranscriberApp(_AppBase):  # type: ignore
             transcript_lines.append(text)
             self._safe_append_log(text)
 
+        def on_overflow() -> None:
+            self._safe_append_log(
+                "[Warning] transcription falling behind — some audio was "
+                "skipped in the live view; the full recording is still saved"
+            )
+
         try:
-            self._engine._ensure_model_loaded(self._safe_update_status)
+            recognizer = self._engine.get_recognizer(self._safe_update_status)
             self._safe_update_status("Recording")
 
             mic_label = self._mic_var.get()
@@ -622,12 +627,14 @@ class TranscriberApp(_AppBase):  # type: ignore
             DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             self._mic_recorder.start(device_index, DEFAULT_OUTPUT_DIR)
             mic_queue = self._mic_recorder.get_queue()
+            session_stem = self._mic_recorder.get_session_stem()
 
             self._live_transcriber.start(
-                self._engine._recognizer,
+                recognizer,
                 mic_queue,
                 self._stop_recording_event,
                 on_segment,
+                on_overflow,
             )
 
             self._safe_append_log("[Record] Listening — click Stop Recording when done")
@@ -636,10 +643,10 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._live_transcriber.stop()
             wav_path = self._mic_recorder.stop(convert_to_wav=True)
 
-            # Write accumulated transcript
-            if transcript_lines:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                txt_path = DEFAULT_OUTPUT_DIR / f"recording_{ts}.txt"
+            # Transcript filename matches the recording's start timestamp
+            # (session_stem), the same stem the .wav was saved under.
+            if transcript_lines and session_stem:
+                txt_path = DEFAULT_OUTPUT_DIR / f"{session_stem}.txt"
                 try:
                     txt_path.write_text("\n".join(transcript_lines) + "\n", encoding="utf-8")
                     self._last_output_folder = DEFAULT_OUTPUT_DIR
