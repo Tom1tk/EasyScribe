@@ -63,6 +63,16 @@ FFMPEG_DIR: Path = BASE_DIR / "ffmpeg"
 FFMPEG_BIN: Path = FFMPEG_DIR / "ffmpeg.exe"
 FFPROBE_BIN: Path = FFMPEG_DIR / "ffprobe.exe"
 
+# ─── whisper.cpp (file transcription, optional — beam search, Vulkan/CPU) ──────
+# If these aren't bundled (e.g. dev environments before CI bundles them — see
+# CLAUDE.md Phase 8 notes), file transcription falls back to the sherpa-onnx
+# VAD+greedy path below.
+
+WHISPERCPP_DIR: Path = BASE_DIR / "whispercpp"
+WHISPERCPP_BIN: Path = WHISPERCPP_DIR / ("whisper-cli.exe" if sys.platform == "win32" else "whisper-cli")
+WHISPERCPP_MODEL: Path = WHISPERCPP_DIR / "ggml-large-v3-turbo-q5_0.bin"
+WHISPERCPP_BEAM_SIZE: int = 5
+
 # ─── Runtime directories ──────────────────────────────────────────────────────
 
 LOGS_DIR: Path = BASE_DIR / "logs"
