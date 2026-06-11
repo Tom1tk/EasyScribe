@@ -89,6 +89,16 @@ jobs:
           python tests/test_sherpa_api.py
           if ($LASTEXITCODE -ne 0) { throw "API smoke tests failed — see output above" }
 
+      # ── 4c. All fast unit tests — VAD bounds, transcript builders, recovery,
+      # launcher safety, live transcriber. Pure-Python, milliseconds each, no
+      # model files needed. Same fail-fast placement as 4b.
+      - name: Run all unit tests
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          python tests/run_all.py
+          if ($LASTEXITCODE -ne 0) { throw "Unit tests failed — see output above" }
+
       # ── 5. Whisper ONNX model cache (~1 GB) ───────────────────────────────────
       - name: Cache Whisper ONNX model
         id: whisper-cache
