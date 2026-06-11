@@ -132,6 +132,22 @@ Vulkan, see Phase 8 strategic track) is evaluated.
 **The lesson:** verify provider claims empirically (grep the bundled native libs,
 or check the ONNX Runtime execution-provider list) before building features on them.
 
+> **Phase 8 update (2026-06-11):** "EasyScribe is CPU-only" above describes
+> **sherpa-onnx** specifically — that part of Rule 7 still holds. sherpa-onnx
+> 1.13.2 has no Vulkan provider, and VAD, diarization, and live mode (all
+> sherpa-onnx) remain CPU-only. File transcription, however, now has a second,
+> optional engine: `whisper-cli` (whisper.cpp), built in CI with
+> `-DGGML_VULKAN=ON` (see `.github/workflows/build-release.yml` and
+> `src/whispercpp_wrapper.py`) — a different binary/codebase from sherpa-onnx,
+> so this doesn't contradict the finding above. `whisper-cli` logs which device
+> it actually used (`whisper_backend_init_gpu: device N: <name>` or
+> `no GPU found`), and `whispercpp_wrapper.py` surfaces that line to the UI log
+> — the same "verify empirically, never assume from build flags" discipline
+> this rule established. `vulkan_probe.py` was deliberately *not* resurrected:
+> a separate ctypes GPU probe would be a second, possibly-disagreeing source of
+> "is there a GPU" info — `whisper-cli`'s own stderr device line is the actual
+> ground truth and is already surfaced.
+
 ### Rule 8: Silero VAD model must be downloaded and bundled explicitly
 
 `sherpa_onnx.get_default_vad_model()` does NOT exist in sherpa-onnx 1.13.2.
@@ -210,3 +226,4 @@ model downloads.
 | v1.1.0 (fix 2) | GPU diarization still fell back to CPU — `onnxruntime 1.26.0` (CPU) installed as faster-whisper dep; both it and sherpa_onnx bundle `onnxruntime.dll`; Windows caches by name so whichever loads first wins; fix by prepending `sherpa_onnx/lib/` to PATH in `cuda_setup.py` so the GPU version is cached first; bump venv cache v7→v8 |
 | v2.0.0 | Full rewrite: sherpa-onnx for all inference (transcription + diarization + VAD); Vulkan GPU provider (no CUDA DLLs); single .exe via 7-zip SFX + AppData extract-once launcher; live microphone transcription (VAD-chunked, crash-safe PCM); two model variants (Whisper ONNX distil-large-v3, Parakeet TDT 0.6B v3 int8); removes faster-whisper, ctranslate2, nvidia-*-cu12 packages entirely |
 | v2.1 | Switch the Whisper model from distil-large-v3 to large-v3-turbo (A/B accuracy winner); remove the Parakeet TDT variant and all `MODEL_VARIANT`/`variant.json` machinery — single model, single CI build; remove fictional Vulkan GPU support (`provider="vulkan"` always silently fell back to CPU) — delete `vulkan_probe.py`, GPU device dropdown, `NUM_THREADS` lifted to config.py |
+| v2.1 (Phase 8) | Add whisper.cpp as a second, optional file-transcription engine: `whisper-cli` built in CI with `-DGGML_VULKAN=ON` (any GPU vendor, beam_size=5), bundled in `whispercpp/`. `TranscriptionEngine.transcribe()` uses it when bundled, else falls back unchanged to the sherpa-onnx VAD+greedy path. Unlike v2.0.0's fictional `provider="vulkan"`, this is real GPU acceleration — the device actually used is logged from whisper.cpp's own stderr, never assumed |
