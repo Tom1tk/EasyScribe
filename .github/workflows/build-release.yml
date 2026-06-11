@@ -9,6 +9,10 @@ name: Build and Publish Release
 #   Whisper ONNX model  ~1 GB     key: sherpa-onnx-whisper-turbo-v1
 #   Silero VAD model    ~1 MB     key: sherpa-onnx-silero-vad-v1
 #   Diarization models  ~35 MB    key: sherpa-onnx-diarization-v1        (reuse from v1.x)
+#   whisper.cpp Vulkan  ~50 MB    key: whispercpp-vulkan-v1.8.6-vksdk1.4.313.2-v1
+#                                 (whisper-cli.exe + DLLs; Vulkan SDK install + shader
+#                                 build only run on cache miss — see step 7b)
+#   whisper.cpp model   ~547 MB   key: ggml-large-v3-turbo-q5_0-v1
 
 on:
   workflow_dispatch:
@@ -172,6 +176,68 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx" -OutFile "models\diarization\embedding.onnx"
           Write-Host "Diarization models ready."
 
+      # ── 7b. whisper.cpp Vulkan build (whisper-cli.exe — file transcription
+      # engine, see src/whispercpp_wrapper.py and CLAUDE.md Phase 8). Built
+      # from source because official whisper.cpp Windows release zips are
+      # CPU/CUDA only (ggml-org/whisper.cpp#3673) — Vulkan runs on any GPU
+      # vendor. Cached so the Vulkan SDK install + shader build only happen
+      # once; pinned to release tag v1.8.6 (supply-chain: never build master).
+      - name: Cache whisper.cpp Vulkan build
+        id: whispercpp-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper.cpp\build\bin\Release
+          key: whispercpp-vulkan-v1.8.6-vksdk1.4.313.2-v1
+
+      # Vulkan SDK is build-time only (provides vulkan.h / vulkan-1.lib / glslc
+      # for shader compilation). At runtime whisper-cli.exe only needs the
+      # user's GPU driver (vulkan-1.dll) — nothing from the SDK is bundled.
+      - name: Install Vulkan SDK
+        if: steps.whispercpp-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $ver = "1.4.313.2"
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkansdk-windows-X64-$ver.exe" -OutFile VulkanSDK.exe
+          & .\VulkanSDK.exe --accept-licenses --default-answer --confirm-command install
+          Remove-Item VulkanSDK.exe
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
+
+      - name: Build whisper-cli.exe (Vulkan)
+        if: steps.whispercpp-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --branch v1.8.6 --depth 1 https://github.com/ggml-org/whisper.cpp.git
+          cmake -S whisper.cpp -B whisper.cpp\build -A x64 `
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DWHISPER_SDL2=OFF
+          cmake --build whisper.cpp\build --config Release --target whisper-cli --parallel
+          if ($LASTEXITCODE -ne 0) { throw "whisper.cpp build failed" }
+
+      - name: Verify whisper-cli.exe runs
+        shell: pwsh
+        run: |
+          & "whisper.cpp\build\bin\Release\whisper-cli.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "whisper-cli.exe failed to run" }
+
+      # ── 7c. whisper.cpp GGUF model (~547 MB, large-v3-turbo q5_0 — see
+      # EASYSCRIBE_ACTION_PLAN.md Phase 8.1 checkpoint ① accuracy A/B) ──────────
+      - name: Cache whisper.cpp GGUF model
+        id: ggml-cache
+        uses: actions/cache@v4
+        with:
+          path: models\ggml-large-v3-turbo-q5_0.bin
+          key: ggml-large-v3-turbo-q5_0-v1
+
+      - name: Download whisper.cpp GGUF model
+        if: steps.ggml-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force -Path "models" | Out-Null
+          Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin" -OutFile "models\ggml-large-v3-turbo-q5_0.bin"
+          Write-Host "GGUF model ready."
+
       # ── 8. Diagnose sounddevice package layout ────────────────────────────────
       - name: Diagnose sounddevice layout
         shell: pwsh
@@ -211,6 +277,13 @@ jobs:
           Copy-Item "models\silero_vad.onnx" "$dist\models\silero_vad.onnx"
           Copy-Item "models\whisper" "$dist\models\whisper" -Recurse -Force
           Copy-Item "models\diarization" "$dist\models\diarization" -Recurse -Force
+
+          # whisper.cpp (Vulkan file-transcription engine — optional; falls
+          # back to sherpa-onnx if missing, see src/whispercpp_wrapper.py)
+          New-Item -ItemType Directory -Force -Path "$dist\whispercpp" | Out-Null
+          Copy-Item "whisper.cpp\build\bin\Release\whisper-cli.exe" "$dist\whispercpp\"
+          Copy-Item "whisper.cpp\build\bin\Release\*.dll" "$dist\whispercpp\" -ErrorAction SilentlyContinue
+          Copy-Item "models\ggml-large-v3-turbo-q5_0.bin" "$dist\whispercpp\"
 
           # Pre-create recordings dir so it is visible after extraction
           New-Item -ItemType Directory -Force -Path "$dist\recordings" | Out-Null
