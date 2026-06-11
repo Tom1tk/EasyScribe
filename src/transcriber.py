@@ -1,8 +1,8 @@
 """
 transcriber.py - sherpa-onnx transcription engine for EasyScribe v2.0.
 
-Replaces faster-whisper. Uses Whisper ONNX large-v3-turbo.
-GPU acceleration via Vulkan provider; falls back to CPU automatically.
+Replaces faster-whisper. Uses Whisper ONNX large-v3-turbo. Inference runs on
+CPU only — sherpa-onnx 1.13.2 has no Vulkan provider (see CLAUDE.md Rule 7).
 """
 
 import logging
@@ -170,19 +170,7 @@ def _fmt_seconds(s: float) -> str:
     return f"{h}h {m:02d}m {sec:02d}s" if h else f"{m}m {sec:02d}s"
 
 
-# ─── GPU / provider helpers ───────────────────────────────────────────────────
-
-
-def list_gpus() -> list[dict]:
-    """Return available Vulkan GPUs as [{"index": int, "name": str}, ...]."""
-    from vulkan_probe import detect_vulkan_gpus
-    return detect_vulkan_gpus()
-
-
-def _resolve_provider(preferred_gpu_index: int | None) -> str:
-    if preferred_gpu_index == -1:
-        return "cpu"
-    return "vulkan" if list_gpus() else "cpu"
+# ─── Model / recognizer config ────────────────────────────────────────────────
 
 
 def validate_model_directory() -> list[str]:
@@ -211,7 +199,7 @@ def _build_recognizer_config(provider: str):
         ),
         tokens=str(config.WHISPER_TOKENS),
         provider=provider,
-        num_threads=4,
+        num_threads=config.NUM_THREADS,
     )
 
     return sherpa_onnx.OfflineRecognizerConfig(model_config=model_cfg)
@@ -316,7 +304,6 @@ class TranscriptionEngine:
         self._recognizer = None
         self._lock = threading.Lock()
         self._provider: str | None = None
-        self.preferred_gpu_index: int | None = None
 
     def _ensure_model_loaded(self, status_callback: Callable[[str], None]) -> None:
         with self._lock:
@@ -330,32 +317,17 @@ class TranscriptionEngine:
                 )
 
             status_callback("Loading Model")
-            provider = _resolve_provider(self.preferred_gpu_index)
-            logger.info(f"Loading model, provider={provider}")
+            logger.info("Loading model, provider=cpu")
 
             from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRecognizer
 
             try:
-                cfg = _build_recognizer_config(provider)
+                cfg = _build_recognizer_config("cpu")
                 self._recognizer = _OfflineRecognizer(cfg)
-                self._provider = provider
-                logger.info(f"Model loaded: provider={provider}")
+                self._provider = "cpu"
+                logger.info("Model loaded: provider=cpu")
             except RuntimeError as exc:
-                if provider == "vulkan":
-                    logger.warning(f"Vulkan failed ({exc}); retrying on CPU")
-                    status_callback("Loading Model (CPU fallback)")
-                    cfg = _build_recognizer_config("cpu")
-                    self._recognizer = _OfflineRecognizer(cfg)
-                    self._provider = "cpu"
-                    logger.info("Model loaded on CPU (Vulkan fallback)")
-                else:
-                    raise ModelNotFoundError(f"Could not load model: {exc}") from exc
-
-    def reload_model(self) -> None:
-        with self._lock:
-            self._recognizer = None
-            self._provider = None
-            logger.info("Model unloaded for reload")
+                raise ModelNotFoundError(f"Could not load model: {exc}") from exc
 
     def unload_model(self) -> None:
         with self._lock:

@@ -1,11 +1,10 @@
 # EasyScribe
 
-A portable, fully offline Windows desktop application for transcribing media files and live microphone audio to plain text. Uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) for all inference — transcription, speaker diarization, and voice activity detection — with GPU acceleration via Vulkan (any GPU, no CUDA required).
+A portable, fully offline Windows desktop application for transcribing media files and live microphone audio to plain text. Uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) for all inference — transcription, speaker diarization, and voice activity detection — running entirely on CPU.
 
 - **No internet required at runtime** — works completely offline
 - **Single .exe installer** — runs on any Windows 10/11 machine, no setup wizard
 - **No Python required** on the target machine — everything is bundled
-- **GPU-accelerated** on any Vulkan-capable GPU (NVIDIA, AMD, Intel), automatic CPU fallback
 - **Live microphone transcription** — real-time VAD-chunked transcription with crash-safe recording
 - **Speaker diarization** — identify who said what, with optional name assignment
 
@@ -64,13 +63,12 @@ After diarization completes, a popup lets you name each speaker. Play a short au
 1. Click **Select File(s)** or drag and drop media files onto the drop zone
 2. Optionally click **Select Folder** to choose where transcripts are saved
    (defaults to `Documents\EasyScribe Recordings\`)
-3. Choose a device from the **Device** dropdown — Vulkan-capable GPUs are listed; select **CPU** to force CPU mode
-4. Tick options as needed:
+3. Tick options as needed:
    - **Include timestamps** — adds `[HH:MM:SS]` block headers
    - **Identify speakers** — runs speaker diarization
-5. Click **Transcribe**
-6. If speaker identification is enabled, a popup appears when diarization completes — play samples, enter names, then click **Use These Names**
-7. Click **Open Output Folder** when done
+4. Click **Transcribe**
+5. If speaker identification is enabled, a popup appears when diarization completes — play samples, enter names, then click **Use These Names**
+6. Click **Open Output Folder** when done
 
 ### Record from microphone
 
@@ -188,8 +186,7 @@ src/
   config.py          Path resolution, constants, model variant detection
   logger.py          Rotating log file setup
   ffmpeg_wrapper.py  Subprocess ffmpeg with cancellation polling
-  transcriber.py     sherpa-onnx OfflineRecognizer (Vulkan/CPU, Whisper or Parakeet)
-  vulkan_probe.py    ctypes-based Vulkan GPU enumeration (no pip dependency)
+  transcriber.py     sherpa-onnx OfflineRecognizer (CPU, Whisper or Parakeet)
   diarizer.py        sherpa-onnx speaker diarization engine
   mic_recorder.py    sounddevice capture + crash-safe PCM writer
   live_transcriber.py  Silero VAD loop + OfflineRecognizer for live mode
@@ -201,9 +198,9 @@ launcher/
   launcher.spec      PyInstaller ONEFILE spec for launcher
 ```
 
-### GPU acceleration
+### CPU inference
 
-`provider="vulkan"` is passed to `sherpa_onnx.OfflineRecognizerConfig`. Vulkan uses the system GPU driver — no additional DLLs need to be bundled. If Vulkan initialisation fails (e.g. on a headless machine), the engine transparently retries with `provider="cpu"`.
+EasyScribe runs all inference on CPU via `provider="cpu"` in `sherpa_onnx.OfflineRecognizerConfig`. sherpa-onnx 1.13.2 has no Vulkan provider — an unrecognized provider string silently falls back to CPU rather than raising, so there is no GPU code path to fall back from.
 
 ### Offline guarantee
 
@@ -229,12 +226,11 @@ The SFX extracts to `%TEMP%\EasyScribe_Setup` and runs `launcher.exe`, which cop
 | SmartScreen blocks the exe | Click "More info → Run anyway" — the exe is unsigned but safe |
 | "Model files missing" on startup | Re-run the installer; extraction may have been interrupted |
 | "ffmpeg.exe not found" | Re-run the installer |
-| No GPU listed in Device dropdown | No Vulkan-capable GPU detected; CPU mode will be used |
 | "Identify speakers" checkbox is greyed out | Diarization models not found; re-run the installer |
 | Mic dropdown shows no devices | No audio input devices found; check Windows sound settings |
 | Recovery dialog on launch | A previous recording was interrupted; choose Recover to save the audio or Delete to discard |
 | Antivirus flags the exe | PyInstaller executables may trigger false positives; add an exclusion |
-| Slow transcription | CPU mode is slower by design; a Vulkan-capable GPU significantly improves speed |
+| Slow transcription | EasyScribe runs on CPU; large files take proportionally longer — this is expected |
 
 ---
 

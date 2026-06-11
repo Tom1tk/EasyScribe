@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Local API-shape tests for the sherpa_onnx / Vulkan integration in src/transcriber.py
-and src/vulkan_probe.py.
+Local API-shape tests for the sherpa_onnx integration in src/transcriber.py.
 
 These run fast, offline, and without real model files — they catch mismatches
 between our code and the installed sherpa_onnx version's constructor signatures
@@ -46,20 +45,9 @@ def _check_recognizer_config() -> None:
         pass  # expected when model files are missing
 
 
-def _check_vulkan_probe() -> None:
-    sys.modules.pop("vulkan_probe", None)
-    import vulkan_probe
-
-    gpus = vulkan_probe.detect_vulkan_gpus()
-    assert isinstance(gpus, list), type(gpus)
-    for gpu in gpus:
-        assert "index" in gpu and "name" in gpu, gpu
-
-
 def main() -> None:
-    print("\n-- sherpa_onnx / vulkan API tests ----------------------------------------")
+    print("\n-- sherpa_onnx API tests --------------------------------------------------")
     _check("OfflineRecognizerConfig", _check_recognizer_config)
-    _check("vulkan_probe.detect_vulkan_gpus()", _check_vulkan_probe)
     print("---------------------------------------------------------------------------\n")
 
     if failures:
