@@ -55,6 +55,26 @@ def recover_pcm_to_wav(pcm_path: Path, metadata: dict, wav_path: Path) -> None:
     logger.info(f"Recovered {pcm_path.name} → {wav_path.name} ({len(raw):,} bytes)")
 
 
+def _handle_orphan(pcm_path: Path, json_path: Path, metadata: dict, recover: bool) -> Path | None:
+    """
+    Apply the user's recovery choice for one orphaned recording.
+
+    If recover is True, converts the PCM to a WAV file and deletes the
+    .pcm/.json pair. If recover is False, leaves both files untouched so
+    the prompt reappears next launch — declining must never delete the
+    only copy of the recording.
+
+    Returns the recovered WAV path, or None if recover was False.
+    """
+    if not recover:
+        return None
+    wav_path = pcm_path.with_suffix(".wav")
+    recover_pcm_to_wav(pcm_path, metadata, wav_path)
+    pcm_path.unlink(missing_ok=True)
+    json_path.unlink(missing_ok=True)
+    return wav_path
+
+
 def prompt_and_recover(output_dir: Path) -> None:
     """
     Show a tkinter dialog for each orphaned recording and recover if confirmed.
@@ -78,37 +98,31 @@ def prompt_and_recover(output_dir: Path) -> None:
         duration_str = f"{int(duration_sec // 60)}m {int(duration_sec % 60)}s"
 
         answer = messagebox.askyesno(
-            "Recover Interrupted Recording",
-            f"An interrupted recording was found:\n\n"
+            "Unfinished Recording Found",
+            f"An unfinished recording was found:\n\n"
             f"  File: {pcm_path.name}\n"
             f"  Duration: {duration_str}\n\n"
-            f"Recover it as a .wav file?",
+            f"Recover it as a .wav file now?\n"
+            f"(Choosing No keeps the raw recording for next time.)",
             parent=root,
         )
 
-        if answer:
-            wav_path = pcm_path.with_suffix(".wav")
-            try:
-                recover_pcm_to_wav(pcm_path, metadata, wav_path)
-                pcm_path.unlink(missing_ok=True)
-                json_path.unlink(missing_ok=True)
-                messagebox.showinfo(
-                    "Recovery Complete",
-                    f"Saved to:\n{wav_path}",
-                    parent=root,
-                )
-            except Exception as exc:
-                logger.error(f"Recovery failed for {pcm_path.name}: {exc}")
-                messagebox.showerror(
-                    "Recovery Failed",
-                    f"Could not recover {pcm_path.name}:\n{exc}",
-                    parent=root,
-                )
-        else:
-            try:
-                pcm_path.unlink(missing_ok=True)
-                json_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        try:
+            wav_path = _handle_orphan(pcm_path, json_path, metadata, answer)
+        except Exception as exc:
+            logger.error(f"Recovery failed for {pcm_path.name}: {exc}")
+            messagebox.showerror(
+                "Recovery Failed",
+                f"Could not recover {pcm_path.name}:\n{exc}",
+                parent=root,
+            )
+            continue
+
+        if wav_path is not None:
+            messagebox.showinfo(
+                "Recovery Complete",
+                f"Saved to:\n{wav_path}",
+                parent=root,
+            )
 
     root.destroy()
