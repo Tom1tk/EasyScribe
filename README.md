@@ -1,10 +1,11 @@
 # EasyScribe
 
-A portable, fully offline Windows desktop application for transcribing media files and live microphone audio to plain text. Uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) for all inference — transcription, speaker diarization, and voice activity detection — running entirely on CPU.
+A portable, fully offline Windows desktop application for transcribing media files and live microphone audio to plain text. Speaker diarization, voice activity detection, and live transcription run on [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (CPU). File transcription uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with beam search, accelerated on any Vulkan-capable GPU (NVIDIA, AMD, Intel) when available — falling back to the sherpa-onnx CPU engine if not bundled.
 
 - **No internet required at runtime** — works completely offline
 - **Single .exe installer** — runs on any Windows 10/11 machine, no setup wizard
 - **No Python required** on the target machine — everything is bundled
+- **GPU-accelerated file transcription** — whisper.cpp with beam search on any Vulkan GPU, CPU fallback
 - **Live microphone transcription** — real-time VAD-chunked transcription with crash-safe recording
 - **Speaker diarization** — identify who said what, with optional name assignment
 
@@ -29,7 +30,7 @@ To move the app, move both the `.exe` and the `EasyScribe\` folder together.
 ## Features
 
 ### File Transcription
-Converts any audio or video file to a plain UTF-8 `.txt` file. Audio is decoded via bundled ffmpeg, resampled to 16 kHz mono, then processed in 30-second overlapping chunks.
+Converts any audio or video file to a plain UTF-8 `.txt` file. Audio is decoded via bundled ffmpeg and resampled to 16 kHz mono. If `whisper-cli` (whisper.cpp) is bundled, it transcribes the whole file with beam search (`beam_size=5`), using a Vulkan GPU if one is detected or CPU otherwise — the device actually used is shown in the log. Otherwise, EasyScribe falls back to the sherpa-onnx VAD+greedy engine, processing the file in speech segments.
 
 ### Live Microphone Recording
 Record directly from any input device. Voice activity detection (Silero VAD) automatically segments speech — only non-silent segments are transcribed. Recording writes crash-safe `.pcm` + `.json` sidecar files; if the app closes unexpectedly, the next launch offers to recover the audio.
@@ -137,6 +138,10 @@ The `.exe` extracts an `EasyScribe\` folder next to itself:
         segmentation.onnx
         embedding.onnx
       silero_vad.onnx
+    whispercpp\              <- whisper.cpp file-transcription engine (Vulkan/CPU)
+      whisper-cli.exe
+      ggml-large-v3-turbo-q5_0.bin
+      *.dll
     ffmpeg\
       ffmpeg.exe
       ffprobe.exe
@@ -169,7 +174,8 @@ src/
   config.py          Path resolution and constants
   logger.py          Rotating log file setup
   ffmpeg_wrapper.py  Subprocess ffmpeg with cancellation polling
-  transcriber.py     sherpa-onnx OfflineRecognizer (CPU, Whisper large-v3-turbo)
+  transcriber.py     File transcription engine (whisper.cpp if bundled, else sherpa-onnx)
+  whispercpp_wrapper.py  Subprocess whisper-cli (whisper.cpp), beam search + Vulkan/CPU
   diarizer.py        sherpa-onnx speaker diarization engine
   mic_recorder.py    sounddevice capture + crash-safe PCM writer
   live_transcriber.py  Silero VAD loop + OfflineRecognizer for live mode
@@ -181,9 +187,11 @@ launcher/
   launcher.spec      PyInstaller ONEFILE spec for launcher
 ```
 
-### CPU inference
+### Inference engines
 
-EasyScribe runs all inference on CPU via `provider="cpu"` in `sherpa_onnx.OfflineRecognizerConfig`. sherpa-onnx 1.13.2 has no Vulkan provider — an unrecognized provider string silently falls back to CPU rather than raising, so there is no GPU code path to fall back from.
+Voice activity detection, speaker diarization, and live microphone transcription run on sherpa-onnx via `provider="cpu"` in `sherpa_onnx.OfflineRecognizerConfig` — sherpa-onnx 1.13.2 has no Vulkan provider, so these stay CPU-only.
+
+File transcription prefers `whisper-cli` (whisper.cpp), built with Vulkan support — a different engine/binary from sherpa-onnx, so it runs on GPU (NVIDIA, AMD, or Intel) when one is available, with automatic CPU fallback. If `whisper-cli` or its model isn't bundled (e.g. a dev checkout before CI bundles it), file transcription falls back to the same sherpa-onnx CPU engine used for live mode.
 
 ### Offline guarantee
 
