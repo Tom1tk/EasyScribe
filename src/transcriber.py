@@ -191,6 +191,9 @@ def validate_model_directory() -> list[str]:
     errors: list[str] = []
     variant = config.MODEL_VARIANT
 
+    if not config.VAD_MODEL_PATH.is_file():
+        errors.append(f"Missing: {config.VAD_MODEL_PATH}")
+
     if variant == "whisper":
         for p in (config.WHISPER_ENCODER, config.WHISPER_DECODER, config.WHISPER_TOKENS):
             if not p.is_file():
@@ -264,10 +267,75 @@ def _load_wav_float32(wav_path: Path) -> tuple[np.ndarray, int]:
     return samples, sr
 
 
-# ─── Engine ───────────────────────────────────────────────────────────────────
+# ─── VAD-based segmentation ───────────────────────────────────────────────────
+#
+# Replaces fixed-window chunking. sherpa-onnx's Whisper decoder hard-rejects any
+# chunk >= 30s ("Only waves less than 30 seconds are supported"), and a fixed
+# 30s/1s-overlap chunker both hits that limit exactly and re-transcribes the
+# overlap with no de-duplication, producing garbled/duplicated text at every
+# chunk boundary. VAD splits on natural speech/silence boundaries instead —
+# segments are capped well under 30s by SileroVadModelConfig's default
+# max_speech_duration (20s), and there is no overlap to de-duplicate.
+# Settings mirror live_transcriber.py.
 
-_CHUNK_SEC: float = 30.0
-_OVERLAP_SEC: float = 1.0
+_VAD_THRESHOLD: float = 0.5
+_VAD_MIN_SILENCE_SEC: float = 0.5
+_VAD_MIN_SPEECH_SEC: float = 0.25
+
+# Pad each segment by this much on both sides to avoid clipping soft/short
+# onset words (e.g. "Of" in "Of course"). Must stay below half of
+# _VAD_MIN_SILENCE_SEC so padded neighboring segments can never overlap.
+_VAD_PAD_SEC: float = 0.2
+
+
+def _build_vad():
+    import sherpa_onnx
+
+    vad_config = sherpa_onnx.VadModelConfig(
+        silero_vad=sherpa_onnx.SileroVadModelConfig(
+            model=str(config.VAD_MODEL_PATH),
+            threshold=_VAD_THRESHOLD,
+            min_silence_duration=_VAD_MIN_SILENCE_SEC,
+            min_speech_duration=_VAD_MIN_SPEECH_SEC,
+        ),
+        sample_rate=config.VAD_SAMPLE_RATE,
+    )
+    return sherpa_onnx.VoiceActivityDetector(vad_config)
+
+
+def _vad_segments(
+    vad,
+    samples: np.ndarray,
+    cancel_event: threading.Event,
+) -> list[tuple[int, int]]:
+    """Split samples into speech segments. Returns (start_sample, end_sample) pairs."""
+    window = config.VAD_CHUNK_SAMPLES
+    bounds: list[tuple[int, int]] = []
+    pos = 0
+    while pos < len(samples):
+        if cancel_event.is_set():
+            raise CancelledError("Transcription cancelled by user")
+        end = min(pos + window, len(samples))
+        chunk = samples[pos:end]
+        if len(chunk) < window:
+            chunk = np.pad(chunk, (0, window - len(chunk)))
+        vad.accept_waveform(chunk)
+        pos = end
+        while not vad.empty():
+            seg = vad.front
+            bounds.append((seg.start, seg.start + len(seg.samples)))
+            vad.pop()
+
+    vad.flush()
+    while not vad.empty():
+        seg = vad.front
+        bounds.append((seg.start, seg.start + len(seg.samples)))
+        vad.pop()
+
+    return bounds
+
+
+# ─── Engine ───────────────────────────────────────────────────────────────────
 
 
 class TranscriptionEngine:
@@ -358,55 +426,37 @@ class TranscriptionEngine:
         duration = len(samples) / sr
         log_callback(f"[Transcribe] Audio duration: {_fmt_seconds(duration)}")
 
-        # Build non-overlapping + 1-second overlap chunks
-        chunk_size = int(_CHUNK_SEC * sr)
-        overlap_size = int(_OVERLAP_SEC * sr)
-        chunks: list[tuple[int, int]] = []
-        pos = 0
-        while pos < len(samples):
-            end = min(pos + chunk_size, len(samples))
-            chunks.append((pos, end))
-            if end == len(samples):
-                break
-            pos = end - overlap_size
-
-        num_chunks = len(chunks)
-        log_callback(f"[Transcribe] Processing {num_chunks} chunk(s)…")
+        log_callback("[Transcribe] Detecting speech segments (VAD)…")
+        vad = _build_vad()
+        bounds = _vad_segments(vad, samples, cancel_event)
+        num_chunks = len(bounds)
+        log_callback(f"[Transcribe] Processing {num_chunks} speech segment(s)…")
 
         raw_segments: list[tuple[float, float, str]] = []
         segment_count = 0
         word_count = 0
         infer_start = time.monotonic()
 
-        for i, (c_start, c_end) in enumerate(chunks):
+        pad_samples = int(_VAD_PAD_SEC * sr)
+
+        for i, (b_start, b_end) in enumerate(bounds):
             if cancel_event.is_set():
                 raise CancelledError("Transcription cancelled by user")
 
-            chunk = samples[c_start:c_end]
-            chunk_offset = c_start / sr
-            chunk_dur = (c_end - c_start) / sr
+            prev_end = bounds[i - 1][1] if i > 0 else 0
+            next_start = bounds[i + 1][0] if i + 1 < len(bounds) else len(samples)
+            c_start = max(prev_end, b_start - pad_samples)
+            c_end = min(next_start, b_end + pad_samples)
+
+            seg_start = c_start / sr
+            seg_end = c_end / sr
 
             stream = self._recognizer.create_stream()
-            stream.accept_waveform(sr, chunk)
+            stream.accept_waveform(sr, samples[c_start:c_end])
             self._recognizer.decode_stream(stream)
 
             text = stream.result.text.strip()
             if text:
-                # Word-level timestamps available from Whisper ONNX; Parakeet falls back
-                try:
-                    ts = stream.result.timestamps
-                    if ts and len(ts) >= 2:
-                        seg_start = chunk_offset + ts[0]
-                        seg_end = chunk_offset + ts[-1]
-                    elif ts and len(ts) == 1:
-                        seg_start = chunk_offset + ts[0]
-                        seg_end = seg_start + chunk_dur
-                    else:
-                        raise AttributeError
-                except (AttributeError, IndexError):
-                    seg_start = chunk_offset
-                    seg_end = chunk_offset + chunk_dur
-
                 raw_segments.append((seg_start, seg_end, text))
                 segment_count += 1
                 word_count += len(text.split())
@@ -414,10 +464,10 @@ class TranscriptionEngine:
 
             progress_callback((i + 1) / num_chunks)
             elapsed = time.monotonic() - infer_start
-            speed = (chunk_offset + chunk_dur) / elapsed if elapsed > 0 else 0
+            speed = seg_end / elapsed if elapsed > 0 else 0
             log_callback(
-                f"[Progress] chunk {i+1}/{num_chunks} — "
-                f"{_fmt_seconds(chunk_offset + chunk_dur)} / {_fmt_seconds(duration)} — "
+                f"[Progress] segment {i+1}/{num_chunks} — "
+                f"{_fmt_seconds(seg_end)} / {_fmt_seconds(duration)} — "
                 f"{speed:.1f}x realtime"
             )
 
