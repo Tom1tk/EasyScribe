@@ -16,8 +16,8 @@ A portable, fully offline Windows desktop application for transcribing media fil
 **No installer, no admin rights required.**
 
 1. Place `EasyScribe-<version>-whisper.exe` anywhere — a local folder, a USB stick, a shared network drive.
-2. Double-click. On first run it extracts an `EasyScribe\` folder next to itself (~30 seconds). EasyScribe launches automatically.
-3. On subsequent runs the same `.exe` detects the existing `EasyScribe\` folder and launches in under a second.
+2. Double-click. On first run, the installer GUI appears — pick an install location (or accept the default) and click **Install**. This extracts an `EasyScribe\` folder there (~30 seconds), creates **Desktop** and **Start Menu** shortcuts, then launches EasyScribe.
+3. From then on, launch EasyScribe from the **Desktop or Start Menu shortcut** — it starts the installed `EasyScribe.exe` directly, in under a second. Re-running the big `.exe` still works (it detects the existing install and relaunches it), but is slower since it re-extracts itself first each time.
 
 Transcripts and recordings are saved to `EasyScribe\recordings\` next to the `.exe`.
 

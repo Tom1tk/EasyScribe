@@ -122,6 +122,50 @@ def _check_write_marker_does_not_overwrite_existing() -> None:
         assert data["version"] == "1.0.0", data  # untouched, not bumped to current VERSION
 
 
+def _check_shortcuts_created_false_without_marker() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        install_dir = Path(tmp)
+        assert launcher._shortcuts_created(install_dir) is False
+
+
+def _check_shortcuts_created_false_before_marked() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        install_dir = Path(tmp)
+        launcher._write_marker(install_dir)
+        assert launcher._shortcuts_created(install_dir) is False
+
+
+def _check_mark_shortcuts_created_sets_flag_and_keeps_other_fields() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        install_dir = Path(tmp)
+        launcher._write_marker(install_dir)
+
+        launcher._mark_shortcuts_created(install_dir)
+
+        assert launcher._shortcuts_created(install_dir) is True
+        data = json.loads((install_dir / launcher.MARKER_FILENAME).read_text(encoding="utf-8"))
+        assert data["app"] == "EasyScribe", data
+        assert data["version"] == launcher.VERSION, data
+
+
+def _check_ensure_shortcuts_creates_once() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        install_dir = Path(tmp)
+        launcher._write_marker(install_dir)
+
+        calls: list[Path] = []
+        original = launcher._create_shortcuts
+        launcher._create_shortcuts = calls.append
+        try:
+            launcher._ensure_shortcuts(install_dir)
+            launcher._ensure_shortcuts(install_dir)  # second call must be a no-op
+        finally:
+            launcher._create_shortcuts = original
+
+        assert calls == [install_dir], calls
+        assert launcher._shortcuts_created(install_dir) is True
+
+
 def main() -> None:
     print("\n-- launcher install-safety tests -------------------------------------------")
     _check("_resolve_install_dir(picked dir) -> <dir>/EasyScribe", _check_resolve_picked_dir_redirects_to_subdir)
@@ -134,6 +178,10 @@ def main() -> None:
     _check("failure path with no marker leaves directory untouched", _check_failure_path_with_no_marker_leaves_dir_untouched)
     _check("_write_marker creates marker with app+version", _check_write_marker_creates_file_with_app_and_version)
     _check("_write_marker does not overwrite existing marker", _check_write_marker_does_not_overwrite_existing)
+    _check("_shortcuts_created(no marker) -> False", _check_shortcuts_created_false_without_marker)
+    _check("_shortcuts_created(marker, not yet marked) -> False", _check_shortcuts_created_false_before_marked)
+    _check("_mark_shortcuts_created sets flag, keeps app+version", _check_mark_shortcuts_created_sets_flag_and_keeps_other_fields)
+    _check("_ensure_shortcuts creates shortcuts only once", _check_ensure_shortcuts_creates_once)
     print("---------------------------------------------------------------------------\n")
 
     if failures:
