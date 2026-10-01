@@ -544,6 +544,10 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._live_transcriber = LiveTranscriber()
         self._last_output_folder: Path | None = None
         self._last_transcript: Path | None = None
+        # Audio of the last live recording, for "Make full transcript"
+        self._last_recording: Path | None = None
+        # Output path per input file, when it must not be "<stem>.txt"
+        self._output_overrides: dict[Path, Path] = {}
         self._ui_state = "idle"
         self._mode = _MODE_FILES
         self._details_open = False
@@ -967,6 +971,11 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._result_row, "Try again", width=110, command=self._on_change_options
         )
         self._retry_btn.grid(row=0, column=2)
+        self._full_transcript_btn = _button(
+            self._result_row, "Make full transcript", kind="teal", width=170,
+            command=self._on_full_transcript,
+        )
+        self._full_transcript_btn.grid(row=0, column=3, padx=(8, 0))
         self._result_row.grid_remove()
 
     # ── Details (technical log) ──────────────────────────────────────────────
@@ -1460,6 +1469,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         audio = outcome.get("audio")
         error = outcome.get("error")
         self._last_transcript = transcript if isinstance(transcript, Path) else None
+        self._last_recording = audio if isinstance(audio, Path) else None
 
         if error and not audio:
             self._status_label.configure(text="Could not record", text_color=C.CRIMSON)
@@ -1481,7 +1491,27 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._show_message(str(error) if error else "", "error")
         self._progress_bar.configure(progress_color=C.GREEN)
         self._progress_bar.set(1.0)
-        self._show_results(transcript=bool(transcript))
+        self._show_results(transcript=bool(transcript), full=self._last_recording is not None)
+
+    def _on_full_transcript(self) -> None:
+        """Send the saved recording through the file pipeline.
+
+        The live transcript is quick and has no speakers. The file pipeline
+        uses the more accurate engine and, if selected, speaker names. Its
+        output gets its own name, so the live transcript is kept.
+        """
+        audio = self._last_recording
+        if self._ui_state != "idle" or audio is None:
+            return
+        if not audio.exists():
+            self._show_message("The recording is no longer in the recordings folder.", "error")
+            return
+        self._show_mode(_MODE_FILES)
+        self._selected_files = [audio]
+        self._file_states = {}
+        self._output_overrides[audio] = (self._output_folder or audio.parent) / f"{audio.stem} (full).txt"
+        self._render_files()
+        self._on_transcribe()
 
     def _make_speaker_naming_callback(self) -> Callable:
         def callback(speaker_map: dict, clips_dict: dict) -> None:
@@ -1665,6 +1695,8 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._reset_output_btn.grid_remove()
 
     def _resolve_output_path(self, input_file: Path) -> Path:
+        if input_file in self._output_overrides:
+            return self._output_overrides[input_file]
         folder = self._output_folder or input_file.parent
         return folder / (input_file.stem + ".txt")
 
@@ -1719,11 +1751,14 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._message_label.configure(text=text, text_color=fg, fg_color=bg)
         self._message_label.grid(ipadx=10, ipady=8)
 
-    def _show_results(self, transcript: bool, folder: bool = True, retry: bool = False) -> None:
+    def _show_results(
+        self, transcript: bool, folder: bool = True, retry: bool = False, full: bool = False
+    ) -> None:
         for btn, show in (
             (self._open_transcript_btn, transcript),
             (self._open_output_btn, folder),
             (self._retry_btn, retry),
+            (self._full_transcript_btn, full),
         ):
             btn.grid() if show else btn.grid_remove()
         self._result_row.grid()

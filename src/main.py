@@ -46,6 +46,23 @@ def _cleanup_temp_files() -> None:
             pass
 
 
+def _set_taskbar_identity() -> None:
+    """Give the app its own Windows taskbar identity.
+
+    Without an explicit AppUserModelID, Windows shows the icon that it has
+    cached for the exe path, so an updated install can keep an old icon. With
+    one, the taskbar uses the window icon (the EasyScribe logo, see gui.py).
+    Must run before the first window is made.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("EasyScribe.App")
+    except Exception:
+        pass  # cosmetic only
+
+
 def _check_dependencies() -> list[str]:
     errors: list[str] = []
 
@@ -69,6 +86,7 @@ def _check_dependencies() -> list[str]:
 
 
 def main() -> None:
+    _set_taskbar_identity()
     setup_logging()
     log = logging.getLogger(APP_NAME)
     if offline_guard.is_installed():
