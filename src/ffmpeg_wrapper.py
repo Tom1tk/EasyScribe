@@ -79,6 +79,12 @@ def validate_ffmpeg() -> None:
         raise FFmpegNotFoundError("\n".join(missing))
 
 
+# Offline/GDPR: allow ffmpeg/ffprobe to read local files only. Without this, a
+# playlist-style file (HLS, concat, ...) renamed to .mp4 could make ffmpeg
+# fetch http(s) URLs. Must come before the input path / "-i" option.
+_LOCAL_FILES_ONLY: tuple[str, ...] = ("-protocol_whitelist", "file")
+
+
 def probe_audio(input_path: Path) -> dict:
     """Use ffprobe to read audio stream metadata."""
     if not FFPROBE_BIN.exists():
@@ -89,6 +95,7 @@ def probe_audio(input_path: Path) -> dict:
         "-select_streams", "a:0",
         "-show_entries", "stream=codec_name,sample_rate,channels,duration",
         "-of", "json",
+        *_LOCAL_FILES_ONLY,
         str(input_path),
     ]
     try:
@@ -164,6 +171,7 @@ def extract_audio(
     cmd = [
         str(FFMPEG_BIN),
         "-y",
+        *_LOCAL_FILES_ONLY,
         "-i", str(input_path),
         "-ac", "1",
         "-ar", "16000",

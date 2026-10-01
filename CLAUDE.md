@@ -206,6 +206,18 @@ model downloads.
 
 ---
 
+### Rule 13: The app must stay fully offline (GDPR) — keep `offline_guard` first
+
+EasyScribe is sold on "nothing leaves this computer". `src/main.py` calls
+`offline_guard.install()` before any other import, so a library that tries to phone home
+gets `NetworkBlockedError` instead of sending data. Never move that import down, never add
+a network library to `src/` or `launcher/` (no update checks, telemetry, crash upload,
+`webbrowser` links or model downloads at runtime), and keep `_LOCAL_FILES_ONLY`
+(`-protocol_whitelist file`) on every ffmpeg/ffprobe call. `tests/test_offline_guard.py`
+checks all three. Logs may hold file names and progress, never transcript text.
+
+---
+
 ## Version History
 
 | Version | Key changes |
@@ -227,3 +239,4 @@ model downloads.
 | v2.0.0 | Full rewrite: sherpa-onnx for all inference (transcription + diarization + VAD); Vulkan GPU provider (no CUDA DLLs); single .exe via 7-zip SFX + AppData extract-once launcher; live microphone transcription (VAD-chunked, crash-safe PCM); two model variants (Whisper ONNX distil-large-v3, Parakeet TDT 0.6B v3 int8); removes faster-whisper, ctranslate2, nvidia-*-cu12 packages entirely |
 | v2.1 | Switch the Whisper model from distil-large-v3 to large-v3-turbo (A/B accuracy winner); remove the Parakeet TDT variant and all `MODEL_VARIANT`/`variant.json` machinery — single model, single CI build; remove fictional Vulkan GPU support (`provider="vulkan"` always silently fell back to CPU) — delete `vulkan_probe.py`, GPU device dropdown, `NUM_THREADS` lifted to config.py |
 | v2.1 (Phase 8) | Add whisper.cpp as a second, optional file-transcription engine: `whisper-cli` built in CI with `-DGGML_VULKAN=ON` (any GPU vendor, beam_size=5), bundled in `whispercpp/`. `TranscriptionEngine.transcribe()` uses it when bundled, else falls back unchanged to the sherpa-onnx VAD+greedy path. Unlike v2.0.0's fictional `provider="vulkan"`, this is real GPU acceleration — the device actually used is logged from whisper.cpp's own stderr, never assumed |
+| v2.1 (UI refresh) | New light, feature-coded UI (teal files, coral recording, amber speakers, sky timestamps, green done); offline guard blocks all non-loopback network access; ffmpeg restricted to local files; temp files cleaned at start and exit; in-app Privacy panel |
