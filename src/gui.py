@@ -52,15 +52,14 @@ from config import (
     MIN_FREE_DISK_BYTES,
     SUPPORTED_EXTENSIONS,
 )
+from common import CancelledError
 from ffmpeg_wrapper import (
-    CancelledError as FFmpegCancelledError,
     FFmpegExtractionError,
     FFmpegNotFoundError,
     extract_audio,
 )
 from diarizer import DiarizationEngine  # type: ignore
 from transcriber import (
-    CancelledError as TranscribeCancelledError,
     ModelNotFoundError,
     TranscriptionEngine,
     TranscriptionError,
@@ -142,6 +141,7 @@ _STATUS: dict[str, tuple[str, str, str, str]] = {
     "Naming Speakers": ("Waiting for speaker names", C.AMBER_INK, C.AMBER, "pause"),
     "Writing Transcript": ("Saving the transcript", C.TEAL_INK, C.TEAL, "bar"),
     "Recording": ("Recording", C.CORAL_INK, C.CORAL, "busy"),
+    "Finishing": ("Finishing the last words", C.CORAL_INK, C.CORAL, "busy"),
     "Cancelling…": ("Stopping…", C.MUTED, C.FAINT, "busy"),
     "Done": ("Done", C.GREEN_INK, C.GREEN, "pause"),
     "Cancelled": ("Stopped", C.MUTED, C.FAINT, "pause"),
@@ -1236,7 +1236,7 @@ class TranscriberApp(_AppBase):  # type: ignore
                 temp_wav = extract_audio(input_file, self._cancel_event, self._safe_append_log)
 
                 if self._cancel_event.is_set():
-                    raise FFmpegCancelledError("Cancelled")
+                    raise CancelledError("Cancelled")
 
                 output_path = self._resolve_output_path(input_file)
                 self._last_output_folder = output_path.parent
@@ -1257,7 +1257,7 @@ class TranscriberApp(_AppBase):  # type: ignore
                 saved.append(output_path)
                 self._safe_set_file_state(input_file, "Done")
 
-            except (FFmpegCancelledError, TranscribeCancelledError):
+            except CancelledError:
                 self._safe_append_log("[Cancelled] Operation stopped by user")
                 self._safe_set_file_state(input_file, "Stopped")
                 break
@@ -1404,6 +1404,8 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._safe_append_log("[Record] Listening. Select Stop recording when done")
             self._stop_recording_event.wait()
 
+            # Speech that was still in progress at Stop is decoded now.
+            self._safe_update_status("Finishing")
             self._live_transcriber.stop()
             wav_path = self._mic_recorder.stop(convert_to_wav=True)
 

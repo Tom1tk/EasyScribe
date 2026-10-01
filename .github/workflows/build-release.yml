@@ -5,7 +5,7 @@ name: Build and Publish Release
 #
 # Cache strategy:
 #   ffmpeg              ~150 MB   key: ffmpeg-win64-gyan-7.1.1-essentials-v1
-#   Python venv         ~1-2 GB   key: venv-win64-py3.11-v3
+#   Python venv         ~1-2 GB   key: venv-win64-py3.11-v4
 #   Whisper ONNX model  ~1 GB     key: sherpa-onnx-whisper-turbo-v1
 #   Silero VAD model    ~1 MB     key: sherpa-onnx-silero-vad-v1
 #   Diarization models  ~35 MB    key: sherpa-onnx-diarization-v1        (reuse from v1.x)
@@ -78,7 +78,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v3
+          key: venv-win64-py3.11-v4
 
       - name: Install Python dependencies
         if: steps.venv-cache.outputs.cache-hit != 'true'
@@ -87,7 +87,7 @@ jobs:
           python -m venv venv
           & venv\Scripts\Activate.ps1
           python -m pip install --upgrade pip --quiet
-          pip install sherpa-onnx sounddevice numpy customtkinter tkinterdnd2 pyinstaller --quiet
+          pip install -r requirements.txt --quiet
           Write-Host "Installed packages:"
           pip list --format=columns
 
@@ -222,8 +222,8 @@ jobs:
           & "whisper.cpp\build\bin\Release\whisper-cli.exe" --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "whisper-cli.exe failed to run" }
 
-      # ── 7c. whisper.cpp GGUF model (~547 MB, large-v3-turbo q5_0 — see
-      # EASYSCRIBE_ACTION_PLAN.md Phase 8.1 checkpoint ① accuracy A/B) ──────────
+      # ── 7c. whisper.cpp GGUF model (~547 MB, large-v3-turbo q5_0 — the
+      # winner of the Phase 8 accuracy A/B, see CLAUDE.md) ──────────────────────
       - name: Cache whisper.cpp GGUF model
         id: ggml-cache
         uses: actions/cache@v4
@@ -284,7 +284,7 @@ jobs:
           # back to sherpa-onnx if missing, see src/whispercpp_wrapper.py)
           New-Item -ItemType Directory -Force -Path "$dist\whispercpp" | Out-Null
           Copy-Item "whisper.cpp\build\bin\Release\whisper-cli.exe" "$dist\whispercpp\"
-          Copy-Item "whisper.cpp\build\bin\Release\*.dll" "$dist\whispercpp\" -ErrorAction SilentlyContinue
+          Copy-Item "whisper.cpp\build\bin\Release\*.dll" "$dist\whispercpp\"
           Copy-Item "models\ggml-large-v3-turbo-q5_0.bin" "$dist\whispercpp\"
 
           # Pre-create recordings dir so it is visible after extraction
@@ -292,6 +292,18 @@ jobs:
 
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "App folder size: $([math]::Round($totalMB, 0)) MB"
+
+      # ── 11b. Validate the assembled folder (models, ffmpeg, whisper.cpp) ──────
+      - name: Validate assembled app folder
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          python tests/validate_build.py dist\EasyScribe --assembled
+          if ($LASTEXITCODE -ne 0) { throw "Assembled folder validation failed — see output above" }
+          # The copied whisper-cli.exe must start next to its copied DLLs
+          & "dist\EasyScribe\whispercpp\whisper-cli.exe" --help *> $null
+          if ($LASTEXITCODE -ne 0) { throw "whisper-cli.exe does not start from dist\EasyScribe\whispercpp" }
+          Write-Host "whisper-cli.exe starts from the assembled folder."
 
       # ── 12. Create app.bundle (must exist before building launcher) ───────────
       - name: Create app.bundle
