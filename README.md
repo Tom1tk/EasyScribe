@@ -19,7 +19,7 @@ A portable, fully offline Windows desktop application for transcribing media fil
 2. Double-click. On first run, the installer GUI appears — pick an install location (or accept the default) and click **Install**. This extracts an `EasyScribe\` folder there (~30 seconds), creates **Desktop** and **Start Menu** shortcuts, then launches EasyScribe.
 3. From then on, launch EasyScribe from the **Desktop or Start Menu shortcut** — it starts the installed `EasyScribe.exe` directly, in under a second. Re-running the big `.exe` still works (it detects the existing install and relaunches it), but is slower since it re-extracts itself first each time.
 
-Transcripts and recordings are saved to `EasyScribe\recordings\` next to the `.exe`.
+File transcripts are saved next to each recording (or in the folder you choose). Live recordings and their transcripts are saved to `EasyScribe\recordings\`.
 
 To move the app, move both the `.exe` and the `EasyScribe\` folder together.
 
@@ -50,28 +50,33 @@ After diarization completes, a popup lets you name each speaker. Play a short au
 
 ### Transcribe a file
 
-1. Click **Select File(s)** or drag and drop media files onto the drop zone
-2. Optionally click **Select Folder** to choose where transcripts are saved
-   (defaults to `Documents\EasyScribe Recordings\`)
-3. Tick options as needed:
-   - **Include timestamps** — adds `[HH:MM:SS]` block headers
-   - **Identify speakers** — runs speaker diarization
-4. Click **Transcribe**
-5. If speaker identification is enabled, a popup appears when diarization completes — play samples, enter names, then click **Use These Names**
-6. Click **Open Output Folder** when done
+1. Select **Transcribe files** at the top
+2. Select **Choose files**, or drag audio or video files onto the drop area
+3. Optionally select **Change folder** to choose where transcripts are saved
+   (by default, each transcript goes next to its recording)
+4. Tick options as needed:
+   - **Add timestamps** (blue): adds `[HH:MM:SS]` paragraph headers
+   - **Name the speakers** (amber): finds who is talking
+5. Select **Transcribe N files**. Progress shows below, in the colour of the current step
+6. If you chose **Name the speakers**, a window opens when the speakers are found. Play each sample, type the names, then select **Save names**
+7. Select **Open transcript** or **Open folder** when it is done
 
 ### Record from microphone
 
-1. Choose a microphone from the **Mic** dropdown
-2. Click **Record** — the button turns red and shows **Stop Recording**
-3. Speak; transcribed segments appear in the log box in real time
-4. Click **Stop Recording** — the final transcript is saved to `Documents\EasyScribe Recordings\`
+1. Select **Record live** at the top (the app turns coral for recording)
+2. Choose a microphone from the **Microphone** list
+3. Select **Start recording**. A timer shows how long you have recorded
+4. Speak. The words appear in **Live transcript** as you talk
+5. Select **Stop recording**. The audio and the transcript are saved in `recordings/`
 
 ### Batch mode
-Select multiple files at once — each gets its own `.txt` transcript. If one file fails, transcription continues for the remaining files.
+Add more than one file. Each gets its own `.txt` transcript and its own status (Waiting, Working, Done, Failed). If one file fails, the others continue, and **Try again** lets you run the batch again.
 
-### Cancel
-Click **Cancel** at any time to stop the current transcription job cleanly.
+### Stop
+Select **Stop** next to the progress bar to stop the current job cleanly.
+
+### Colours
+Each colour means one thing everywhere in the app: **teal** for files and the main actions, **coral** for recording, **amber** for speakers, **blue** for timestamps, **green** for done and **red** for errors.
 
 ---
 
@@ -145,7 +150,7 @@ The `.exe` extracts an `EasyScribe\` folder next to itself:
     ffmpeg\
       ffmpeg.exe
       ffprobe.exe
-    recordings\              <- transcripts and mic recordings saved here
+    recordings\              <- live mic recordings and their transcripts
     logs\                    <- rotating log files
     temp\                    <- temporary WAV files (auto-cleaned)
 ```
@@ -193,9 +198,27 @@ Voice activity detection, speaker diarization, and live microphone transcription
 
 File transcription prefers `whisper-cli` (whisper.cpp), built with Vulkan support — a different engine/binary from sherpa-onnx, so it runs on GPU (NVIDIA, AMD, or Intel) when one is available, with automatic CPU fallback. If `whisper-cli` or its model isn't bundled (e.g. a dev checkout before CI bundles it), file transcription falls back to the same sherpa-onnx CPU engine used for live mode.
 
-### Offline guarantee
+### Offline guarantee and privacy (GDPR)
 
-All models are loaded from absolute local paths inside the install directory. No HuggingFace Hub, no network calls, no telemetry.
+EasyScribe never sends data off the computer. Audio, transcripts and speaker names stay on the local disk. There are no accounts, analytics, crash reports or update checks.
+
+How this is enforced:
+
+- **All models are local.** They load from absolute paths inside the install directory. There are no HuggingFace Hub downloads.
+- **Network access is blocked in the process.** `src/offline_guard.py` runs first in `main.py`, before any other import. It refuses every socket connection and DNS lookup that is not to loopback, disables proxies (`NO_PROXY=*`) and sets the usual opt-out variables (`HF_HUB_OFFLINE`, `DO_NOT_TRACK`, ...). A blocked attempt is logged.
+- **ffmpeg and ffprobe read local files only.** They run with `-protocol_whitelist file`, so a playlist or concat file cannot make them fetch a URL.
+- **No network code.** `tests/test_offline_guard.py` fails if a module in `src/` or `launcher/` imports a network library (`urllib`, `http`, `requests`, `webbrowser`, ...).
+- **Temporary audio is deleted.** Converted WAV files and whisper.cpp output in the temp folder are removed after each file, at startup and at exit.
+
+What is stored, and where (the app shows this too: select **Privacy** at the bottom of the window):
+
+| Data | Location | Kept until |
+|---|---|---|
+| Transcripts | Next to each recording, or the folder you choose | You delete them |
+| Live recordings | `recordings/` in the install folder | You delete them |
+| Technical logs | `logs/` in the install folder. File names and progress only, never transcript text | The last 10 are kept |
+
+To remove all data, delete the transcripts you made and the EasyScribe folder.
 
 ### Distribution
 

@@ -195,7 +195,7 @@ class InstallerApp(tk.Tk):
         install_dir = Path(self._install_dir.get().strip())
         if _main_exe(install_dir).is_file():
             self._status_text.set(f"Already installed at:\n{install_dir}")
-            self._btn.config(text="Launch EasyScribe", state="normal")
+            self._btn.config(text="Open EasyScribe", state="normal")
             self._bar["value"] = 100
         else:
             self._status_text.set("Ready to install.")
@@ -277,8 +277,8 @@ class InstallerApp(tk.Tk):
                 elif kind == "done":
                     self._bar["value"] = 100
                     self._status_text.set(
-                        "Installation complete! Launching EasyScribe…\n"
-                        "Desktop and Start Menu shortcuts will be created — use those next time."
+                        "Installation complete. Opening EasyScribe…\n"
+                        "Next time, open it from the desktop or Start menu shortcut."
                     )
                     self.after(1500, lambda v=value: self._do_launch(v))
                     return

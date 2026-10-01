@@ -391,7 +391,7 @@ class TranscriptionEngine:
                 transcript_text = _build_diarized_transcript(assigned, speaker_map, add_timestamps)
             except Exception as exc:
                 logger.warning(f"Diarization failed, falling back to plain: {exc}")
-                log_callback(f"[Diarize] Warning: {exc} — writing plain transcript")
+                log_callback(f"[Diarize] Warning: {exc}. Writing the transcript without speaker names.")
                 transcript_text = _build_plain_transcript(raw_segments, add_timestamps)
         else:
             transcript_text = _build_plain_transcript(raw_segments, add_timestamps)

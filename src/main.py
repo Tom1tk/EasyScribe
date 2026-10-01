@@ -2,11 +2,16 @@
 main.py - EasyScribe v2.0 application entry point.
 
 Import order:
+  0. offline_guard — blocks all outbound network access (GDPR, offline only)
   1. config  — establishes BASE_DIR and runtime dirs
   2. logger  — sets up rotating log file
   3. recovery — scans for orphaned PCM recordings (before GUI)
   4. gui     — builds the CustomTkinter window
 """
+
+import offline_guard  # 0th: block network access before any other import
+
+offline_guard.install()
 
 import config  # 1st: BASE_DIR + runtime dirs must be set before anything else
 
@@ -22,14 +27,23 @@ from transcriber import validate_model_directory
 
 
 def _cleanup_temp_files() -> None:
-    try:
-        for wav in TEMP_DIR.glob("*.wav"):
-            try:
-                wav.unlink()
-            except OSError:
-                pass
-    except Exception:
-        pass
+    """Delete temporary audio and decoder output.
+
+    Runs at startup (to remove leftovers from a crash) and at exit. temp/ only
+    holds copies of the user's audio (extracted WAVs, speaker sample clips)
+    and whisper.cpp JSON output, so nothing here must survive a session.
+    Interrupted microphone recordings are NOT stored here (they live in
+    recordings/ and recovery.py handles them).
+    """
+    for pattern in ("*.wav", "*.json"):
+        try:
+            for path in TEMP_DIR.glob(pattern):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        except Exception:
+            pass
 
 
 def _check_dependencies() -> list[str]:
@@ -58,6 +72,7 @@ def main() -> None:
     setup_logging()
     log = logging.getLogger(APP_NAME)
 
+    _cleanup_temp_files()
     atexit.register(_cleanup_temp_files)
 
     # Create default output directory on first launch
@@ -78,8 +93,9 @@ def main() -> None:
         root.withdraw()
         root.update()
         messagebox.showerror(
-            f"{APP_NAME} — Missing Dependencies",
-            "\n\n".join(errors),
+            f"{APP_NAME} cannot start",
+            "Some program files are missing. Please download EasyScribe again.\n\n"
+            + "\n\n".join(errors),
             parent=root,
         )
         root.destroy()
