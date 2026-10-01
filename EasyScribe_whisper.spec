@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# EasyScribe_whisper.spec - PyInstaller ONEDIR spec for the Whisper ONNX variant.
+# EasyScribe_whisper.spec - PyInstaller ONEDIR spec for the main app.
 #
 # Produces dist/EasyScribe/ containing EasyScribe.exe + _internal/.
 # Models and ffmpeg are bundled by the CI assembly step (not packed here).
@@ -34,13 +34,12 @@ for pkg in ("customtkinter", "tkinterdnd2"):
     except FileNotFoundError as e:
         print(f"WARNING: {e} — build may be incomplete")
 
-# ── Bundled models ────────────────────────────────────────────────────────────
-# Models are placed here by the CI download step before PyInstaller runs.
+# ── Window icon ───────────────────────────────────────────────────────────────
+# Models are NOT packed here: the app loads them from config.BASE_DIR (the
+# folder of the exe), where the CI assembly step copies them. A copy in
+# _internal/ would only double the download size.
 
 _datas += [
-    ("models/whisper/", "models/whisper"),
-    ("models/silero_vad.onnx", "models"),
-    ("models/diarization/", "models/diarization"),
     # Window icon (title bar, taskbar, dialogs) — see config.APP_ICON
     ("assets/EasyScribe.ico", "assets"),
     ("assets/EasyScribe.png", "assets"),
@@ -129,9 +128,6 @@ a = Analysis(
         "IPython",
         "cv2",
         "pytest",
-        "faster_whisper",
-        "ctranslate2",
-        "huggingface_hub",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

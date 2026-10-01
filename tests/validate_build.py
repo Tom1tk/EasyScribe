@@ -3,8 +3,12 @@
 Post-build artifact validator. Run immediately after PyInstaller and before
 creating app.bundle so broken bundles are caught before the 30-minute compress step.
 
-Usage: python tests/validate_build.py <dist_dir>
+Usage: python tests/validate_build.py <dist_dir> [--assembled]
        python tests/validate_build.py dist/EasyScribe
+       python tests/validate_build.py dist/EasyScribe --assembled
+
+--assembled also checks the files that the CI assembly step copies next to the
+exe (models, ffmpeg, whisper.cpp). Run it after that step, before app.bundle.
 
 Exits 0 on success, 1 if any check fails.
 """
@@ -16,12 +20,51 @@ def _find_pyds(directory: Path, pattern: str = "**/*.pyd") -> list[Path]:
     return list(directory.glob(pattern))
 
 
+# Files that config.py loads from BASE_DIR (the folder of the exe).
+_ASSEMBLED_FILES = [
+    "ffmpeg/ffmpeg.exe",
+    "ffmpeg/ffprobe.exe",
+    "models/silero_vad.onnx",
+    "models/whisper/turbo-encoder.int8.onnx",
+    "models/whisper/turbo-decoder.int8.onnx",
+    "models/whisper/turbo-tokens.txt",
+    "models/diarization/segmentation.onnx",
+    "models/diarization/embedding.onnx",
+    "whispercpp/whisper-cli.exe",
+    "whispercpp/ggml-large-v3-turbo-q5_0.bin",
+]
+
+
+def _check_assembled(dist: Path, ok: list[str], errors: list[str]) -> None:
+    for rel in _ASSEMBLED_FILES:
+        path = dist / rel
+        if path.is_file() and path.stat().st_size > 0:
+            ok.append(f"{rel}  ({path.stat().st_size // 1024} KB)")
+        else:
+            errors.append(f"MISSING: {rel}  (expected {path})")
+
+    dlls = list((dist / "whispercpp").glob("*.dll"))
+    if dlls:
+        ok.append(f"whispercpp/*.dll  ({len(dlls)} file(s))")
+    else:
+        errors.append("MISSING: whispercpp/*.dll  (whisper-cli.exe cannot start without them)")
+
+    # Models load from BASE_DIR only; a copy in _internal/ doubles the size.
+    stale = dist / "_internal" / "models"
+    if stale.exists():
+        errors.append(f"UNEXPECTED: {stale}  (models must not be packed into _internal/)")
+    else:
+        ok.append("_internal/models absent  (no duplicate models)")
+
+
 def main() -> None:
-    if len(sys.argv) != 2:
-        print("Usage: validate_build.py <dist_dir>", file=sys.stderr)
+    args = [a for a in sys.argv[1:] if a != "--assembled"]
+    assembled = "--assembled" in sys.argv[1:]
+    if len(args) != 1:
+        print("Usage: validate_build.py <dist_dir> [--assembled]", file=sys.stderr)
         sys.exit(1)
 
-    dist = Path(sys.argv[1])
+    dist = Path(args[0])
     internal = dist / "_internal"
 
     errors: list[str] = []
@@ -91,6 +134,9 @@ def main() -> None:
         ok.append("assets/EasyScribe.ico  (window icon)")
     else:
         errors.append(f"MISSING: window icon  (expected {icon})")
+
+    if assembled:
+        _check_assembled(dist, ok, errors)
 
     _report(ok, errors)
 

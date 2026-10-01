@@ -142,3 +142,12 @@ def install() -> None:
 
     _installed = True
     logger.info("Offline guard active: outbound network access is blocked")
+
+
+def is_installed() -> bool:
+    """Return True if install() has run.
+
+    main.py calls install() before logging is set up, so the log line in
+    install() is lost there. main() logs this flag again afterwards.
+    """
+    return _installed

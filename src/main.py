@@ -71,6 +71,10 @@ def _check_dependencies() -> list[str]:
 def main() -> None:
     setup_logging()
     log = logging.getLogger(APP_NAME)
+    if offline_guard.is_installed():
+        log.info("Offline guard active: outbound network access is blocked")
+    else:
+        log.error("Offline guard is NOT active")
 
     _cleanup_temp_files()
     atexit.register(_cleanup_temp_files)
