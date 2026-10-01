@@ -85,6 +85,13 @@ def main() -> None:
             f"    Required for microphone recording."
         )
 
+    # App icon for the windows (config.APP_ICON)
+    icon = internal / "assets" / "EasyScribe.ico"
+    if icon.is_file():
+        ok.append("assets/EasyScribe.ico  (window icon)")
+    else:
+        errors.append(f"MISSING: window icon  (expected {icon})")
+
     _report(ok, errors)
 
 

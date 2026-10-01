@@ -1,5 +1,5 @@
 """
-main.py - EasyScribe v2.0 application entry point.
+main.py - EasyScribe application entry point.
 
 Import order:
   0. offline_guard — blocks all outbound network access (GDPR, offline only)
