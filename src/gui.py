@@ -66,6 +66,7 @@ from transcriber import (
 )
 from mic_recorder import MicRecorder
 from live_transcriber import LiveTranscriber
+import win_paint
 
 logger = logging.getLogger(__name__)
 
@@ -208,11 +209,16 @@ def _open_path(path: Path) -> None:
 
 
 def _button(parent, text: str, kind: str = "secondary", **kw) -> ctk.CTkButton:  # type: ignore[no-untyped-def]
-    """Create a button. kind: teal | coral | secondary | link."""
+    """Create a button. kind: teal | coral | secondary | subtle | link."""
     styles = {
         "teal": dict(fg_color=C.TEAL, hover_color=C.TEAL_HOVER, text_color=C.SURFACE),
         "coral": dict(fg_color=C.CORAL, hover_color=C.CORAL_HOVER, text_color=C.SURFACE),
         "secondary": dict(fg_color=C.SECONDARY, hover_color=C.SECONDARY_HOVER, text_color=C.INK),
+        # Quiet but clearly a button: white with a thin outline
+        "subtle": dict(
+            fg_color=C.SURFACE, hover_color=C.SURFACE_ALT, text_color=C.MUTED,
+            border_width=1, border_color=C.BORDER,
+        ),
         "link": dict(fg_color="transparent", hover_color=C.SURFACE_ALT, text_color=C.TEAL_INK),
     }
     opts = dict(
@@ -521,6 +527,9 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._visible_rows = 3 if available >= 760 else 2
         self.resizable(True, True)
         self.configure(fg_color=C.BG)
+        # Before any widget is made: paint backgrounds at once on Windows,
+        # so the window does not show black blocks when it comes to the front.
+        win_paint.install(self, C.BG)
 
         family = _ui_family()
         self._f_app = ctk.CTkFont(family=family, size=22, weight="bold")
@@ -982,15 +991,15 @@ class TranscriberApp(_AppBase):  # type: ignore
 
     def _build_details(self) -> None:
         self._details_btn = _button(
-            self, "Show details", kind="link", width=110, height=28,
-            text_color=C.MUTED, command=self._toggle_details,
+            self, "Show details", kind="subtle", width=110, height=30,
+            font=self._f_small, command=self._toggle_details,
         )
-        self._details_btn.grid(row=4, column=0, padx=18, pady=(0, 4), sticky="w")
+        self._details_btn.grid(row=4, column=0, padx=24, pady=(0, 10), sticky="w")
         self._privacy_btn = _button(
-            self, "Privacy", kind="link", width=80, height=28,
-            text_color=C.MUTED, command=lambda: PrivacyDialog(self),
+            self, "Privacy", kind="subtle", width=80, height=30,
+            font=self._f_small, command=lambda: PrivacyDialog(self),
         )
-        self._privacy_btn.grid(row=4, column=0, padx=18, pady=(0, 4), sticky="e")
+        self._privacy_btn.grid(row=4, column=0, padx=24, pady=(0, 10), sticky="e")
 
         self._log_card = _card(self)
         self._log_card.grid_columnconfigure(0, weight=1)
