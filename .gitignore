@@ -50,3 +50,6 @@ desktop.ini
 # Build artifacts
 *.zip
 *.tar.gz
+
+# ASR A/B test set (downloaded by tests/asr_ab/fetch.py)
+tests/asr_ab/data/

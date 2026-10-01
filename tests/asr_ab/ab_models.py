@@ -4,20 +4,19 @@ ab_models.py - A/B test speech-to-text models on short reference clips.
 Developer tool only. It is not bundled and it does not run in CI.
 compare_whisper_models.py compares Whisper ONNX folders by eye; this tool
 compares different engines and gives a word error rate (WER) for each one.
+See README.md in this folder for the steps and the last results.
 
 Data folder: <name>.wav (16 kHz mono) + <name>.txt (reference text).
-Models folder (only the engines you ask for must exist):
-    ggml/ggml-large-v3-turbo-q5_0.bin   current file engine (whisper-cli)
-    whisper_turbo/turbo-*.onnx          current live / fallback engine
-    cohere/, phonon2/, parakeet_v3/, nemotron/, qwen3_06b/, qwen3_17b/
-    silero_vad.onnx
+Models folder: one sub-folder per engine, as fetch.py makes it. Only the
+engines you ask for must exist.
 
 Extra packages (test only, not in requirements.txt):
-    pip install jiwer whisper-normalizer soundfile onnx-asr onnxruntime
+    pip install jiwer whisper-normalizer soundfile pyarrow onnx-asr onnxruntime
 
 Usage:
-    python tests/ab_models.py --data DIR --models DIR --whisper-cli PATH
-        [--engines current_files,cohere,...] [--out DIR]
+    python tests/asr_ab/ab_models.py --whisper-cli PATH
+        [--engines current_files,cohere,...] [--data DIR] [--models DIR]
+        [--out DIR]
 
 The engines that need segments use the app's own VAD settings (src/vad.py),
 so each engine gets the same speech segments as the live / fallback path.
@@ -36,7 +35,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent.parent / "src"))
 
 THREADS = 4
 SR = 16000
@@ -208,11 +208,12 @@ def wer(ref: str, hyp: str) -> float:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--data", type=Path, required=True)
-    p.add_argument("--models", type=Path, required=True)
+    p.add_argument("--data", type=Path, default=HERE / "data")
+    p.add_argument("--models", type=Path, default=HERE / "models")
     p.add_argument("--whisper-cli", default="whisper-cli")
     p.add_argument("--engines", default=",".join(ENGINES))
-    p.add_argument("--out", type=Path, default=Path("ab_results"))
+    p.add_argument("--out", type=Path,
+                   default=HERE / "results" / time.strftime("%Y-%m-%d"))
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
 
