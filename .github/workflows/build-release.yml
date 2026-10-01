@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v2.0.0)'
+        description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0-beta1)'
         required: true
-        default: 'v2.0.0'
+        default: 'v3.0.0-beta1'
 
 permissions:
   contents: write
@@ -342,7 +342,12 @@ jobs:
             1. Download the .exe file above
             2. Place it wherever you want the app to live
             3. Double-click — extraction takes ~30 seconds, then EasyScribe launches
-            4. Transcripts and recordings are saved to `EasyScribe\recordings\` next to the exe
+            4. File transcripts are saved next to each recording (or in the folder you choose); live recordings go to `EasyScribe\recordings\`
+
+            ### Updating from an earlier version
+            Put the new .exe in a new folder, or delete the old `EasyScribe\` folder first
+            (keep anything you need from `EasyScribe\recordings\`). The installer opens an
+            existing `EasyScribe\` folder instead of replacing it.
 
             ### Re-running
             Double-click the same .exe — detects existing `EasyScribe\` folder and launches in ~1 second.
@@ -352,14 +357,15 @@ jobs:
             **More info → Run anyway**. Expected for unsigned executables.
 
             ---
-            ### What's new in v2.0.0
-            - **Fully portable** — installs next to the .exe, works from USB, no AppData, no admin
-            - **sherpa-onnx** replaces faster-whisper — no CUDA DLL headaches
-            - **Live microphone transcription** — click Record, speak, get text
-            - **Whisper ONNX large-v3-turbo** — single model, no variant selection needed
-            - **Crash-safe recording** — interrupted recordings are recoverable on next launch
+            ### What's new in v3.0.0 (Beta 1)
+            - **New look** — a clear, light interface; each colour means one thing (teal files, coral recording, amber speakers, blue timestamps, green done)
+            - **New EasyScribe logo** — in the window, the taskbar, the .exe and the shortcuts
+            - **Easier to use** — plain labels, options fold away while a job runs, Try again after a failed batch
+            - **Fully offline (GDPR)** — the app blocks all network access; ffmpeg reads local files only; temporary audio is deleted; see Privacy in the app
+            - **GPU file transcription** — whisper.cpp with beam search on any Vulkan GPU, CPU fallback
           files: EasyScribe-${{ github.event.inputs.tag }}-whisper.exe
           draft: true
-          prerelease: false
+          # Tags with a suffix (v3.0.0-beta1) are marked as pre-releases
+          prerelease: ${{ contains(github.event.inputs.tag, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

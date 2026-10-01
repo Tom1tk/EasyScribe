@@ -42,6 +42,8 @@ except Exception:
 _AppBase = ctk.CTk  # type: ignore
 
 from config import (
+    APP_ICON,
+    APP_ICON_PNG,
     APP_NAME,
     APP_VERSION,
     DEFAULT_OUTPUT_DIR,
@@ -253,6 +255,22 @@ def _logo(parent, size: int = 40) -> tk.Canvas:  # type: ignore[no-untyped-def]
     return canvas
 
 
+def _set_window_icon(win) -> None:  # type: ignore[no-untyped-def]
+    """Show the EasyScribe logo in the title bar and taskbar.
+
+    CTk and CTkToplevel replace the icon with the CustomTkinter one 200 ms
+    after creation unless iconbitmap() was called, so every window calls this.
+    """
+    try:
+        if sys.platform == "win32" and APP_ICON.exists():
+            win.iconbitmap(str(APP_ICON))
+        elif APP_ICON_PNG.exists():
+            win._easyscribe_icon = tk.PhotoImage(file=str(APP_ICON_PNG))
+            win.iconphoto(False, win._easyscribe_icon)
+    except Exception as exc:
+        logger.debug(f"Could not set window icon: {exc}")
+
+
 def _card(parent) -> ctk.CTkFrame:  # type: ignore[no-untyped-def]
     return ctk.CTkFrame(
         parent, fg_color=C.SURFACE, corner_radius=R_LG, border_width=1, border_color=C.BORDER
@@ -283,6 +301,7 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
         self._f_strong = ctk.CTkFont(family=family, size=13, weight="bold")
 
         self.title("Name the speakers")
+        _set_window_icon(self)
         self.configure(fg_color=C.BG)
         self.resizable(False, False)
         self.transient(parent)
@@ -415,6 +434,7 @@ class PrivacyDialog(ctk.CTkToplevel):
         f_body = ctk.CTkFont(family=family, size=13)
 
         self.title("Your privacy")
+        _set_window_icon(self)
         self.configure(fg_color=C.BG)
         self.resizable(False, False)
         self.transient(parent)
@@ -485,6 +505,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         super().__init__()
 
         self.title(f"{APP_NAME} {APP_VERSION}")
+        _set_window_icon(self)
         # Fit small laptop screens (1366x768) and use more room on larger ones.
         # CTk scales geometry by the Windows display scale, so convert the
         # screen height to unscaled units first.

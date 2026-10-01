@@ -10,6 +10,12 @@
 #
 # Build: pyinstaller launcher/launcher.spec --noconfirm
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(SPECPATH).parent / "assets"))
+from version_resource import version_info as _version_info
+
 block_cipher = None
 
 a = Analysis(
@@ -19,6 +25,8 @@ a = Analysis(
     datas=[
         # Embed the pre-built app bundle — path is relative to this spec file
         ("../app.bundle", "."),
+        # Window icon for the installer window
+        ("../assets/EasyScribe.ico", "."),
     ],
     hiddenimports=["tkinter", "tkinter.ttk", "tkinter.filedialog"],
     hookspath=[],
@@ -61,4 +69,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="../assets/EasyScribe.ico",
+    version=_version_info("EasyScribe installer", "launcher.exe"),
 )

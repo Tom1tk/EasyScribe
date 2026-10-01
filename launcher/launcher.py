@@ -20,9 +20,20 @@ from tkinter import filedialog, ttk
 import zipfile
 from pathlib import Path
 
-VERSION = "2.0.0"
+VERSION = "3.0.0-beta1"
 MARKER_FILENAME = ".easyscribe-install.json"
 _exe_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent.parent
+
+
+def _set_window_icon(win: tk.Tk) -> None:
+    """Use the EasyScribe logo for the installer window (bundled by launcher.spec)."""
+    base = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).parent.parent / "assets"
+    icon = base / "EasyScribe.ico"
+    if sys.platform == "win32" and icon.exists():
+        try:
+            win.iconbitmap(default=str(icon))
+        except tk.TclError:
+            pass
 
 
 def _find_bundle() -> Path | None:
@@ -143,6 +154,7 @@ class InstallerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"EasyScribe {VERSION}")
+        _set_window_icon(self)
         self.resizable(False, False)
         self._install_dir = tk.StringVar(value=str(_exe_dir / "EasyScribe"))
         self._status_text = tk.StringVar()

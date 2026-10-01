@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_all as _collect_all
 
+sys.path.insert(0, str(Path(SPECPATH) / "assets"))
+from version_resource import version_info as _version_info
+
 block_cipher = None
 
 
@@ -38,6 +41,9 @@ _datas += [
     ("models/whisper/", "models/whisper"),
     ("models/silero_vad.onnx", "models"),
     ("models/diarization/", "models/diarization"),
+    # Window icon (title bar, taskbar, dialogs) — see config.APP_ICON
+    ("assets/EasyScribe.ico", "assets"),
+    ("assets/EasyScribe.png", "assets"),
 ]
 
 # ── sherpa-onnx: compiled extensions + .libs dir ─────────────────────────────
@@ -150,6 +156,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="assets/EasyScribe.ico",
+    version=_version_info("EasyScribe", "EasyScribe.exe"),
 )
 
 coll = COLLECT(

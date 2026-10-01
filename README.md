@@ -187,10 +187,19 @@ src/
   recovery.py        Orphaned .pcm file scanner and WAV recovery
   gui.py             CustomTkinter UI with threaded workers
 
+  offline_guard.py   Blocks all network access (runs first, see "Offline guarantee")
+
 launcher/
-  launcher.py        AppData extract-once installer (compiled separately, ~5 MB)
+  launcher.py        Extract-once installer (compiled separately, ~5 MB)
   launcher.spec      PyInstaller ONEFILE spec for launcher
+
+assets/
+  EasyScribe.ico     App icon (both .exe files, all windows, shortcuts)
+  make_icon.py       Regenerates the icon from the logo design (needs Pillow)
+  version_resource.py  Windows file-version info for both specs, from APP_VERSION
 ```
+
+The version is set in one place: `APP_VERSION` in `src/config.py` (keep `VERSION` in `launcher/launcher.py` the same; `tests/test_version.py` checks this). Build a release from **Actions → Build and Publish Release** with the tag `v` + `APP_VERSION`.
 
 ### Inference engines
 
@@ -223,13 +232,11 @@ To remove all data, delete the transcripts you made and the EasyScribe folder.
 ### Distribution
 
 ```
-EasyScribe-<version>-whisper.exe
-  = [7zSD.sfx] + [config.txt] + [payload.7z]
-                                    ├── launcher.exe  (~5 MB)
-                                    └── app.bundle    (zip: EasyScribe.exe + _internal/ + models/)
+EasyScribe-<version>-whisper.exe   (launcher.exe, PyInstaller one-file)
+  └── app.bundle                   (zip: EasyScribe.exe + _internal/ + models/ + whispercpp/ + ffmpeg/)
 ```
 
-The SFX extracts to `%TEMP%\EasyScribe_Setup` and runs `launcher.exe`, which copies the app to AppData and then deletes the temp files.
+On first run the launcher asks where to install, extracts `app.bundle` into an `EasyScribe\` folder there, creates Desktop and Start Menu shortcuts and opens the app.
 
 ---
 

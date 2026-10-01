@@ -1,5 +1,5 @@
 """
-config.py - Application configuration and path resolution for EasyScribe v2.0.
+config.py - Application configuration and path resolution for EasyScribe.
 
 sherpa-onnx replaces faster-whisper; no HuggingFace dependencies remain.
 Single model: Whisper ONNX large-v3-turbo.
@@ -12,7 +12,7 @@ from pathlib import Path
 # ─── App metadata ─────────────────────────────────────────────────────────────
 
 APP_NAME = "EasyScribe"
-APP_VERSION = "2.0.0"
+APP_VERSION = "3.0.0-beta1"
 
 # ─── Path resolution ──────────────────────────────────────────────────────────
 
@@ -34,6 +34,13 @@ BASE_DIR: Path = get_base_dir()
 # ─── Output directory ─────────────────────────────────────────────────────────
 
 DEFAULT_OUTPUT_DIR: Path = BASE_DIR / "recordings"
+
+# ─── App icon ─────────────────────────────────────────────────────────────────
+# Bundled by the spec into _internal/assets (sys._MEIPASS); assets/ in a dev checkout.
+
+_ASSETS_DIR: Path = Path(getattr(sys, "_MEIPASS", BASE_DIR)) / "assets"
+APP_ICON: Path = _ASSETS_DIR / "EasyScribe.ico"
+APP_ICON_PNG: Path = _ASSETS_DIR / "EasyScribe.png"
 
 # ─── Whisper ONNX model paths (large-v3-turbo) ────────────────────────────────
 

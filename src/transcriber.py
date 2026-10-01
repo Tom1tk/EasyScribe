@@ -1,5 +1,5 @@
 """
-transcriber.py - sherpa-onnx transcription engine for EasyScribe v2.0.
+transcriber.py - sherpa-onnx transcription engine for EasyScribe.
 
 Replaces faster-whisper. Uses Whisper ONNX large-v3-turbo. Inference runs on
 CPU only — sherpa-onnx 1.13.2 has no Vulkan provider (see CLAUDE.md Rule 7).

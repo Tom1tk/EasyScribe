@@ -1,4 +1,4 @@
-# EasyScribe v2.0 - Python dependencies
+# EasyScribe - Python dependencies (CI installs these; see build-release.yml)
 
 # Inference backend (transcription + diarization + VAD)
 sherpa-onnx>=1.10.0
