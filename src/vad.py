@@ -16,10 +16,7 @@ import threading
 import numpy as np
 
 import config
-
-
-class CancelledError(RuntimeError):
-    """Raised when VAD segmentation is cancelled by the user."""
+from common import CancelledError
 
 
 # ─── VAD tuning ────────────────────────────────────────────────────────────

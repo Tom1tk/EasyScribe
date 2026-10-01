@@ -12,12 +12,13 @@ import logging
 import os
 import queue
 import threading
-import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+from recovery import recover_pcm_to_wav
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class MicRecorder:
         self._pcm_path: Optional[Path] = None
         self._json_path: Optional[Path] = None
         self._samples_written: int = 0
+        self._vad_drop_logged = False
 
     @staticmethod
     def list_devices() -> list[dict]:
@@ -79,6 +81,7 @@ class MicRecorder:
         self._pcm_path = output_dir / f"recording_{ts}.pcm"
         self._json_path = output_dir / f"recording_{ts}.json"
         self._samples_written = 0
+        self._vad_drop_logged = False
         self._stop_event.clear()
 
         self._writer_thread = threading.Thread(
@@ -125,7 +128,7 @@ class MicRecorder:
             "samples_written": self._samples_written,
         }
         try:
-            _pcm_to_wav(self._pcm_path, metadata, wav_path)
+            recover_pcm_to_wav(self._pcm_path, metadata, wav_path)
             self._pcm_path.unlink(missing_ok=True)
             if self._json_path:
                 self._json_path.unlink(missing_ok=True)
@@ -142,7 +145,10 @@ class MicRecorder:
         try:
             self._vad_queue.put_nowait(chunk.astype(np.float32) / 32768.0)
         except queue.Full:
-            logger.warning("VAD queue full — dropping audio chunk from live transcription")
+            # This runs for each ~30 ms chunk; log once, not hundreds of times.
+            if not self._vad_drop_logged:
+                self._vad_drop_logged = True
+                logger.warning("VAD queue full — dropping audio from live transcription")
         self._pcm_queue.put(chunk.tobytes())
 
     def _pcm_writer_loop(self) -> None:
@@ -183,16 +189,3 @@ class MicRecorder:
             self._json_path.write_text(json.dumps(data), encoding="utf-8")
         except Exception as exc:
             logger.warning(f"JSON sidecar write failed: {exc}")
-
-
-def _pcm_to_wav(pcm_path: Path, metadata: dict, wav_path: Path) -> None:
-    """Wrap raw int16 PCM bytes in a WAV container."""
-    sample_rate = int(metadata.get("sample_rate", _SAMPLE_RATE))
-    channels = int(metadata.get("channels", _CHANNELS))
-    samples_written = int(metadata.get("samples_written", 0))
-    raw = pcm_path.read_bytes()[: samples_written * 2]
-    with wave.open(str(wav_path), "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(raw)

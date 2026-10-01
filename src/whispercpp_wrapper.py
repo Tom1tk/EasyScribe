@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Callable
 
 import config
+from common import CancelledError
 from config import TEMP_DIR, WHISPERCPP_BEAM_SIZE, WHISPERCPP_BIN, WHISPERCPP_MODEL
 
 logger = logging.getLogger(__name__)
@@ -36,9 +37,6 @@ class WhisperCppNotFoundError(RuntimeError):
     pass
 
 class WhisperCppError(RuntimeError):
-    pass
-
-class CancelledError(RuntimeError):
     pass
 
 
@@ -70,8 +68,8 @@ def _parse_device_line(line: str) -> str | None:
     line, or None if the line isn't a device-init line.
 
     Even CPU-only builds attempt GPU init and log the outcome either way
-    (see EASYSCRIBE_ACTION_PLAN.md Phase 8.1 findings) — never assume Vulkan
-    was used just because the binary was built with -DGGML_VULKAN=ON.
+    (CLAUDE.md Rule 7) — never assume Vulkan was used just because the
+    binary was built with -DGGML_VULKAN=ON.
     """
     m = _DEVICE_RE.search(line)
     if m:

@@ -2,7 +2,7 @@
 ffmpeg_wrapper.py - Audio extraction and probing via bundled ffmpeg.
 
 Uses the bundled ffmpeg.exe to convert any supported media file into a
-temporary mono 16 kHz PCM WAV file suitable for Faster Whisper inference.
+temporary mono 16 kHz PCM WAV file for the transcription engines.
 
 ffmpeg's progress output is streamed live to the log callback so the user
 can always see that something is happening (and how far along it is).
@@ -11,14 +11,16 @@ can always see that something is happening (and how far along it is).
 import json
 import logging
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import IO, Callable, Iterator
 
+from common import CancelledError, fmt_duration as _fmt_seconds
 from config import FFMPEG_BIN, FFPROBE_BIN, TEMP_DIR
 
 logger = logging.getLogger(__name__)
@@ -34,9 +36,6 @@ class FFmpegNotFoundError(RuntimeError):
 class FFmpegExtractionError(RuntimeError):
     pass
 
-class CancelledError(RuntimeError):
-    pass
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -49,6 +48,27 @@ def _parse_duration(stderr_text: str) -> float:
     return 0.0
 
 
+def _iter_lines(stream: IO[bytes]) -> Iterator[str]:
+    """
+    Yield decoded lines from *stream*, split on both \\n and \\r.
+
+    ffmpeg ends each -stats progress update with \\r (not \\n) so that a
+    terminal overwrites it in place. A plain ``for raw in stream`` loop only
+    splits on \\n, so it would see all progress updates as one line at exit.
+    """
+    buf = b""
+    while True:
+        chunk = stream.read1(4096) if hasattr(stream, "read1") else stream.read(4096)
+        if not chunk:
+            break
+        buf += chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        *lines, buf = buf.split(b"\n")
+        for raw in lines:
+            yield raw.decode("utf-8", errors="replace").rstrip()
+    if buf:
+        yield buf.decode("utf-8", errors="replace").rstrip()
+
+
 def _parse_time(line: str) -> float:
     """Extract the current encode position in seconds from a ffmpeg progress line."""
     m = re.search(r"time=(\d+):(\d+):([\d.]+)", line)
@@ -56,15 +76,6 @@ def _parse_time(line: str) -> float:
         h, mn, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
         return h * 3600 + mn * 60 + s
     return -1.0
-
-
-def _fmt_seconds(s: float) -> str:
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    sec = int(s % 60)
-    if h:
-        return f"{h}h {m:02d}m {sec:02d}s"
-    return f"{m}m {sec:02d}s"
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -148,7 +159,6 @@ def extract_audio(
     if _is_already_suitable_wav(input_path):
         log(f"[ffmpeg] Already mono 16 kHz PCM WAV — copying directly: {input_path.name}")
         temp_wav = TEMP_DIR / f"{uuid.uuid4().hex}.wav"
-        import shutil
         shutil.copy2(input_path, temp_wav)
         return temp_wav
 
@@ -186,7 +196,9 @@ def extract_audio(
     try:
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            # The WAV goes to a file; nothing useful comes on stdout. An
+            # unread pipe can fill up and make ffmpeg block for ever.
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             creationflags=_CREATE_NO_WINDOW,
         )
@@ -199,8 +211,7 @@ def extract_audio(
         last_progress_log: list[float] = [0.0]
 
         def _read_stderr() -> None:
-            for raw in proc.stderr:  # type: ignore[union-attr]
-                line = raw.decode("utf-8", errors="replace").rstrip()
+            for line in _iter_lines(proc.stderr):  # type: ignore[arg-type]
                 stderr_lines.append(line)
 
                 # Extract total duration once from the header block

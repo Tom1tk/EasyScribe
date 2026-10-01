@@ -182,7 +182,9 @@ the venv, `collect_all('numpy')` silently catches `ImportError` and bundles noth
 `hiddenimports=["numpy"]` resolves to an empty module — the build succeeds but the exe crashes
 with `ModuleNotFoundError: No module named 'numpy'` at runtime.
 
-Always include `numpy` explicitly in the `pip install` line in the workflow. Run
+Always list `numpy` explicitly. Since v3.0.0-beta2 all dependencies are pinned in
+`requirements.txt` (numpy included) and CI runs `pip install -r requirements.txt` —
+keep numpy in that file, and bump the venv cache key when you change it. Run
 `tests/validate_build.py dist\EasyScribe` immediately after `pyinstaller` (before creating
 `app.bundle`) to catch this class of problem before the slow compress step.
 
@@ -216,6 +218,74 @@ a network library to `src/` or `launcher/` (no update checks, telemetry, crash u
 (`-protocol_whitelist file`) on every ffmpeg/ffprobe call. `tests/test_offline_guard.py`
 checks all three. Logs may hold file names and progress, never transcript text.
 
+### Rule 14: The launcher must compare versions — never just "folder exists → launch"
+
+**The mistake:** up to v3.0.0-beta1 the launcher opened any existing `EasyScribe\` folder.
+A user with v2 installed double-clicked the v3 exe and got v2 again, with no message.
+
+**The rule:** `launcher.py` reads the version from `.easyscribe-install.json` and compares
+it with `VERSION` (`_version_key`: pre-release < release, never downgrade). An older
+install is updated in place: app items move to `.easyscribe-old\`, the new bundle is
+extracted, and the backup is restored on any error. `recordings\` and `logs\`
+(`USER_DATA_DIRS`) are never moved or deleted — not by the update and not by
+`_clean_incomplete_install`. A locked file (app still open) stops the update before any
+file is replaced. An `"updating"` flag in the marker lets the next start recover from a
+power loss. `tests/test_launcher_safety.py` covers each path; it needs tkinter.
+
+### Rule 15: Set an AppUserModelID, or Windows shows a stale taskbar icon
+
+`iconbitmap()` sets the window icon only. The taskbar groups by AppUserModelID and caches
+icons per exe path, so after an update to the same path it can show the old icon.
+`main.py` calls `SetCurrentProcessExplicitAppUserModelID("EasyScribe.App")` first, the
+shortcuts set `IconLocation`, and the launcher calls `SHChangeNotify(SHCNE_ASSOCCHANGED)`
+after an update.
+
+### Rule 16: Validate the assembled folder, not only the PyInstaller output
+
+`dist\EasyScribe` is changed after PyInstaller (models, whispercpp, ffmpeg are copied
+in). Run `tests/validate_build.py dist\EasyScribe --assembled` after that step, and check
+that the copied `whisper-cli.exe --help` starts, before `app.bundle` is made. Never use
+`-ErrorAction SilentlyContinue` on a copy that the app needs.
+
+
+### Rule 17: The one-file launcher needs a splash — the bootloader is silent for up to a minute
+
+**The mistake:** beta2 users saw only a busy cursor for about 60 s on the first start.
+The PyInstaller one-file bootloader extracts everything, including the 1.5 GB
+`app.bundle`, to `%TEMP%` *before* any Python code runs, so nothing in `launcher.py`
+can show a window in time.
+
+**The rule:** keep the `Splash("../assets/splash.png", ...)` in `launcher/launcher.spec`
+(the bootloader shows it first, then extracts the rest), and keep `_close_splash()` in
+`launcher.py` on every path (installer window open, or the app started). Do not set
+`text_pos`: the bootloader would then print each extracted file name. Regenerate the
+image with `assets/make_splash.py` if the palette changes.
+
+### Rule 18: The installer never changes an install without a click
+
+**The mistake:** beta2 updated an older install at once when the exe was opened. The user
+could not choose a different folder and was not asked.
+
+**The rule:** `main()` opens the app directly only when the install is current. In every
+other case it shows `InstallerApp` and waits for **Install** / **Update and open**.
+`_set_inputs(False)` locks the window during the work so a second click cannot start a
+second run.
+
+### Rule 19: Tk on Windows never erases backgrounds — that is the "black blocks" flash
+
+**Cause (Tk source, `win/tkWinX.c`, `tkWinWm.c`):** the `TkChild` window class has
+`hbrBackground = NULL`, Tk answers `WM_ERASEBKGND` with 0, and `WM_PAINT` only queues an
+Expose event that Tk redraws later from its idle loop. Until then the area is black.
+CustomTkinter widgets are many child HWNDs, so a refocused window fills in as black blocks.
+
+**The fix:** `src/win_paint.py` replaces the `TkChild` class window procedure with a ctypes
+callback that fills the client rect with `C.BG` on `WM_ERASEBKGND` and passes every other
+message to Tk's procedure. Call `win_paint.install()` before any widget is made (it only
+affects windows created after it, plus the root's own child window). Keep the ctypes
+callback object referenced for the life of the process (`_state`), or Windows calls freed
+memory. `EASYSCRIBE_PAINT_FIX=0` switches it off. `WS_EX_COMPOSITED` is not a fix: Tk
+draws outside `WM_PAINT`, so composited windows show stale content.
+
 ---
 
 ## Version History
@@ -240,3 +310,5 @@ checks all three. Logs may hold file names and progress, never transcript text.
 | v2.1 | Switch the Whisper model from distil-large-v3 to large-v3-turbo (A/B accuracy winner); remove the Parakeet TDT variant and all `MODEL_VARIANT`/`variant.json` machinery — single model, single CI build; remove fictional Vulkan GPU support (`provider="vulkan"` always silently fell back to CPU) — delete `vulkan_probe.py`, GPU device dropdown, `NUM_THREADS` lifted to config.py |
 | v2.1 (Phase 8) | Add whisper.cpp as a second, optional file-transcription engine: `whisper-cli` built in CI with `-DGGML_VULKAN=ON` (any GPU vendor, beam_size=5), bundled in `whispercpp/`. `TranscriptionEngine.transcribe()` uses it when bundled, else falls back unchanged to the sherpa-onnx VAD+greedy path. Unlike v2.0.0's fictional `provider="vulkan"`, this is real GPU acceleration — the device actually used is logged from whisper.cpp's own stderr, never assumed |
 | v3.0.0-beta1 | New light, feature-coded UI (teal files, coral recording, amber speakers, sky timestamps, green done); offline guard blocks all non-loopback network access; ffmpeg restricted to local files; temp files cleaned at start and exit; in-app Privacy panel; logo as app icon (`assets/EasyScribe.ico`, generated by `assets/make_icon.py`) on both exes and all windows; Windows file-version resource from `APP_VERSION`; remove stale v1 `build_windows.bat` |
+| v3.0.0-beta2 | Launcher compares versions and updates an older install in place (backup + rollback, user data kept); AppUserModelID + shell icon refresh for the taskbar icon; "Make full transcript" after a live recording; live VAD flush on stop; shared `CancelledError`; dependencies pinned in `requirements.txt` (venv cache v4); validation of the assembled app folder in CI |
+| v3.0.0-beta3 | PyInstaller `Splash` ("Getting ready") during the one-file extraction; installer waits for the user before an update and uses the app's light CustomTkinter theme; `win_paint.py` stops the black-block flash on refocus (Windows); Show details / Privacy drawn as small outlined buttons |

@@ -1,16 +1,25 @@
-# EasyScribe - Python dependencies (CI installs these; see build-release.yml)
+# EasyScribe - Python dependencies.
+#
+# CI installs exactly this file (build-release.yml). The versions are pinned to
+# the set that built and passed testing for 3.0.0-beta1, so a new upstream
+# release can never change a build without a commit here.
+# After any change: bump the venv cache key in build-release.yml (CLAUDE.md Rule 5).
 
-# Inference backend (transcription + diarization + VAD)
-sherpa-onnx>=1.10.0
+# Inference backend (VAD, diarization, live mode, fallback transcription)
+sherpa-onnx==1.13.8
+
+# sherpa-onnx does not declare numpy on every platform (CLAUDE.md Rule 11)
+numpy==2.4.6
 
 # Microphone capture
-sounddevice>=0.4.6
+sounddevice==0.5.6
 
 # GUI framework
-customtkinter>=5.2.2
+customtkinter==6.0.0
 
 # Drag-and-drop support
-tkinterdnd2>=0.3.0
+tkinterdnd2==0.6.3
 
 # Portable executable builder
-pyinstaller>=6.10.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8

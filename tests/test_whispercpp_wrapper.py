@@ -6,8 +6,7 @@ stderr device/progress line parsing) and the cancellation/availability guards
 
 Real-binary accuracy A/B, --output-json end-to-end, and mid-run cancellation
 were exercised manually against a local whisper.cpp v1.8.6 build + the
-ggml-large-v3-turbo-q5_0 model; results recorded in
-EASYSCRIBE_ACTION_PLAN.md's Phase 8.1 checkpoint findings.
+ggml-large-v3-turbo-q5_0 model during Phase 8 (see CLAUDE.md Rule 7).
 
 Run from project root: python tests/test_whispercpp_wrapper.py
 Exits 0 on success, 1 on failure.
