@@ -17,12 +17,12 @@
 
 ## Why EasyScribe?
 
-- 🔒 **Nothing leaves your computer.** EasyScribe works fully offline. Your audio and transcripts stay on your disk. There are no accounts, no analytics and no update checks.
-- 📁 **Transcribe any recording.** Audio or video, one file or many at a time.
-- 🎙️ **Transcribe as you talk.** Record from your microphone and watch the words appear.
-- 🗣️ **Know who said what.** EasyScribe can find the different speakers, and you can give them names.
-- ⚡ **Fast on most PCs.** It uses your graphics card (NVIDIA, AMD or Intel) when it can, and your processor when it cannot.
-- 📦 **One file, no setup wizard.** Download one `.exe`, double-click it, and start. No admin rights needed.
+- **Nothing leaves your computer.** EasyScribe works fully offline. Your audio and transcripts stay on your disk. There are no accounts, no analytics and no update checks.
+- **Transcribe any recording.** Audio or video, one file or many at a time.
+- **Transcribe as you talk.** Record from your microphone and watch the words appear.
+- **Know who said what.** EasyScribe can find the different speakers, and you can give them names.
+- **Fast on most PCs.** It uses your graphics card (NVIDIA, AMD or Intel) when it can, and your processor when it cannot.
+- **One file, no setup wizard.** Download one `.exe`, double-click it, and start. No admin rights needed.
 
 ---
 
