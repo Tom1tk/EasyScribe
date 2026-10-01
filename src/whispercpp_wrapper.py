@@ -145,7 +145,10 @@ def transcribe_file(
     try:
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            # stdout carries the transcript text, which we read from the JSON
+            # file instead. Discard it: an unread pipe fills up on long files
+            # and whisper-cli then blocks for ever.
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             creationflags=_CREATE_NO_WINDOW,
         )
