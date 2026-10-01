@@ -1,10 +1,10 @@
 name: Build and Publish Release
 
 # Trigger manually from the GitHub Actions tab.
-# Builds a single EasyScribe .exe via 7-zip SFX (Whisper ONNX large-v3-turbo).
+# Builds a single EasyScribe .exe: launcher.exe with the app.bundle zip embedded.
 #
 # Cache strategy:
-#   ffmpeg              ~150 MB   key: ffmpeg-win64-gpl-n7.1.4-v1
+#   ffmpeg              ~150 MB   key: ffmpeg-win64-gyan-7.1.1-essentials-v1
 #   Python venv         ~1-2 GB   key: venv-win64-py3.11-v3
 #   Whisper ONNX model  ~1 GB     key: sherpa-onnx-whisper-turbo-v1
 #   Silero VAD model    ~1 MB     key: sherpa-onnx-silero-vad-v1
@@ -47,20 +47,22 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tools\ffmpeg
-          key: ffmpeg-win64-gpl-n7.1.4-v1
+          key: ffmpeg-win64-gyan-7.1.1-essentials-v1
 
-      # Pinned to a dated BtbN/FFmpeg-Builds release (not "latest", which is a
-      # mutable rolling tag) so builds are reproducible. To bump: pick a new
-      # autobuild-YYYY-MM-DD-... tag from
-      # https://github.com/BtbN/FFmpeg-Builds/releases, find its win64-gpl
-      # asset filename (it embeds the ffmpeg version + commit hash and
-      # changes every release), and update both the URL and the cache key.
+      # Pinned to a versioned GyanD/codexffmpeg release (the gyan.dev builds).
+      # These releases are kept permanently. Do not use BtbN "autobuild-*" tags:
+      # BtbN deletes old autobuilds, and a pinned one broke the build when it
+      # was removed. The essentials build has all the native decoders that
+      # EasyScribe needs (mp3, aac, opus, vorbis, flac, pcm; mp4, mkv, mov,
+      # avi, webm). To bump: pick a tag from
+      # https://github.com/GyanD/codexffmpeg/releases and update the version
+      # in the URL and in the cache key.
       - name: Download ffmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $ProgressPreference = 'SilentlyContinue'
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-06-11-14-22/ffmpeg-n7.1.4-39-ga5faeca88f-win64-gpl-7.1.zip"
+          $url = "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip"
           Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
           New-Item -ItemType Directory -Force -Path tools\ffmpeg | Out-Null
