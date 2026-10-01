@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0-beta1)'
+        description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0-beta2)'
         required: true
-        default: 'v3.0.0-beta1'
+        default: 'v3.0.0-beta2'
 
 permissions:
   contents: write
@@ -343,10 +343,10 @@ jobs:
           body: |
             ## EasyScribe ${{ github.event.inputs.tag }} — Portable Offline Speech-to-Text
 
-            **Portable — no install required, no admin needed.**
-            Place the .exe anywhere (USB stick, shared folder, local drive) and double-click.
-            On first run it extracts an `EasyScribe/` folder next to itself and launches.
-            On subsequent runs it detects the existing folder and launches immediately.
+            **Portable — no admin rights, no registry.**
+            Place the .exe anywhere (local drive, USB stick) and double-click.
+            On first run it extracts an `EasyScribe/` folder and creates Desktop and Start Menu shortcuts.
+            After that, the shortcut launches EasyScribe in about one second.
 
             | Asset | Model | Description |
             |---|---|---|
@@ -359,9 +359,9 @@ jobs:
             4. File transcripts are saved next to each recording (or in the folder you choose); live recordings go to `EasyScribe\recordings\`
 
             ### Updating from an earlier version
-            Put the new .exe in a new folder, or delete the old `EasyScribe\` folder first
-            (keep anything you need from `EasyScribe\recordings\`). The installer opens an
-            existing `EasyScribe\` folder instead of replacing it.
+            Close EasyScribe, then double-click the new .exe. It finds the older version and
+            updates it in place. Your recordings and logs are kept. If the update fails,
+            the previous version is restored.
 
             ### Re-running
             Double-click the same .exe — detects existing `EasyScribe\` folder and launches in ~1 second.
@@ -371,15 +371,23 @@ jobs:
             **More info → Run anyway**. Expected for unsigned executables.
 
             ---
-            ### What's new in v3.0.0 (Beta 1)
+            ### What's new in v3.0.0 (Beta 2)
+            - **Automatic update** — the new .exe now updates an older install instead of opening the old version; recordings are kept, and a failed update rolls back
+            - **Taskbar icon** — the taskbar and shortcuts now show the new logo
+            - **Make full transcript** — after a live recording, run the full audio through the more accurate file engine (saved as a separate "(full).txt")
+            - **Live mode keeps the last words** — speech at the moment you stop is no longer lost
+            - **Stop works cleanly** — fixes for Stop during transcription and speaker detection
+            - **Safer builds** — pinned dependencies and a check of the finished app folder before release
+
+            ### v3.0.0 (Beta 1)
             - **New look** — a clear, light interface; each colour means one thing (teal files, coral recording, amber speakers, blue timestamps, green done)
-            - **New EasyScribe logo** — in the window, the taskbar, the .exe and the shortcuts
+            - **New EasyScribe logo** — in the window, the .exe and the shortcuts
             - **Easier to use** — plain labels, options fold away while a job runs, Try again after a failed batch
             - **Fully offline (GDPR)** — the app blocks all network access; ffmpeg reads local files only; temporary audio is deleted; see Privacy in the app
             - **GPU file transcription** — whisper.cpp with beam search on any Vulkan GPU, CPU fallback
           files: EasyScribe-${{ github.event.inputs.tag }}-whisper.exe
           draft: true
-          # Tags with a suffix (v3.0.0-beta1) are marked as pre-releases
+          # Tags with a suffix (v3.0.0-beta2) are marked as pre-releases
           prerelease: ${{ contains(github.event.inputs.tag, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

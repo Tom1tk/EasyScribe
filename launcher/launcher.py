@@ -23,7 +23,7 @@ from tkinter import filedialog, ttk
 import zipfile
 from pathlib import Path
 
-VERSION = "3.0.0-beta1"
+VERSION = "3.0.0-beta2"
 MARKER_FILENAME = ".easyscribe-install.json"
 # Old app files are moved here during an update, then deleted. It only ever
 # holds app files (never user data), so a leftover copy is safe to remove.
