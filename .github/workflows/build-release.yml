@@ -5,7 +5,7 @@ name: Build and Publish Release
 #
 # Cache strategy:
 #   ffmpeg              ~150 MB   key: ffmpeg-win64-gyan-7.1.1-essentials-v1
-#   Python venv         ~1-2 GB   key: venv-win64-py3.11-v3
+#   Python venv         ~1-2 GB   key: venv-win64-py3.11-v4
 #   Whisper ONNX model  ~1 GB     key: sherpa-onnx-whisper-turbo-v1
 #   Silero VAD model    ~1 MB     key: sherpa-onnx-silero-vad-v1
 #   Diarization models  ~35 MB    key: sherpa-onnx-diarization-v1        (reuse from v1.x)
@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0-beta1)'
+        description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0-beta3)'
         required: true
-        default: 'v3.0.0-beta1'
+        default: 'v3.0.0-beta3'
 
 permissions:
   contents: write
@@ -78,7 +78,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: venv
-          key: venv-win64-py3.11-v3
+          key: venv-win64-py3.11-v4
 
       - name: Install Python dependencies
         if: steps.venv-cache.outputs.cache-hit != 'true'
@@ -87,7 +87,7 @@ jobs:
           python -m venv venv
           & venv\Scripts\Activate.ps1
           python -m pip install --upgrade pip --quiet
-          pip install sherpa-onnx sounddevice numpy customtkinter tkinterdnd2 pyinstaller --quiet
+          pip install -r requirements.txt --quiet
           Write-Host "Installed packages:"
           pip list --format=columns
 
@@ -222,8 +222,8 @@ jobs:
           & "whisper.cpp\build\bin\Release\whisper-cli.exe" --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "whisper-cli.exe failed to run" }
 
-      # ── 7c. whisper.cpp GGUF model (~547 MB, large-v3-turbo q5_0 — see
-      # EASYSCRIBE_ACTION_PLAN.md Phase 8.1 checkpoint ① accuracy A/B) ──────────
+      # ── 7c. whisper.cpp GGUF model (~547 MB, large-v3-turbo q5_0 — the
+      # winner of the Phase 8 accuracy A/B, see CLAUDE.md) ──────────────────────
       - name: Cache whisper.cpp GGUF model
         id: ggml-cache
         uses: actions/cache@v4
@@ -284,7 +284,7 @@ jobs:
           # back to sherpa-onnx if missing, see src/whispercpp_wrapper.py)
           New-Item -ItemType Directory -Force -Path "$dist\whispercpp" | Out-Null
           Copy-Item "whisper.cpp\build\bin\Release\whisper-cli.exe" "$dist\whispercpp\"
-          Copy-Item "whisper.cpp\build\bin\Release\*.dll" "$dist\whispercpp\" -ErrorAction SilentlyContinue
+          Copy-Item "whisper.cpp\build\bin\Release\*.dll" "$dist\whispercpp\"
           Copy-Item "models\ggml-large-v3-turbo-q5_0.bin" "$dist\whispercpp\"
 
           # Pre-create recordings dir so it is visible after extraction
@@ -292,6 +292,18 @@ jobs:
 
           $totalMB = (Get-ChildItem $dist -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host "App folder size: $([math]::Round($totalMB, 0)) MB"
+
+      # ── 11b. Validate the assembled folder (models, ffmpeg, whisper.cpp) ──────
+      - name: Validate assembled app folder
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          python tests/validate_build.py dist\EasyScribe --assembled
+          if ($LASTEXITCODE -ne 0) { throw "Assembled folder validation failed — see output above" }
+          # The copied whisper-cli.exe must start next to its copied DLLs
+          & "dist\EasyScribe\whispercpp\whisper-cli.exe" --help *> $null
+          if ($LASTEXITCODE -ne 0) { throw "whisper-cli.exe does not start from dist\EasyScribe\whispercpp" }
+          Write-Host "whisper-cli.exe starts from the assembled folder."
 
       # ── 12. Create app.bundle (must exist before building launcher) ───────────
       - name: Create app.bundle
@@ -331,10 +343,10 @@ jobs:
           body: |
             ## EasyScribe ${{ github.event.inputs.tag }} — Portable Offline Speech-to-Text
 
-            **Portable — no install required, no admin needed.**
-            Place the .exe anywhere (USB stick, shared folder, local drive) and double-click.
-            On first run it extracts an `EasyScribe/` folder next to itself and launches.
-            On subsequent runs it detects the existing folder and launches immediately.
+            **Portable — no admin rights, no registry.**
+            Place the .exe anywhere (local drive, USB stick) and double-click.
+            On first run it extracts an `EasyScribe/` folder and creates Desktop and Start Menu shortcuts.
+            After that, the shortcut launches EasyScribe in about one second.
 
             | Asset | Model | Description |
             |---|---|---|
@@ -343,31 +355,49 @@ jobs:
             ### First run
             1. Download the .exe file above
             2. Place it wherever you want the app to live
-            3. Double-click — extraction takes ~30 seconds, then EasyScribe launches
-            4. File transcripts are saved next to each recording (or in the folder you choose); live recordings go to `EasyScribe\recordings\`
+            3. Double-click. A small "Getting ready" window shows while the .exe unpacks (up to a minute the first time)
+            4. Choose where to put EasyScribe (or keep the default) and select **Install**
+            5. File transcripts are saved next to each recording (or in the folder you choose); live recordings go to `EasyScribe\recordings\`
 
             ### Updating from an earlier version
-            Put the new .exe in a new folder, or delete the old `EasyScribe\` folder first
-            (keep anything you need from `EasyScribe\recordings\`). The installer opens an
-            existing `EasyScribe\` folder instead of replacing it.
+            Close EasyScribe, then double-click the new .exe. It finds the older version and
+            asks first: select **Update and open** to update it in place, or **Browse** to
+            install in a different folder. Your recordings and logs are kept. If the update fails,
+            the previous version is restored.
 
             ### Re-running
-            Double-click the same .exe — detects existing `EasyScribe\` folder and launches in ~1 second.
+            Open EasyScribe from the Desktop or Start menu shortcut. It starts in about one second.
+            (The downloaded .exe also works, but it must unpack itself each time, which is slow.)
 
             ### SmartScreen
             Windows Defender SmartScreen may show **"Windows protected your PC"** — click
             **More info → Run anyway**. Expected for unsigned executables.
 
             ---
-            ### What's new in v3.0.0 (Beta 1)
+            ### What's new in v3.0.0 (Beta 3)
+            - **Loading window** — a "Getting ready" window shows at once while the .exe unpacks, instead of only a busy cursor
+            - **The installer waits for you** — an update starts only when you select Update and open; you can choose a different folder first
+            - **New installer look** — the installer uses the same light style as the app
+            - **No black blocks** — the window no longer flashes black blocks when you switch back to it (Windows)
+            - **Clearer buttons** — Show details and Privacy now look like buttons
+
+            ### v3.0.0 (Beta 2)
+            - **Automatic update** — the new .exe now updates an older install instead of opening the old version; recordings are kept, and a failed update rolls back
+            - **Taskbar icon** — the taskbar and shortcuts now show the new logo
+            - **Make full transcript** — after a live recording, run the full audio through the more accurate file engine (saved as a separate "(full).txt")
+            - **Live mode keeps the last words** — speech at the moment you stop is no longer lost
+            - **Stop works cleanly** — fixes for Stop during transcription and speaker detection
+            - **Safer builds** — pinned dependencies and a check of the finished app folder before release
+
+            ### v3.0.0 (Beta 1)
             - **New look** — a clear, light interface; each colour means one thing (teal files, coral recording, amber speakers, blue timestamps, green done)
-            - **New EasyScribe logo** — in the window, the taskbar, the .exe and the shortcuts
+            - **New EasyScribe logo** — in the window, the .exe and the shortcuts
             - **Easier to use** — plain labels, options fold away while a job runs, Try again after a failed batch
             - **Fully offline (GDPR)** — the app blocks all network access; ffmpeg reads local files only; temporary audio is deleted; see Privacy in the app
             - **GPU file transcription** — whisper.cpp with beam search on any Vulkan GPU, CPU fallback
           files: EasyScribe-${{ github.event.inputs.tag }}-whisper.exe
           draft: true
-          # Tags with a suffix (v3.0.0-beta1) are marked as pre-releases
+          # Tags with a suffix (v3.0.0-beta2) are marked as pre-releases
           prerelease: ${{ contains(github.event.inputs.tag, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

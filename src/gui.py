@@ -52,21 +52,21 @@ from config import (
     MIN_FREE_DISK_BYTES,
     SUPPORTED_EXTENSIONS,
 )
+from common import CancelledError
 from ffmpeg_wrapper import (
-    CancelledError as FFmpegCancelledError,
     FFmpegExtractionError,
     FFmpegNotFoundError,
     extract_audio,
 )
 from diarizer import DiarizationEngine  # type: ignore
 from transcriber import (
-    CancelledError as TranscribeCancelledError,
     ModelNotFoundError,
     TranscriptionEngine,
     TranscriptionError,
 )
 from mic_recorder import MicRecorder
 from live_transcriber import LiveTranscriber
+import win_paint
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +142,7 @@ _STATUS: dict[str, tuple[str, str, str, str]] = {
     "Naming Speakers": ("Waiting for speaker names", C.AMBER_INK, C.AMBER, "pause"),
     "Writing Transcript": ("Saving the transcript", C.TEAL_INK, C.TEAL, "bar"),
     "Recording": ("Recording", C.CORAL_INK, C.CORAL, "busy"),
+    "Finishing": ("Finishing the last words", C.CORAL_INK, C.CORAL, "busy"),
     "Cancelling…": ("Stopping…", C.MUTED, C.FAINT, "busy"),
     "Done": ("Done", C.GREEN_INK, C.GREEN, "pause"),
     "Cancelled": ("Stopped", C.MUTED, C.FAINT, "pause"),
@@ -208,11 +209,16 @@ def _open_path(path: Path) -> None:
 
 
 def _button(parent, text: str, kind: str = "secondary", **kw) -> ctk.CTkButton:  # type: ignore[no-untyped-def]
-    """Create a button. kind: teal | coral | secondary | link."""
+    """Create a button. kind: teal | coral | secondary | subtle | link."""
     styles = {
         "teal": dict(fg_color=C.TEAL, hover_color=C.TEAL_HOVER, text_color=C.SURFACE),
         "coral": dict(fg_color=C.CORAL, hover_color=C.CORAL_HOVER, text_color=C.SURFACE),
         "secondary": dict(fg_color=C.SECONDARY, hover_color=C.SECONDARY_HOVER, text_color=C.INK),
+        # Quiet but clearly a button: white with a thin outline
+        "subtle": dict(
+            fg_color=C.SURFACE, hover_color=C.SURFACE_ALT, text_color=C.MUTED,
+            border_width=1, border_color=C.BORDER,
+        ),
         "link": dict(fg_color="transparent", hover_color=C.SURFACE_ALT, text_color=C.TEAL_INK),
     }
     opts = dict(
@@ -521,6 +527,9 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._visible_rows = 3 if available >= 760 else 2
         self.resizable(True, True)
         self.configure(fg_color=C.BG)
+        # Before any widget is made: paint backgrounds at once on Windows,
+        # so the window does not show black blocks when it comes to the front.
+        win_paint.install(self, C.BG)
 
         family = _ui_family()
         self._f_app = ctk.CTkFont(family=family, size=22, weight="bold")
@@ -544,6 +553,10 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._live_transcriber = LiveTranscriber()
         self._last_output_folder: Path | None = None
         self._last_transcript: Path | None = None
+        # Audio of the last live recording, for "Make full transcript"
+        self._last_recording: Path | None = None
+        # Output path per input file, when it must not be "<stem>.txt"
+        self._output_overrides: dict[Path, Path] = {}
         self._ui_state = "idle"
         self._mode = _MODE_FILES
         self._details_open = False
@@ -967,21 +980,26 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._result_row, "Try again", width=110, command=self._on_change_options
         )
         self._retry_btn.grid(row=0, column=2)
+        self._full_transcript_btn = _button(
+            self._result_row, "Make full transcript", kind="teal", width=170,
+            command=self._on_full_transcript,
+        )
+        self._full_transcript_btn.grid(row=0, column=3, padx=(8, 0))
         self._result_row.grid_remove()
 
     # ── Details (technical log) ──────────────────────────────────────────────
 
     def _build_details(self) -> None:
         self._details_btn = _button(
-            self, "Show details", kind="link", width=110, height=28,
-            text_color=C.MUTED, command=self._toggle_details,
+            self, "Show details", kind="subtle", width=110, height=30,
+            font=self._f_small, command=self._toggle_details,
         )
-        self._details_btn.grid(row=4, column=0, padx=18, pady=(0, 4), sticky="w")
+        self._details_btn.grid(row=4, column=0, padx=24, pady=(0, 10), sticky="w")
         self._privacy_btn = _button(
-            self, "Privacy", kind="link", width=80, height=28,
-            text_color=C.MUTED, command=lambda: PrivacyDialog(self),
+            self, "Privacy", kind="subtle", width=80, height=30,
+            font=self._f_small, command=lambda: PrivacyDialog(self),
         )
-        self._privacy_btn.grid(row=4, column=0, padx=18, pady=(0, 4), sticky="e")
+        self._privacy_btn.grid(row=4, column=0, padx=24, pady=(0, 10), sticky="e")
 
         self._log_card = _card(self)
         self._log_card.grid_columnconfigure(0, weight=1)
@@ -1236,7 +1254,7 @@ class TranscriberApp(_AppBase):  # type: ignore
                 temp_wav = extract_audio(input_file, self._cancel_event, self._safe_append_log)
 
                 if self._cancel_event.is_set():
-                    raise FFmpegCancelledError("Cancelled")
+                    raise CancelledError("Cancelled")
 
                 output_path = self._resolve_output_path(input_file)
                 self._last_output_folder = output_path.parent
@@ -1257,7 +1275,7 @@ class TranscriberApp(_AppBase):  # type: ignore
                 saved.append(output_path)
                 self._safe_set_file_state(input_file, "Done")
 
-            except (FFmpegCancelledError, TranscribeCancelledError):
+            except CancelledError:
                 self._safe_append_log("[Cancelled] Operation stopped by user")
                 self._safe_set_file_state(input_file, "Stopped")
                 break
@@ -1404,6 +1422,8 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._safe_append_log("[Record] Listening. Select Stop recording when done")
             self._stop_recording_event.wait()
 
+            # Speech that was still in progress at Stop is decoded now.
+            self._safe_update_status("Finishing")
             self._live_transcriber.stop()
             wav_path = self._mic_recorder.stop(convert_to_wav=True)
 
@@ -1458,6 +1478,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         audio = outcome.get("audio")
         error = outcome.get("error")
         self._last_transcript = transcript if isinstance(transcript, Path) else None
+        self._last_recording = audio if isinstance(audio, Path) else None
 
         if error and not audio:
             self._status_label.configure(text="Could not record", text_color=C.CRIMSON)
@@ -1479,7 +1500,27 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._show_message(str(error) if error else "", "error")
         self._progress_bar.configure(progress_color=C.GREEN)
         self._progress_bar.set(1.0)
-        self._show_results(transcript=bool(transcript))
+        self._show_results(transcript=bool(transcript), full=self._last_recording is not None)
+
+    def _on_full_transcript(self) -> None:
+        """Send the saved recording through the file pipeline.
+
+        The live transcript is quick and has no speakers. The file pipeline
+        uses the more accurate engine and, if selected, speaker names. Its
+        output gets its own name, so the live transcript is kept.
+        """
+        audio = self._last_recording
+        if self._ui_state != "idle" or audio is None:
+            return
+        if not audio.exists():
+            self._show_message("The recording is no longer in the recordings folder.", "error")
+            return
+        self._show_mode(_MODE_FILES)
+        self._selected_files = [audio]
+        self._file_states = {}
+        self._output_overrides[audio] = (self._output_folder or audio.parent) / f"{audio.stem} (full).txt"
+        self._render_files()
+        self._on_transcribe()
 
     def _make_speaker_naming_callback(self) -> Callable:
         def callback(speaker_map: dict, clips_dict: dict) -> None:
@@ -1663,6 +1704,8 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._reset_output_btn.grid_remove()
 
     def _resolve_output_path(self, input_file: Path) -> Path:
+        if input_file in self._output_overrides:
+            return self._output_overrides[input_file]
         folder = self._output_folder or input_file.parent
         return folder / (input_file.stem + ".txt")
 
@@ -1717,11 +1760,14 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._message_label.configure(text=text, text_color=fg, fg_color=bg)
         self._message_label.grid(ipadx=10, ipady=8)
 
-    def _show_results(self, transcript: bool, folder: bool = True, retry: bool = False) -> None:
+    def _show_results(
+        self, transcript: bool, folder: bool = True, retry: bool = False, full: bool = False
+    ) -> None:
         for btn, show in (
             (self._open_transcript_btn, transcript),
             (self._open_output_btn, folder),
             (self._retry_btn, retry),
+            (self._full_transcript_btn, full),
         ):
             btn.grid() if show else btn.grid_remove()
         self._result_row.grid()

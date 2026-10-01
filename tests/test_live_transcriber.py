@@ -108,13 +108,13 @@ class _SlowFakeRecognizer:
 
 def _check_decode_queue_drops_oldest_under_backpressure() -> None:
     decode_queue: queue.Queue = queue.Queue(maxsize=live_transcriber._DECODE_QUEUE_MAXSIZE)
-    cancel_event = threading.Event()
+    vad_done = threading.Event()
     onnx_lock = threading.Lock()
     received: list[str] = []
 
     decode_thread = threading.Thread(
         target=live_transcriber.LiveTranscriber._decode_loop,
-        args=(_SlowFakeRecognizer(), decode_queue, cancel_event, received.append, onnx_lock),
+        args=(_SlowFakeRecognizer(), decode_queue, vad_done, received.append, onnx_lock),
         daemon=True,
     )
     decode_thread.start()
@@ -125,10 +125,85 @@ def _check_decode_queue_drops_oldest_under_backpressure() -> None:
             dropped = True
         assert decode_queue.qsize() <= live_transcriber._DECODE_QUEUE_MAXSIZE, decode_queue.qsize()
 
-    cancel_event.set()
+    vad_done.set()
     decode_thread.join(timeout=5)
 
     assert dropped, "expected the decode queue to drop oldest under sustained backpressure"
+
+
+class _FakeSegment:
+    def __init__(self, start: int, samples: np.ndarray) -> None:
+        self.start = start
+        self.samples = samples
+
+
+class _FakeDetector:
+    """
+    Fake VoiceActivityDetector: it never ends a segment by itself (the
+    speaker is still talking), so only flush() makes the segment.
+    """
+
+    def __init__(self) -> None:
+        self._fed: list[np.ndarray] = []
+        self._ready: list[_FakeSegment] = []
+
+    def accept_waveform(self, chunk: np.ndarray) -> None:
+        self._fed.append(chunk)
+
+    def flush(self) -> None:
+        if self._fed:
+            self._ready.append(_FakeSegment(0, np.concatenate(self._fed)))
+            self._fed = []
+
+    def empty(self) -> bool:
+        return not self._ready
+
+    @property
+    def front(self) -> _FakeSegment:
+        return self._ready[0]
+
+    def pop(self) -> None:
+        self._ready.pop(0)
+
+
+class _CountingRecognizer:
+    """Fake recognizer: the text is the number of samples it decoded."""
+
+    def create_stream(self):
+
+        class _Stream:
+            result = _FakeResult("")
+
+            def accept_waveform(self, sr: int, samples: np.ndarray) -> None:
+                self.result = _FakeResult(str(len(samples)))
+
+        return _Stream()
+
+    def decode_stream(self, stream) -> None:
+        time.sleep(0.2)  # slower than the old fixed join, to prove Stop waits
+
+
+def _check_stop_flushes_speech_in_progress() -> None:
+    real_build_vad = vad.build_vad
+    vad.build_vad = lambda buffer_size_in_seconds=None: _FakeDetector()
+    try:
+        mic_queue: queue.Queue = queue.Queue()
+        stop_event = threading.Event()
+        received: list[str] = []
+
+        lt = live_transcriber.LiveTranscriber()
+        lt.start(_CountingRecognizer(), mic_queue, stop_event, received.append)
+        mic_queue.put(np.ones(1600, dtype=np.float32))
+        time.sleep(0.3)  # the VAD thread takes the first chunk
+        # These chunks are still in the mic queue when Stop is pressed.
+        mic_queue.put(np.ones(1600, dtype=np.float32))
+        mic_queue.put(np.ones(800, dtype=np.float32))
+        stop_event.set()
+        lt.stop(timeout=10)
+    finally:
+        vad.build_vad = real_build_vad
+
+    assert received == ["4000"], received
 
 
 def main() -> None:
@@ -138,6 +213,7 @@ def main() -> None:
     _check("pad_live_segment: clamped by prev_segment_end", _check_pad_live_segment_clamped_by_prev_segment_end)
     _check("pad_live_segment: clamped by history_start", _check_pad_live_segment_clamped_by_history_start)
     _check("decode queue: drops oldest under backpressure", _check_decode_queue_drops_oldest_under_backpressure)
+    _check("stop: flushes speech in progress and queued audio", _check_stop_flushes_speech_in_progress)
     print("---------------------------------------------------------------------------\n")
 
     if failures:

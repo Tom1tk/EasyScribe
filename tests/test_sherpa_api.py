@@ -31,7 +31,7 @@ def _check_recognizer_config() -> None:
     import transcriber
     from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRecognizer
 
-    cfg = transcriber._build_recognizer_config("cpu")
+    cfg = transcriber._build_recognizer_config()
 
     import sherpa_onnx
     assert isinstance(cfg, sherpa_onnx.OfflineRecognizerConfig), type(cfg)

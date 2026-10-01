@@ -1,8 +1,10 @@
 """
 transcriber.py - sherpa-onnx transcription engine for EasyScribe.
 
-Replaces faster-whisper. Uses Whisper ONNX large-v3-turbo. Inference runs on
-CPU only — sherpa-onnx 1.13.2 has no Vulkan provider (see CLAUDE.md Rule 7).
+File transcription uses the bundled whisper.cpp (GPU through Vulkan) when it
+is present; otherwise sherpa-onnx with Whisper ONNX large-v3-turbo on CPU
+(sherpa-onnx has no Vulkan provider, see CLAUDE.md Rule 7). Live mode always
+uses the sherpa-onnx recognizer.
 """
 
 import logging
@@ -12,13 +14,11 @@ import wave
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
-
 import config
 import vad
 import whispercpp_wrapper
+from common import CancelledError, fmt_duration as _fmt_seconds, load_wav_float32, wav_duration
 from config import TEMP_DIR
-from vad import CancelledError
 
 logger = logging.getLogger(__name__)
 
@@ -164,11 +164,6 @@ def _extract_speaker_clip(
         return False
 
 
-def _fmt_seconds(s: float) -> str:
-    h, m, sec = int(s // 3600), int((s % 3600) // 60), int(s % 60)
-    return f"{h}h {m:02d}m {sec:02d}s" if h else f"{m}m {sec:02d}s"
-
-
 # ─── Model / recognizer config ────────────────────────────────────────────────
 
 
@@ -186,7 +181,7 @@ def validate_model_directory() -> list[str]:
     return errors
 
 
-def _build_recognizer_config(provider: str):
+def _build_recognizer_config():
     import sherpa_onnx
 
     model_cfg = sherpa_onnx.OfflineModelConfig(
@@ -197,32 +192,11 @@ def _build_recognizer_config(provider: str):
             task="transcribe",
         ),
         tokens=str(config.WHISPER_TOKENS),
-        provider=provider,
+        provider="cpu",
         num_threads=config.NUM_THREADS,
     )
 
     return sherpa_onnx.OfflineRecognizerConfig(model_config=model_cfg)
-
-
-# ─── Audio loading ────────────────────────────────────────────────────────────
-
-
-def _load_wav_float32(wav_path: Path) -> tuple[np.ndarray, int]:
-    """Load a WAV file and return (float32_samples, sample_rate)."""
-    with wave.open(str(wav_path), "rb") as wf:
-        n_ch = wf.getnchannels()
-        s_w = wf.getsampwidth()
-        sr = wf.getframerate()
-        raw = wf.readframes(wf.getnframes())
-
-    dtype = np.int16 if s_w == 2 else (np.int32 if s_w == 4 else np.int8)
-    scale = 32768.0 if s_w == 2 else (2147483648.0 if s_w == 4 else 128.0)
-    samples = np.frombuffer(raw, dtype=dtype).astype(np.float32) / scale
-
-    if n_ch > 1:
-        samples = samples.reshape(-1, n_ch).mean(axis=1)
-
-    return samples, sr
 
 
 # ─── Engine ───────────────────────────────────────────────────────────────────
@@ -234,7 +208,6 @@ class TranscriptionEngine:
     def __init__(self) -> None:
         self._recognizer = None
         self._lock = threading.Lock()
-        self._provider: str | None = None
 
     def _ensure_model_loaded(self, status_callback: Callable[[str], None]) -> None:
         with self._lock:
@@ -253,18 +226,11 @@ class TranscriptionEngine:
             from sherpa_onnx.lib._sherpa_onnx import OfflineRecognizer as _OfflineRecognizer
 
             try:
-                cfg = _build_recognizer_config("cpu")
+                cfg = _build_recognizer_config()
                 self._recognizer = _OfflineRecognizer(cfg)
-                self._provider = "cpu"
                 logger.info("Model loaded: provider=cpu")
             except RuntimeError as exc:
                 raise ModelNotFoundError(f"Could not load model: {exc}") from exc
-
-    def unload_model(self) -> None:
-        with self._lock:
-            self._recognizer = None
-            self._provider = None
-            logger.info("Model unloaded")
 
     def get_recognizer(self, status_callback: Callable[[str], None]):
         """Public accessor for the loaded recognizer (loads on demand)."""
@@ -291,31 +257,40 @@ class TranscriptionEngine:
         log_callback(f"[Transcribe] Starting: {audio_path.name}")
 
         try:
-            samples, sr = _load_wav_float32(audio_path)
+            duration = wav_duration(audio_path)
         except Exception as exc:
             raise TranscriptionError(f"Could not load audio: {exc}") from exc
-
-        duration = len(samples) / sr
         log_callback(f"[Transcribe] Audio duration: {_fmt_seconds(duration)}")
 
         infer_start = time.monotonic()
         raw_segments: list[tuple[float, float, str]]
 
+        # whisper.cpp reads the WAV itself, so the samples are only loaded
+        # into memory on the sherpa-onnx path (a 3-hour file is ~700 MB as
+        # float32), and they are freed before diarization loads its own copy.
         if whispercpp_wrapper.is_available():
             log_callback(
                 f"[Transcribe] engine: whisper.cpp (beam_size={config.WHISPERCPP_BEAM_SIZE}), "
                 f"timestamps: {'on' if add_timestamps else 'off'}, "
                 f"speakers: {'on' if diarize else 'off'}"
             )
-            raw_segments = whispercpp_wrapper.transcribe_file(
-                audio_path, cancel_event, log_callback, progress_callback
-            )
+            try:
+                raw_segments = whispercpp_wrapper.transcribe_file(
+                    audio_path, cancel_event, log_callback, progress_callback
+                )
+            except whispercpp_wrapper.WhisperCppError as exc:
+                # A failed run on one file is a file error, not an "unexpected" one.
+                raise TranscriptionError(str(exc)) from exc
             for _seg_start, _seg_end, text in raw_segments:
                 log_callback(text)
         else:
             self._ensure_model_loaded(status_callback)
+            try:
+                samples, sr = load_wav_float32(audio_path)
+            except Exception as exc:
+                raise TranscriptionError(f"Could not load audio: {exc}") from exc
             log_callback(
-                f"[Transcribe] engine: sherpa-onnx (provider={self._provider}), "
+                f"[Transcribe] engine: sherpa-onnx (CPU), "
                 f"timestamps: {'on' if add_timestamps else 'off'}, "
                 f"speakers: {'on' if diarize else 'off'}"
             )
@@ -352,6 +327,7 @@ class TranscriptionEngine:
                     f"{_fmt_seconds(seg_end)} / {_fmt_seconds(duration)} — "
                     f"{speed:.1f}x realtime"
                 )
+            del samples
 
         segment_count = len(raw_segments)
         word_count = sum(len(text.split()) for _, _, text in raw_segments)

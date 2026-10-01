@@ -18,6 +18,8 @@ import logging
 from pathlib import Path
 from typing import Callable
 
+from common import fmt_duration, load_wav_float32
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +32,6 @@ class DiarizationEngine:
 
     def __init__(self) -> None:
         self._pipeline = None
-        self._pipeline_on_gpu: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
@@ -73,46 +74,21 @@ class DiarizationEngine:
         logger.info(f"Running diarization on: {audio_path.name}")
 
         try:
-            import wave as _wave
-            import numpy as _np
-            with _wave.open(str(audio_path), "rb") as _wf:
-                _nch = _wf.getnchannels()
-                _sw = _wf.getsampwidth()
-                _sr = _wf.getframerate()
-                _raw = _wf.readframes(_wf.getnframes())
-            _dtype = _np.int16 if _sw == 2 else (_np.int32 if _sw == 4 else _np.int8)
-            _scale = 32768.0 if _sw == 2 else (2147483648.0 if _sw == 4 else 128.0)
-            _samples = _np.frombuffer(_raw, dtype=_dtype).astype(_np.float32) / _scale
-            if _nch > 1:
-                _samples = _samples.reshape(-1, _nch).mean(axis=1)
-            _audio_duration_sec = len(_samples) / _sr
-            logger.info(f"Audio loaded: {_samples.shape}, sr={_sr}")
+            samples, sr = load_wav_float32(audio_path)
+            logger.info(f"Audio loaded: {samples.shape}, sr={sr}")
         except Exception as exc:
             logger.exception("Could not load audio for diarization")
             raise DiarizationError(f"Could not load audio for diarization: {exc}") from exc
 
-        # Estimate runtime. Measured ~0.45× audio duration on CPU; GPU is
-        # roughly 10-20x faster.
-        if self._pipeline_on_gpu:
-            est_sec = _audio_duration_sec * 0.05
-        else:
-            est_sec = _audio_duration_sec * 0.45
-        if est_sec >= 60:
-            est_str = f"~{int(est_sec / 60)} min"
-        else:
-            est_str = f"~{int(est_sec)} sec"
-        if _audio_duration_sec >= 60:
-            audio_dur_str = f"{int(_audio_duration_sec / 60)} min"
-        else:
-            audio_dur_str = f"{int(_audio_duration_sec)} sec"
-        device_str = "GPU" if self._pipeline_on_gpu else "CPU"
+        # Measured ~0.45x the audio length on CPU.
+        audio_sec = len(samples) / sr
+        est_sec = audio_sec * 0.45
+        est_str = f"~{int(est_sec / 60)} min" if est_sec >= 60 else f"~{int(est_sec)} sec"
         log_callback(
-            f"[Diarize] Running on {device_str} — estimated wait: {est_str} "
-            f"for {audio_dur_str} of audio. Please wait…"
+            f"[Diarize] Estimated wait: {est_str} for {fmt_duration(audio_sec)} of audio. "
+            "Please wait…"
         )
-        logger.info(
-            f"{device_str} diarization estimate: {est_str} for {_audio_duration_sec:.0f}s audio"
-        )
+        logger.info(f"Diarization estimate: {est_str} for {audio_sec:.0f}s audio")
 
         def _progress(num_done: int, num_total: int) -> int:
             if num_total > 0:
@@ -121,7 +97,7 @@ class DiarizationEngine:
             return 0  # 0 = continue processing
 
         try:
-            result = self._pipeline.process(_samples, callback=_progress)  # type: ignore[union-attr]
+            result = self._pipeline.process(samples, callback=_progress)  # type: ignore[union-attr]
         except Exception as exc:
             logger.exception("Diarization pipeline failed")
             raise DiarizationError(f"Speaker diarization failed: {exc}") from exc
@@ -195,43 +171,32 @@ class DiarizationEngine:
                 "Re-build with diarization support enabled."
             ) from exc
 
-        # Diarization runs CPU-only. onnxruntime's CUDA provider requires a
-        # separate CUDA DLL stack that conflicts with the transcription DLLs
-        # on Windows. CPU diarization is fast enough (~30s for a 45-min file)
-        # and avoids the entire CUDA DLL management problem.
-        _use_cuda = False
-
-        def _build_pipeline(provider: str):
-            seg_cfg = sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
-                pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
-                    model=str(DIARIZATION_SEGMENTATION_MODEL)
-                ),
-                provider=provider,
-            )
-            emb_cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-                model=str(DIARIZATION_EMBEDDING_MODEL),
-                provider=provider,
-            )
-            clu_cfg = sherpa_onnx.FastClusteringConfig(num_clusters=-1, threshold=0.5)
-            config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
-                segmentation=seg_cfg, embedding=emb_cfg, clustering=clu_cfg
-            )
-            return sherpa_onnx.OfflineSpeakerDiarization(config)
-
-        pipeline = None
-        if pipeline is None:
-            try:
-                pipeline = _build_pipeline("cpu")
-                self._pipeline_on_gpu = False
-                logger.info("Diarization pipeline loaded on CPU")
-                log_callback("[Diarize] Running on CPU")
-            except Exception as exc:
-                import traceback as _tb
-                logger.error(f"Pipeline loading traceback:\n{_tb.format_exc()}")
-                raise DiarizationError(
-                    f"Could not load diarization pipeline from "
-                    f"{DIARIZATION_SEGMENTATION_MODEL.parent}:\n{exc}"
-                ) from exc
+        # Diarization runs on CPU. sherpa-onnx has no Vulkan provider, and a
+        # CUDA provider would need the separate CUDA DLL stack that v2.0
+        # removed (CLAUDE.md Rules 6 and 7).
+        seg_cfg = sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+            pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
+                model=str(DIARIZATION_SEGMENTATION_MODEL)
+            ),
+            provider="cpu",
+        )
+        emb_cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+            model=str(DIARIZATION_EMBEDDING_MODEL),
+            provider="cpu",
+        )
+        clu_cfg = sherpa_onnx.FastClusteringConfig(num_clusters=-1, threshold=0.5)
+        diar_cfg = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+            segmentation=seg_cfg, embedding=emb_cfg, clustering=clu_cfg
+        )
+        try:
+            pipeline = sherpa_onnx.OfflineSpeakerDiarization(diar_cfg)
+        except Exception as exc:
+            logger.exception("Could not load the diarization pipeline")
+            raise DiarizationError(
+                f"Could not load diarization pipeline from "
+                f"{DIARIZATION_SEGMENTATION_MODEL.parent}:\n{exc}"
+            ) from exc
+        log_callback("[Diarize] Running on CPU")
 
         self._pipeline = pipeline
         log_callback("[Diarize] Pipeline loaded")
