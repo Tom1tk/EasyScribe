@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0-beta2)'
+        description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0-beta3)'
         required: true
-        default: 'v3.0.0-beta2'
+        default: 'v3.0.0-beta3'
 
 permissions:
   contents: write
@@ -355,23 +355,33 @@ jobs:
             ### First run
             1. Download the .exe file above
             2. Place it wherever you want the app to live
-            3. Double-click — extraction takes ~30 seconds, then EasyScribe launches
-            4. File transcripts are saved next to each recording (or in the folder you choose); live recordings go to `EasyScribe\recordings\`
+            3. Double-click. A small "Getting ready" window shows while the .exe unpacks (up to a minute the first time)
+            4. Choose where to put EasyScribe (or keep the default) and select **Install**
+            5. File transcripts are saved next to each recording (or in the folder you choose); live recordings go to `EasyScribe\recordings\`
 
             ### Updating from an earlier version
             Close EasyScribe, then double-click the new .exe. It finds the older version and
-            updates it in place. Your recordings and logs are kept. If the update fails,
+            asks first: select **Update and open** to update it in place, or **Browse** to
+            install in a different folder. Your recordings and logs are kept. If the update fails,
             the previous version is restored.
 
             ### Re-running
-            Double-click the same .exe — detects existing `EasyScribe\` folder and launches in ~1 second.
+            Open EasyScribe from the Desktop or Start menu shortcut. It starts in about one second.
+            (The downloaded .exe also works, but it must unpack itself each time, which is slow.)
 
             ### SmartScreen
             Windows Defender SmartScreen may show **"Windows protected your PC"** — click
             **More info → Run anyway**. Expected for unsigned executables.
 
             ---
-            ### What's new in v3.0.0 (Beta 2)
+            ### What's new in v3.0.0 (Beta 3)
+            - **Loading window** — a "Getting ready" window shows at once while the .exe unpacks, instead of only a busy cursor
+            - **The installer waits for you** — an update starts only when you select Update and open; you can choose a different folder first
+            - **New installer look** — the installer uses the same light style as the app
+            - **No black blocks** — the window no longer flashes black blocks when you switch back to it (Windows)
+            - **Clearer buttons** — Show details and Privacy now look like buttons
+
+            ### v3.0.0 (Beta 2)
             - **Automatic update** — the new .exe now updates an older install instead of opening the old version; recordings are kept, and a failed update rolls back
             - **Taskbar icon** — the taskbar and shortcuts now show the new logo
             - **Make full transcript** — after a live recording, run the full audio through the more accurate file engine (saved as a separate "(full).txt")

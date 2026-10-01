@@ -8,6 +8,11 @@
 #
 # The embedded app.bundle is extracted to <exe_dir>/EasyScribe/ on first run.
 #
+# Before Python starts, the one-file bootloader unpacks everything (about
+# 1.5 GB) to %TEMP%. That takes up to a minute, so a Splash shows a
+# "Getting ready" window first (assets/splash.png, made by
+# assets/make_splash.py). launcher.py closes it when its own window opens.
+#
 # Build: pyinstaller launcher/launcher.spec --noconfirm
 
 import sys
@@ -28,12 +33,13 @@ a = Analysis(
         # Window icon for the installer window
         ("../assets/EasyScribe.ico", "."),
     ],
-    hiddenimports=["tkinter", "tkinter.ttk", "tkinter.filedialog"],
+    # customtkinter: the installer uses the same look as the app. Its data
+    # files (themes, fonts) come from the hooks-contrib hook.
+    hiddenimports=["tkinter", "tkinter.filedialog", "customtkinter"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        "customtkinter",
         "tkinterdnd2",
         "sherpa_onnx",
         "sounddevice",
@@ -48,9 +54,21 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# Shown by the bootloader while it unpacks; Tcl/Tk is unpacked first for it.
+# No text_pos: the bootloader would show each file name, and the only big
+# file is app.bundle. The image itself says what is happening.
+splash = Splash(
+    "../assets/splash.png",
+    binaries=a.binaries,
+    datas=a.datas,
+    always_on_top=False,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
+    splash.binaries,
     a.binaries,
     a.zipfiles,
     a.datas,

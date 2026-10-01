@@ -84,14 +84,15 @@ Select **Privacy** at the bottom of the window to see what EasyScribe stores and
 
 1. Download `EasyScribe-<version>-whisper.exe` from the [Releases](../../releases) page.
 2. Put it in a folder of your choice. A local folder or a USB stick are both good.
-3. Double-click it. Choose where to put EasyScribe (or keep the default) and select **Install**. This takes about 30 seconds and adds Desktop and Start Menu shortcuts.
-4. Next time, open EasyScribe from the shortcut. It starts in about one second.
+3. Double-click it. A small **Getting ready** window shows while the `.exe` unpacks itself. The first time, this can take up to a minute.
+4. Choose where to put EasyScribe (or keep the default) and select **Install**. This takes about 30 seconds and adds Desktop and Start Menu shortcuts.
+5. Next time, open EasyScribe from the shortcut. It starts in about one second.
 
 > **Windows SmartScreen:** EasyScribe is not code-signed yet, so Windows may show a warning the first time. Select **More info → Run anyway**.
 
 ### Update to a new version
 
-Close EasyScribe, then double-click the new `.exe`. It finds your older version and updates it in place. Your recordings and logs are kept. If something goes wrong during the update, the previous version is restored.
+Close EasyScribe, then double-click the new `.exe`. It finds your older version and asks first. Select **Update and open** to update it in place, or **Browse** to install in a different folder. Your recordings and logs are kept. If something goes wrong during the update, the previous version is restored.
 
 ### Take it with you
 
@@ -199,8 +200,10 @@ EasyScribe\
 **Updates.** The launcher compares the version in the install marker with its own version:
 
 - Same or newer install: it opens the installed `EasyScribe.exe` directly. It never downgrades.
-- Older install: it moves the app files to `.easyscribe-old\`, extracts the new files, then deletes the backup. On any failure, the backup is moved back. `recordings\` and `logs\` are never moved. If a file is locked (the app is open), the update stops and the user is told to close EasyScribe.
+- Older install: it shows the installer window and waits. Only when the user selects **Update and open** does it move the app files to `.easyscribe-old\`, extract the new files, then delete the backup. On any failure, the backup is moved back. `recordings\` and `logs\` are never moved. If a file is locked (the app is open), the update stops and the user is told to close EasyScribe.
 - If an update is interrupted (power loss), the next start restores the backup first.
+
+**Start-up splash.** The PyInstaller one-file bootloader unpacks `app.bundle` (about 1.5 GB) to `%TEMP%` before any Python code runs. This can take a minute. A PyInstaller `Splash` (`assets/splash.png`) shows at once during that time; the launcher closes it when its own window opens.
 
 **Why not a "no-extract" single exe?** whisper-cli, ffmpeg and the models (about 1.5 GB) must be real files on disk. A one-file app that unpacks to `%TEMP%` at each start would copy 1.5 GB every time. Extract-once keeps start-up at about one second and still needs no installer, registry or admin rights.
 
@@ -221,6 +224,7 @@ src/
   live_transcriber.py    Silero VAD loop + OfflineRecognizer for live mode
   recovery.py            Orphaned .pcm scanner and WAV recovery
   gui.py                 CustomTkinter UI with threaded workers
+  win_paint.py           Windows only: paints window backgrounds at once (no black blocks)
 
 launcher/
   launcher.py            Extract-once installer and version-aware updater
@@ -229,6 +233,8 @@ launcher/
 assets/
   EasyScribe.ico/.png    App icon (both .exe files, all windows, shortcuts)
   make_icon.py           Regenerates the icon from the logo design (needs Pillow)
+  splash.png             "Getting ready" window shown while the .exe unpacks
+  make_splash.py         Regenerates splash.png (needs Pillow and customtkinter)
   version_resource.py    Windows file-version info for both specs, from APP_VERSION
 
 tests/                   Fast offline checks; run all with `python tests/run_all.py`
