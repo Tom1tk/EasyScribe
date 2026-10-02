@@ -8,7 +8,8 @@ Usage: python tests/validate_build.py <dist_dir> [--assembled]
        python tests/validate_build.py dist/EasyScribe --assembled
 
 --assembled also checks the files that the CI assembly step copies next to the
-exe (models, ffmpeg, whisper.cpp). Run it after that step, before app.bundle.
+exe (models, ffmpeg, whisper.cpp, license files). Run it after that step,
+before app.bundle.
 
 Exits 0 on success, 1 if any check fails.
 """
@@ -34,9 +35,18 @@ _ASSEMBLED_FILES = [
     "whispercpp/ggml-large-v3-turbo-q5_0.bin",
 ]
 
+_REPO_LICENSES = Path(__file__).resolve().parent.parent / "licenses"
+
+# License files from assets/collect_licenses.py. ffmpeg is GPL v3, so its
+# license must ship with it; the other licenses require their notices too.
+_LICENSE_FILES = ["LICENSE.txt", "THIRD-PARTY-NOTICES.txt", "licenses/Python-LICENSE.txt"] + [
+    f"licenses/{f.name}" for f in sorted(_REPO_LICENSES.glob("*"))
+    if f.is_file() and f.name != "THIRD-PARTY-NOTICES.txt"
+]
+
 
 def _check_assembled(dist: Path, ok: list[str], errors: list[str]) -> None:
-    for rel in _ASSEMBLED_FILES:
+    for rel in _ASSEMBLED_FILES + _LICENSE_FILES:
         path = dist / rel
         if path.is_file() and path.stat().st_size > 0:
             ok.append(f"{rel}  ({path.stat().st_size // 1024} KB)")
@@ -48,6 +58,17 @@ def _check_assembled(dist: Path, ok: list[str], errors: list[str]) -> None:
         ok.append(f"whispercpp/*.dll  ({len(dlls)} file(s))")
     else:
         errors.append("MISSING: whispercpp/*.dll  (whisper-cli.exe cannot start without them)")
+
+    pkg_licenses = [p for p in (dist / "licenses" / "python-packages").rglob("*") if p.is_file()]
+    if pkg_licenses:
+        ok.append(f"licenses/python-packages/  ({len(pkg_licenses)} file(s))")
+    else:
+        errors.append("MISSING: licenses/python-packages/  (run assets/collect_licenses.py)")
+
+    # Only libportaudio64bit.dll is loaded; the ASIO builds are removed (see CI).
+    asio = list(dist.glob("_internal/_sounddevice_data/portaudio-binaries/*-asio.dll"))
+    if asio:
+        errors.append(f"UNEXPECTED: {asio[0].name}  (ASIO PortAudio DLLs must be removed)")
 
     # Models load from BASE_DIR only; a copy in _internal/ doubles the size.
     stale = dist / "_internal" / "models"

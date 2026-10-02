@@ -82,13 +82,15 @@ Select **Privacy** at the bottom of the window to see what EasyScribe stores and
 
 ## Get started
 
-1. Download `EasyScribe-<version>-whisper.exe` from the [Releases](../../releases) page.
+1. Download `EasyScribe-<version>.exe` from the [Releases](../../releases) page.
 2. Put it in a folder of your choice. A local folder or a USB stick are both good.
-3. Double-click it. A small **Getting ready** window shows while the `.exe` unpacks itself. The first time, this can take up to a minute.
+3. Double-click it. A small **Getting ready** window shows while the `.exe` unpacks itself. The first time, Windows also checks the large downloaded file before it starts, so the window can take up to a minute to show. To make this fast, unblock the file first (see the note below).
 4. Choose where to put EasyScribe (or keep the default) and select **Install**. This takes about 30 seconds and adds Desktop and Start Menu shortcuts.
 5. Next time, open EasyScribe from the shortcut. It starts in about one second.
 
 > **Windows SmartScreen:** EasyScribe is not code-signed yet, so Windows may show a warning the first time. Select **More info → Run anyway**.
+>
+> **Tip:** Before the first start, right-click the `.exe`, select **Properties**, select **Unblock**, then **OK**. Or in PowerShell: `Unblock-File .\EasyScribe-<version>.exe`. Then Windows does not show the warning, and **Getting ready** shows at once. Only do this for a file that you downloaded from this project's Releases page.
 
 ### Update to a new version
 
@@ -126,7 +128,8 @@ After a pause, the next block starts here.
 
 | Problem | What to do |
 |---|---|
-| SmartScreen blocks the `.exe` | Select **More info → Run anyway**. The app is not signed yet. |
+| SmartScreen blocks the `.exe` | Select **More info → Run anyway**, or unblock the file first (**Properties → Unblock**). The app is not signed yet. |
+| Nothing shows for up to a minute after the first double-click | Windows checks the large downloaded file first. Wait, or unblock the file first (**Properties → Unblock**). |
 | "Close EasyScribe" message during an update | EasyScribe is still open. Close it, then select **Update and open** again. |
 | "Model files missing" when it starts | Run the `.exe` again. The first install may have been stopped. |
 | **Name the speakers** is grey | The speaker models are missing. Run the `.exe` again. |
@@ -175,8 +178,8 @@ To remove all data, delete your transcripts and the `EasyScribe` folder.
 ## Distribution and install layout
 
 ```
-EasyScribe-<version>-whisper.exe   (launcher.exe, PyInstaller one-file)
-  └── app.bundle                   (zip: EasyScribe.exe + _internal/ + models/ + whispercpp/ + ffmpeg/)
+EasyScribe-<version>.exe   (launcher.exe, PyInstaller one-file)
+  └── app.bundle           (zip: EasyScribe.exe + _internal/ + models/ + whispercpp/ + ffmpeg/ + licenses/)
 ```
 
 The launcher extracts `app.bundle` once, into an `EasyScribe\` folder:
@@ -192,6 +195,9 @@ EasyScribe\
     silero_vad.onnx
   whispercpp\                <- whisper-cli.exe, ggml-large-v3-turbo-q5_0.bin, *.dll
   ffmpeg\                    <- ffmpeg.exe, ffprobe.exe
+  LICENSE.txt                <- EasyScribe license (MIT)
+  THIRD-PARTY-NOTICES.txt    <- included components, their licenses and source
+  licenses\                  <- license texts (assets/collect_licenses.py)
   recordings\                <- live recordings and their transcripts (user data)
   logs\                      <- rotating log files (user data)
   temp\                      <- temporary WAV files (auto-cleaned)
@@ -267,6 +273,11 @@ Before you change packaging, read `CLAUDE.md`. It lists the rules learned from e
 
 This project is released under the MIT License.
 
-FFmpeg is included under the GPL v3 license. See https://ffmpeg.org/legal.html
+The app includes third-party programs and models. Each one keeps its own license:
 
-whisper.cpp is MIT-licensed. sherpa-onnx and its bundled models (Whisper large-v3-turbo, pyannote segmentation-3.0 ONNX export, WeSpeaker ResNet34-LM embedding, Silero VAD) are subject to their own license terms. See https://github.com/k2-fsa/sherpa-onnx
+- FFmpeg (GPL v3). The source and a written offer are in `licenses/THIRD-PARTY-NOTICES.txt`.
+- whisper.cpp, ONNX Runtime, PortAudio, the Whisper weights, Silero VAD and pyannote segmentation (MIT).
+- sherpa-onnx (Apache 2.0).
+- The WeSpeaker ResNet34-LM speaker model (CC BY 4.0, trained on VoxCeleb).
+
+See [`licenses/THIRD-PARTY-NOTICES.txt`](licenses/THIRD-PARTY-NOTICES.txt) and the texts in [`licenses/`](licenses/). The build copies them, with the Python and Python package licenses, into the app folder (`assets/collect_licenses.py`).
