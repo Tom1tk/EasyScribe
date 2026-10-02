@@ -52,6 +52,9 @@ class MicRecorder:
         self._json_path: Optional[Path] = None
         self._samples_written: int = 0
         self._vad_drop_logged = False
+        self._feed_vad = True
+        # Loudest sample since the last get_level() call, 0.0 to 1.0
+        self._peak: float = 0.0
 
     @staticmethod
     def list_devices() -> list[dict]:
@@ -72,8 +75,17 @@ class MicRecorder:
         or None if start() has not been called."""
         return self._pcm_path.stem if self._pcm_path is not None else None
 
-    def start(self, device_index: Optional[int], output_dir: Path) -> None:
-        """Start capture and crash-safe PCM writing."""
+    def get_level(self) -> float:
+        """Return the loudest sample since the last call (0.0 to 1.0), then reset it."""
+        peak, self._peak = self._peak, 0.0
+        return peak
+
+    def start(self, device_index: Optional[int], output_dir: Path, feed_vad: bool = True) -> None:
+        """Start capture and crash-safe PCM writing.
+
+        feed_vad=False records only: nothing reads the VAD queue, so no audio
+        is put on it.
+        """
         import sounddevice as sd
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +94,8 @@ class MicRecorder:
         self._json_path = output_dir / f"recording_{ts}.json"
         self._samples_written = 0
         self._vad_drop_logged = False
+        self._feed_vad = feed_vad
+        self._peak = 0.0
         self._stop_event.clear()
 
         self._writer_thread = threading.Thread(
@@ -142,13 +156,16 @@ class MicRecorder:
         if status:
             logger.warning(f"sounddevice status: {status}")
         chunk = indata[:, 0].copy()  # shape: (frames,), dtype int16
-        try:
-            self._vad_queue.put_nowait(chunk.astype(np.float32) / 32768.0)
-        except queue.Full:
-            # This runs for each ~30 ms chunk; log once, not hundreds of times.
-            if not self._vad_drop_logged:
-                self._vad_drop_logged = True
-                logger.warning("VAD queue full — dropping audio from live transcription")
+        if chunk.size:
+            self._peak = max(self._peak, float(np.abs(chunk.astype(np.int32)).max()) / 32768.0)
+        if self._feed_vad:
+            try:
+                self._vad_queue.put_nowait(chunk.astype(np.float32) / 32768.0)
+            except queue.Full:
+                # This runs for each ~30 ms chunk; log once, not hundreds of times.
+                if not self._vad_drop_logged:
+                    self._vad_drop_logged = True
+                    logger.warning("VAD queue full — dropping audio from live transcription")
         self._pcm_queue.put(chunk.tobytes())
 
     def _pcm_writer_loop(self) -> None:

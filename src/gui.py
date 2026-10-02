@@ -10,7 +10,7 @@ Design notes (for whoever edits this next):
   - Light theme only. Neutrals are one cool slate family; every feature owns
     one colour and that colour follows the feature everywhere (mode switch,
     step badges, option chips, progress bar, status text):
-        Transcribe files -> teal     Record live -> coral
+        Transcribe files -> teal     Record -> coral
         Speakers         -> amber    Timestamps  -> blue
         Offline / done   -> green    Errors      -> crimson
   - All text/background pairs below pass WCAG AA (4.5:1).
@@ -101,7 +101,7 @@ class C:
     TEAL_SOFT = "#DDF3F1"
     TEAL_INK = "#075E5A"
 
-    # Record live
+    # Record
     CORAL = "#C8402A"
     CORAL_HOVER = "#A8341F"
     CORAL_SOFT = "#FDE7E1"
@@ -143,6 +143,7 @@ _STATUS: dict[str, tuple[str, str, str, str]] = {
     "Writing Transcript": ("Saving the transcript", C.TEAL_INK, C.TEAL, "bar"),
     "Recording": ("Recording", C.CORAL_INK, C.CORAL, "busy"),
     "Finishing": ("Finishing the last words", C.CORAL_INK, C.CORAL, "busy"),
+    "Saving Recording": ("Saving the recording", C.CORAL_INK, C.CORAL, "busy"),
     "Cancelling…": ("Stopping…", C.MUTED, C.FAINT, "busy"),
     "Done": ("Done", C.GREEN_INK, C.GREEN, "pause"),
     "Cancelled": ("Stopped", C.MUTED, C.FAINT, "pause"),
@@ -156,7 +157,11 @@ _STATUS_HINTS: dict[str, str] = {
 }
 
 _MODE_FILES = "Transcribe files"
-_MODE_RECORD = "Record live"
+_MODE_RECORD = "Record"
+
+# Record tab: what to do with the recording
+_REC_BEST = "best"
+_REC_LIVE = "live"
 
 
 def _ui_family() -> str | None:
@@ -553,8 +558,10 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._live_transcriber = LiveTranscriber()
         self._last_output_folder: Path | None = None
         self._last_transcript: Path | None = None
-        # Audio of the last live recording, for "Make full transcript"
+        # Audio of the last recording, for "Make best quality transcript"
         self._last_recording: Path | None = None
+        # The recording that the running (or last) file batch transcribes
+        self._batch_recording: Path | None = None
         # Output path per input file, when it must not be "<stem>.txt"
         self._output_overrides: dict[Path, Path] = {}
         self._ui_state = "idle"
@@ -848,19 +855,16 @@ class TranscriberApp(_AppBase):  # type: ignore
         ).grid(row=1, column=0, padx=(46, 14), pady=(0, 12), sticky="w")
         return cb
 
-    # ── Record live view ─────────────────────────────────────────────────────
+    # ── Record view ──────────────────────────────────────────────────────────
 
     def _build_record_view(self, view: ctk.CTkFrame) -> None:
         rec_card = _card(view)
         rec_card.grid(row=0, column=0, padx=24, pady=(0, 12), sticky="ew")
-        rec_card.grid_columnconfigure(1, weight=1)
+        rec_card.grid_columnconfigure((0, 1), weight=1, uniform="rec")
 
-        self._step_header(rec_card, "1", "Record from a microphone", C.CORAL_INK, C.CORAL_SOFT).grid(
-            row=0, column=0, columnspan=3, padx=18, pady=(16, 10), sticky="ew"
-        )
-
-        ctk.CTkLabel(rec_card, text="Microphone", font=self._f_strong, text_color=C.INK).grid(
-            row=1, column=0, columnspan=3, padx=18, sticky="w"
+        # ── Step 1: microphone ────────────────────────────────────────────────
+        self._step_header(rec_card, "1", "Choose a microphone", C.CORAL_INK, C.CORAL_SOFT).grid(
+            row=0, column=0, columnspan=2, padx=18, pady=(16, 8), sticky="ew"
         )
         self._mic_options, self._mic_index_map = self._build_mic_options()
         self._mic_var = ctk.StringVar(value=self._mic_options[0])
@@ -883,20 +887,56 @@ class TranscriberApp(_AppBase):  # type: ignore
             dropdown_text_color=C.INK,
             dynamic_resizing=False,
         )
-        self._mic_menu.grid(row=2, column=0, columnspan=3, padx=18, pady=(2, 14), sticky="w")
+        self._mic_menu.grid(row=1, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="w")
 
+        # ── Step 2: what to do with the recording ─────────────────────────────
+        self._step_header(rec_card, "2", "What do you want?", C.CORAL_INK, C.CORAL_SOFT).grid(
+            row=2, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="ew"
+        )
+        self._rec_mode_var = ctk.StringVar(value=_REC_BEST)
+        self._rec_tiles: dict[str, tuple[ctk.CTkFrame, ctk.CTkRadioButton]] = {}
+        self._rec_choice_tile(
+            rec_card, column=0, value=_REC_BEST,
+            title="Best quality transcript after recording",
+            body="Saves the recording.\nAdds speakers and times. Most accurate.",
+        )
+        self._rec_choice_tile(
+            rec_card, column=1, value=_REC_LIVE,
+            title="Show words as I speak",
+            body="Saves the recording.\nQuick text while you talk. Less accurate.",
+        )
+
+        self._rec_speakers_var = ctk.BooleanVar(value=False)
+        self._rec_speakers_cb = self._speakers_checkbox(rec_card)
+        self._rec_speakers_cb.grid(row=4, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="w")
+
+        # ── Step 3: record ────────────────────────────────────────────────────
+        self._step_header(rec_card, "3", "Record", C.CORAL_INK, C.CORAL_SOFT).grid(
+            row=5, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="ew"
+        )
+        rec_row = ctk.CTkFrame(rec_card, fg_color="transparent")
+        rec_row.grid(row=6, column=0, columnspan=2, padx=18, pady=(0, 16), sticky="ew")
+        rec_row.grid_columnconfigure(3, weight=1)
         self._record_btn = _button(
-            rec_card, "Start recording", kind="coral", width=200, height=44,
+            rec_row, "Start recording", kind="coral", width=200, height=44,
             font=self._f_primary, command=self._on_record,
         )
-        self._record_btn.grid(row=3, column=0, padx=(18, 14), pady=(0, 16), sticky="w")
+        self._record_btn.grid(row=0, column=0, padx=(0, 14))
         self._timer_label = ctk.CTkLabel(
-            rec_card, text="00:00", font=self._f_timer, text_color=C.FAINT
+            rec_row, text="00:00", font=self._f_timer, text_color=C.FAINT
         )
-        self._timer_label.grid(row=3, column=1, pady=(0, 16), sticky="w")
+        self._timer_label.grid(row=0, column=1, padx=(0, 14))
+        # Microphone level: shows that the microphone hears sound, which
+        # matters most when no words appear during the recording.
+        self._level_bar = ctk.CTkProgressBar(
+            rec_row, width=120, height=8, corner_radius=4,
+            fg_color=C.BORDER, progress_color=C.CORAL, mode="determinate",
+        )
+        self._level_bar.set(0)
+        self._level_bar.grid(row=0, column=2)
 
-        where = ctk.CTkFrame(rec_card, fg_color="transparent")
-        where.grid(row=3, column=2, padx=18, pady=(0, 16), sticky="e")
+        where = ctk.CTkFrame(rec_row, fg_color="transparent")
+        where.grid(row=0, column=3, sticky="e")
         ctk.CTkLabel(
             where, text="Saved in the recordings folder", font=self._f_small, text_color=C.MUTED
         ).grid(row=0, column=0, padx=(0, 4))
@@ -905,7 +945,9 @@ class TranscriberApp(_AppBase):  # type: ignore
             command=lambda: self._open_folder(DEFAULT_OUTPUT_DIR),
         ).grid(row=0, column=1)
 
+        # ── Live transcript (only for "Show words as I speak") ────────────────
         live_card = _card(view)
+        self._live_card = live_card
         live_card.grid(row=1, column=0, padx=24, pady=(0, 12), sticky="nsew")
         live_card.grid_columnconfigure(0, weight=1)
         live_card.grid_rowconfigure(1, weight=1)
@@ -919,6 +961,79 @@ class TranscriberApp(_AppBase):  # type: ignore
         )
         self._live_box.grid(row=1, column=0, padx=18, pady=(0, 16), sticky="nsew")
         self._reset_live_box()
+        self._on_rec_mode_changed()
+
+    def _rec_choice_tile(self, parent, column: int, value: str, title: str, body: str) -> None:  # type: ignore[no-untyped-def]
+        tile = ctk.CTkFrame(
+            parent, fg_color=C.SURFACE_ALT, corner_radius=R_MD,
+            border_width=2, border_color=C.BORDER,
+        )
+        pad_l = 18 if column == 0 else 6
+        pad_r = 6 if column == 0 else 18
+        tile.grid(row=3, column=column, padx=(pad_l, pad_r), pady=(0, 10), sticky="nsew")
+        tile.grid_columnconfigure(0, weight=1)
+        radio = ctk.CTkRadioButton(
+            tile, text=title, value=value, variable=self._rec_mode_var,
+            command=self._on_rec_mode_changed,
+            font=self._f_strong, text_color=C.INK, text_color_disabled=C.MUTED,
+            fg_color=C.CORAL, hover_color=C.CORAL_HOVER, border_color=C.BORDER_STRONG,
+            radiobutton_width=20, radiobutton_height=20,
+        )
+        radio.grid(row=0, column=0, padx=14, pady=(12, 2), sticky="w")
+        note = ctk.CTkLabel(
+            tile, text=body, font=self._f_small, text_color=C.MUTED,
+            anchor="w", justify="left", wraplength=320,
+        )
+        note.grid(row=1, column=0, padx=(44, 14), pady=(0, 12), sticky="w")
+        # The whole tile selects the choice, not only the small circle.
+        for widget in (tile, note):
+            widget.bind("<Button-1>", lambda _e, v=value: self._select_rec_mode(v))
+        self._rec_tiles[value] = (tile, radio)
+
+    def _speakers_checkbox(self, parent) -> ctk.CTkCheckBox:  # type: ignore[no-untyped-def]
+        """A "More than one person speaking" switch on the shared speakers variable."""
+        available = self._diarization_available
+        return ctk.CTkCheckBox(
+            parent,
+            text=(
+                "More than one person speaking"
+                if available else "Speaker names are not available in this copy of EasyScribe"
+            ),
+            variable=self._rec_speakers_var,
+            font=self._f_strong,
+            text_color=C.AMBER_INK if available else C.MUTED,
+            text_color_disabled=C.MUTED,
+            fg_color=C.AMBER,
+            hover_color="#946000",
+            border_color=C.AMBER if available else C.BORDER_STRONG,
+            checkmark_color=C.SURFACE,
+            corner_radius=R_SM,
+            checkbox_width=22,
+            checkbox_height=22,
+            state="normal" if available else "disabled",
+        )
+
+    def _select_rec_mode(self, value: str) -> None:
+        if self._ui_state != "idle":
+            return
+        self._rec_mode_var.set(value)
+        self._on_rec_mode_changed()
+
+    def _on_rec_mode_changed(self) -> None:
+        mode = self._rec_mode_var.get()
+        for value, (tile, _radio) in self._rec_tiles.items():
+            selected = value == mode
+            tile.configure(
+                fg_color=C.CORAL_SOFT if selected else C.SURFACE_ALT,
+                border_color=C.CORAL if selected else C.BORDER,
+            )
+        if mode == _REC_BEST:
+            self._rec_speakers_cb.grid()
+            self._live_card.grid_remove()
+        else:
+            # Live mode: the speakers choice moves to the panel after the stop.
+            self._rec_speakers_cb.grid_remove()
+            self._live_card.grid()
 
     # ── Activity panel (status, progress, result) ────────────────────────────
 
@@ -980,12 +1095,25 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._result_row, "Try again", width=110, command=self._on_change_options
         )
         self._retry_btn.grid(row=0, column=2)
-        self._full_transcript_btn = _button(
-            self._result_row, "Make full transcript", kind="teal", width=170,
-            command=self._on_full_transcript,
-        )
-        self._full_transcript_btn.grid(row=0, column=3, padx=(8, 0))
         self._result_row.grid_remove()
+
+        # After a recording: the same choices as before it, for the saved file.
+        self._best_row = ctk.CTkFrame(panel, fg_color=C.SURFACE_ALT, corner_radius=R_MD)
+        self._best_row.grid(row=5, column=0, padx=18, pady=(0, 16), sticky="ew")
+        self._best_row.grid_columnconfigure(1, weight=1)
+        self._best_speakers_cb = self._speakers_checkbox(self._best_row)
+        self._best_speakers_cb.grid(row=0, column=0, columnspan=2, padx=14, pady=(12, 8), sticky="w")
+        self._full_transcript_btn = _button(
+            self._best_row, "Make best quality transcript", kind="teal", width=240,
+            font=self._f_strong, command=self._on_full_transcript,
+        )
+        self._full_transcript_btn.grid(row=1, column=0, padx=(14, 12), pady=(0, 12), sticky="w")
+        self._best_note = ctk.CTkLabel(
+            self._best_row, text="", font=self._f_small, text_color=C.MUTED,
+            anchor="w", justify="left", wraplength=420,
+        )
+        self._best_note.grid(row=1, column=1, padx=(0, 14), pady=(0, 12), sticky="w")
+        self._best_row.grid_remove()
 
     # ── Details (technical log) ──────────────────────────────────────────────
 
@@ -1167,34 +1295,41 @@ class TranscriberApp(_AppBase):  # type: ignore
             "timestamps": bool(self._timestamps_var.get()),
             "diarize": bool(self._diarize_var.get()),
         }
-
-        self._cancel_event.clear()
+        self._batch_recording = None
         self._file_states = {p: "Waiting" for p in self._selected_files}
+        self._clear_log()
+        self._start_batch(list(self._selected_files), options)
+
+    def _start_batch(self, files: list[Path], options: dict) -> None:
+        self._cancel_event.clear()
         self._last_transcript = None
         self._set_ui_state("running")
-        self._clear_log()
         self._show_activity()
         self._set_progress(0)
 
         threading.Thread(
-            target=self._transcription_worker, args=(options,),
+            target=self._transcription_worker, args=(files, options),
             daemon=True, name="TranscriptionWorker",
         ).start()
 
     def _on_record(self) -> None:
+        live = self._rec_mode_var.get() == _REC_LIVE
         self._stop_recording_event.clear()
         self._last_transcript = None
         self._set_ui_state("recording")
         self._clear_log()
         self._reset_live_box(listening=True)
         self._show_activity()
-        self._safe_append_log("[Record] Starting live recording…")
+        self._safe_append_log(
+            "[Record] Starting live recording…" if live
+            else "[Record] Starting recording (best quality transcript after the stop)…"
+        )
         self._record_btn.configure(text="Stop recording", command=self._on_stop_recording)
 
         mic_label = self._mic_var.get()
         device_index = self._mic_index_map.get(mic_label)
         threading.Thread(
-            target=self._recording_worker, args=(device_index,),
+            target=self._recording_worker, args=(device_index, live),
             daemon=True, name="RecordingWorker",
         ).start()
 
@@ -1227,8 +1362,7 @@ class TranscriberApp(_AppBase):  # type: ignore
     # Transcription worker thread
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _transcription_worker(self, options: dict) -> None:
-        files = list(self._selected_files)
+    def _transcription_worker(self, files: list[Path], options: dict) -> None:
         total = len(files)
         saved: list[Path] = []
         failed: list[str] = []
@@ -1377,7 +1511,14 @@ class TranscriberApp(_AppBase):  # type: ignore
         else:
             self._progress_bar.set(0.0)
         retry = bool(failed) or status == "Cancelled"
-        if saved or retry:
+        if self._batch_recording is not None:
+            # A recording: "Try again" is the best quality button, with the
+            # speakers switch, so the user can change it first.
+            self._show_results(
+                transcript=len(saved) == 1, folder=True,
+                full=retry and not fatal and self._batch_recording.exists(),
+            )
+        elif saved or retry:
             self._show_results(
                 transcript=len(saved) == 1, folder=bool(saved), retry=retry and not fatal
             )
@@ -1386,7 +1527,7 @@ class TranscriberApp(_AppBase):  # type: ignore
     # Recording worker thread
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _recording_worker(self, device_index: int | None) -> None:
+    def _recording_worker(self, device_index: int | None, live: bool) -> None:
         transcript_lines: list[str] = []
         outcome: dict[str, object] = {"transcript": None, "audio": None, "error": None}
 
@@ -1402,29 +1543,34 @@ class TranscriberApp(_AppBase):  # type: ignore
             )
 
         try:
-            recognizer = self._engine.get_recognizer(self._safe_update_status)
+            # Record only: no speech model to load, so the recording starts at once.
+            recognizer = self._engine.get_recognizer(self._safe_update_status) if live else None
 
             DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            self._mic_recorder.start(device_index, DEFAULT_OUTPUT_DIR)
+            self._mic_recorder.start(device_index, DEFAULT_OUTPUT_DIR, feed_vad=live)
             self._safe_update_status("Recording")
             self.after(0, self._start_timer)
             mic_queue = self._mic_recorder.get_queue()
             session_stem = self._mic_recorder.get_session_stem()
 
-            self._live_transcriber.start(
-                recognizer,
-                mic_queue,
-                self._stop_recording_event,
-                on_segment,
-                on_overflow,
-            )
+            if live:
+                self._live_transcriber.start(
+                    recognizer,
+                    mic_queue,
+                    self._stop_recording_event,
+                    on_segment,
+                    on_overflow,
+                )
 
             self._safe_append_log("[Record] Listening. Select Stop recording when done")
             self._stop_recording_event.wait()
 
-            # Speech that was still in progress at Stop is decoded now.
-            self._safe_update_status("Finishing")
-            self._live_transcriber.stop()
+            if live:
+                # Speech that was still in progress at Stop is decoded now.
+                self._safe_update_status("Finishing")
+                self._live_transcriber.stop()
+            else:
+                self._safe_update_status("Saving Recording")
             wav_path = self._mic_recorder.stop(convert_to_wav=True)
 
             # Transcript filename matches the recording's start timestamp
@@ -1465,9 +1611,9 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._safe_update_status("Failed")
 
         finally:
-            self.after(0, lambda: self._finish_recording(outcome))
+            self.after(0, lambda: self._finish_recording(outcome, live))
 
-    def _finish_recording(self, outcome: dict) -> None:
+    def _finish_recording(self, outcome: dict, live: bool) -> None:
         self._stop_timer()
         self._record_btn.configure(text="Start recording", command=self._on_record)
         self._set_ui_state("idle")
@@ -1489,12 +1635,19 @@ class TranscriberApp(_AppBase):  # type: ignore
                 self._reset_live_box()
             return
 
+        if not live and self._last_recording is not None:
+            # "Best quality transcript after recording": start it at once.
+            self._on_full_transcript()
+            return
+
         self._status_label.configure(text="Recording saved", text_color=C.GREEN_INK)
-        if transcript:
-            self._batch_label.configure(text="The audio and the transcript are in the recordings folder.")
+        if not live:
+            self._batch_label.configure(text="The audio is in the recordings folder.")
+        elif transcript:
+            self._batch_label.configure(text="The audio and the live transcript are in the recordings folder.")
         else:
             self._batch_label.configure(
-                text="No speech was heard, so there is no transcript. "
+                text="No speech was heard live, so there is no live transcript. "
                      "The audio is in the recordings folder."
             )
         self._show_message(str(error) if error else "", "error")
@@ -1505,9 +1658,12 @@ class TranscriberApp(_AppBase):  # type: ignore
     def _on_full_transcript(self) -> None:
         """Send the saved recording through the file pipeline.
 
-        The live transcript is quick and has no speakers. The file pipeline
-        uses the more accurate engine and, if selected, speaker names. Its
-        output gets its own name, so the live transcript is kept.
+        Used at once after a "best quality" recording, and by the "Make best
+        quality transcript" button. It uses the more accurate engine, always
+        adds timestamps, and names the speakers if "More than one person
+        speaking" is on. It stays in the Record tab and does not touch the
+        file list of the Files tab. A live transcript is kept: the new file
+        gets its own name.
         """
         audio = self._last_recording
         if self._ui_state != "idle" or audio is None:
@@ -1515,12 +1671,17 @@ class TranscriberApp(_AppBase):  # type: ignore
         if not audio.exists():
             self._show_message("The recording is no longer in the recordings folder.", "error")
             return
-        self._show_mode(_MODE_FILES)
-        self._selected_files = [audio]
-        self._file_states = {}
-        self._output_overrides[audio] = (self._output_folder or audio.parent) / f"{audio.stem} (full).txt"
-        self._render_files()
-        self._on_transcribe()
+        folder = self._output_folder or audio.parent
+        name = f"{audio.stem}.txt"
+        if (folder / name).exists():
+            name = f"{audio.stem} (best quality).txt"
+        self._output_overrides[audio] = folder / name
+        options = {
+            "timestamps": True,
+            "diarize": bool(self._rec_speakers_var.get()) and self._diarization_available,
+        }
+        self._batch_recording = audio
+        self._start_batch([audio], options)
 
     def _make_speaker_naming_callback(self) -> Callable:
         def callback(speaker_map: dict, clips_dict: dict) -> None:
@@ -1713,6 +1874,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._activity.grid(row=3, column=0, padx=24, pady=(0, 10), sticky="ew")
         self._message_label.grid_remove()
         self._result_row.grid_remove()
+        self._best_row.grid_remove()
         self._batch_label.configure(text="")
         self._percent_label.configure(text="")
 
@@ -1767,10 +1929,18 @@ class TranscriberApp(_AppBase):  # type: ignore
             (self._open_transcript_btn, transcript),
             (self._open_output_btn, folder),
             (self._retry_btn, retry),
-            (self._full_transcript_btn, full),
         ):
             btn.grid() if show else btn.grid_remove()
         self._result_row.grid()
+        if full:
+            self._best_note.configure(
+                text="Adds speakers and times. More accurate. Your live transcript is kept."
+                if self._live_has_text
+                else "Adds speakers and times. Most accurate."
+            )
+            self._best_row.grid()
+        else:
+            self._best_row.grid_remove()
 
     def _update_status(self, status: str) -> None:
         title, colour, bar_colour, mode = _STATUS.get(
@@ -1817,6 +1987,15 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._rec_started_at = time.monotonic()
         self._timer_label.configure(text_color=C.CORAL_INK)
         self._tick_timer()
+        self._tick_level()
+
+    def _tick_level(self) -> None:
+        if self._rec_started_at is None:
+            self._level_bar.set(0)
+            return
+        # Square root: quiet speech still moves the bar clearly.
+        self._level_bar.set(min(1.0, self._mic_recorder.get_level() ** 0.5))
+        self.after(100, self._tick_level)
 
     def _tick_timer(self) -> None:
         if self._rec_started_at is None:
@@ -1879,6 +2058,13 @@ class TranscriberApp(_AppBase):  # type: ignore
         for cb, available in ((self._timestamps_cb, True), (self._diarize_cb, self._diarization_available)):
             cb.configure(state="normal" if (available and not is_busy) else "disabled")
         self._mic_menu.configure(state="disabled" if is_busy else "normal")
+        for _tile, radio in self._rec_tiles.values():
+            radio.configure(state="disabled" if is_busy else "normal")
+        # The speakers switch is read when the recording stops, so it can
+        # still change while recording, but not while a transcript is made.
+        if self._diarization_available:
+            for cb in (self._rec_speakers_cb, self._best_speakers_cb):
+                cb.configure(state="disabled" if is_running else "normal")
 
         # Record button: disabled while transcription runs; becomes Stop while recording
         self._record_btn.configure(state="disabled" if is_running else "normal")

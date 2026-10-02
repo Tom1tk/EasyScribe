@@ -54,18 +54,23 @@ Tick **Name the speakers** to find who is talking. When the speakers are found, 
   <img src="docs/screenshots/name-speakers.png" alt="The window to name each speaker" width="420">
 </p>
 
-### Record live
+### Record
 
-Select **Record live**, choose your microphone and select **Start recording**. The words appear as you speak.
+Select **Record** and choose your microphone. Then choose what you want:
+
+- **Best quality transcript after recording** (the default). EasyScribe records only. When you stop, it makes the transcript at once with the more accurate engine, with times. Tick **More than one person speaking** to name the speakers too.
+- **Show words as I speak**. The words appear as you speak. This is quicker but less accurate.
+
+Both choices save the recording in the `recordings` folder. Select **Start recording**. The small bar next to the timer shows that the microphone hears you.
 
 <p align="center">
-  <img src="docs/screenshots/recording.png" alt="EasyScribe recording, with the live transcript" width="640">
+  <img src="docs/screenshots/recording.png" alt="EasyScribe recording" width="640">
 </p>
 
-When you stop, EasyScribe saves the audio and the live transcript. For the best result, select **Make full transcript**. This runs the full recording through the more accurate file engine and saves it as a separate `(full).txt` file.
+After a live recording, you can still get the best result: select **Make best quality transcript**. This runs the saved recording through the more accurate engine, with times and, if you tick the box, speakers. Your live transcript is kept, and the new one is saved as a separate `(best quality).txt` file.
 
 <p align="center">
-  <img src="docs/screenshots/recording-saved.png" alt="A saved recording, with the Make full transcript button" width="640">
+  <img src="docs/screenshots/recording-saved.png" alt="A saved recording, with the Make best quality transcript button" width="640">
 </p>
 
 If your computer stops during a recording, EasyScribe offers to recover the audio the next time it opens.
