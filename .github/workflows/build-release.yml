@@ -20,7 +20,7 @@ on:
       tag:
         description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0)'
         required: true
-        default: 'v3.0.0'
+        default: 'v3.1.0'
 
 permissions:
   contents: write
@@ -382,6 +382,12 @@ jobs:
             (The downloaded .exe also works, but it must unpack itself each time, which is slow.)
 
             ---
+            ### What's new in 3.1.0
+            - **New Record tab** — first choose what you want: **Best quality transcript after recording** (the default) or **Show words as I speak**. Both save the recording
+            - **Best quality after recording** — EasyScribe records only; when you stop, it makes the transcript at once with the more accurate engine, with times, and with speakers if you tick **More than one person speaking**
+            - **Same choice after you stop** — after a live recording, or after you cancel, select **Make best quality transcript**. You stay in the Record tab; your live transcript is kept
+            - **Microphone level** — a small bar shows that the microphone hears you
+
             ### What's new in 3.0.0
             - **New look** — a clear, light interface; each colour means one thing (teal files, coral recording, amber speakers, blue timestamps, green done)
             - **New EasyScribe logo** — in the window, the taskbar, the .exe and the shortcuts

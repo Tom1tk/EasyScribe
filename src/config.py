@@ -12,7 +12,7 @@ from pathlib import Path
 # ─── App metadata ─────────────────────────────────────────────────────────────
 
 APP_NAME = "EasyScribe"
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
 
 # ─── Path resolution ──────────────────────────────────────────────────────────
 
