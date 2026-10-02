@@ -1,0 +1,85 @@
+EasyScribe - Third-party notices
+================================
+
+EasyScribe is released under the MIT License (see LICENSE.txt).
+EasyScribe includes the third-party software and models below. Each one keeps
+its own license. The license texts are in the "licenses" folder.
+
+Source code of EasyScribe: https://github.com/Tom1tk/EasyScribe
+
+
+Programs and libraries
+----------------------
+
+FFmpeg 7.1.1 (ffmpeg.exe, ffprobe.exe in the "ffmpeg" folder)
+  License:  GNU General Public License version 3 (GPL v3)
+            licenses/FFmpeg-GPL-3.0.txt, licenses/FFmpeg-LICENSE.md
+  Binaries: "essentials" build by Gyan Doshi
+            https://github.com/GyanD/codexffmpeg/releases/tag/7.1.1
+  Source:   https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz
+            The build page lists the source of each library in the build:
+            https://www.gyan.dev/ffmpeg/builds/
+  Written offer: for three years after this release, we will give a copy of
+  the complete corresponding source code of these ffmpeg binaries to any
+  person who asks. Open an issue at https://github.com/Tom1tk/EasyScribe/issues.
+  EasyScribe runs ffmpeg as a separate program. EasyScribe's own code is not
+  a derivative work of FFmpeg.
+
+whisper.cpp v1.8.6 and ggml (the "whispercpp" folder)
+  License:  MIT - licenses/whisper.cpp-MIT.txt
+  Source:   https://github.com/ggml-org/whisper.cpp/tree/v1.8.6
+
+sherpa-onnx 1.13.8
+  License:  Apache License 2.0 - licenses/sherpa-onnx-Apache-2.0.txt
+  Source:   https://github.com/k2-fsa/sherpa-onnx
+
+ONNX Runtime (included in sherpa-onnx)
+  License:  MIT - licenses/onnxruntime-MIT.txt
+  Source:   https://github.com/microsoft/onnxruntime
+
+PortAudio (included in sounddevice)
+  License:  MIT - licenses/PortAudio-MIT.txt
+  Source:   https://github.com/PortAudio/portaudio
+
+Python 3.11, Tcl/Tk and the libraries in the Python Windows build
+  License:  PSF License Agreement and others - licenses/Python-LICENSE.txt
+
+Python packages: numpy, sounddevice, cffi, pycparser, customtkinter,
+darkdetect, packaging, tkinterdnd2 (with tkdnd)
+  Licenses: the license files of each package are in
+            licenses/python-packages/<package>/
+
+PyInstaller bootloader
+  License:  GPL v2 or later with the PyInstaller bootloader exception, which
+            permits distribution of programs built with it under any license.
+  Source:   https://github.com/pyinstaller/pyinstaller
+
+
+Models
+------
+
+Whisper large-v3-turbo (OpenAI)
+  Files:    whispercpp/ggml-large-v3-turbo-q5_0.bin (whisper.cpp conversion),
+            models/whisper/ (sherpa-onnx ONNX export)
+  License:  MIT - licenses/OpenAI-Whisper-model-MIT.txt
+  Source:   https://github.com/openai/whisper
+
+Silero VAD
+  File:     models/silero_vad.onnx
+  License:  MIT - licenses/Silero-VAD-MIT.txt
+  Source:   https://github.com/snakers4/silero-vad
+
+pyannote segmentation-3.0 (ONNX export by the sherpa-onnx project)
+  File:     models/diarization/segmentation.onnx
+  License:  MIT - licenses/pyannote-segmentation-MIT.txt
+  Source:   https://huggingface.co/pyannote/segmentation-3.0
+
+WeSpeaker ResNet34-LM, trained on VoxCeleb
+  File:     models/diarization/embedding.onnx
+  License:  Creative Commons Attribution 4.0 International (CC BY 4.0)
+            licenses/WeSpeaker-model-CC-BY-4.0.txt
+  Credit:   WeSpeaker project (https://github.com/wenet-e2e/wespeaker).
+            Trained on the VoxCeleb1 and VoxCeleb2 datasets
+            (https://mm.kaist.ac.kr/datasets/voxceleb/).
+            Converted to ONNX by the sherpa-onnx project. Not changed by
+            EasyScribe.
