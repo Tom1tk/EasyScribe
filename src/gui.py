@@ -863,9 +863,8 @@ class TranscriberApp(_AppBase):  # type: ignore
         rec_card.grid_columnconfigure((0, 1), weight=1, uniform="rec")
 
         # ── Step 1: microphone ────────────────────────────────────────────────
-        self._step_header(rec_card, "1", "Choose a microphone", C.CORAL_INK, C.CORAL_SOFT).grid(
-            row=0, column=0, columnspan=2, padx=18, pady=(16, 8), sticky="ew"
-        )
+        step1 = self._step_header(rec_card, "1", "Choose a microphone", C.CORAL_INK, C.CORAL_SOFT)
+        step1.grid(row=0, column=0, columnspan=2, padx=18, pady=(16, 8), sticky="ew")
         self._mic_options, self._mic_index_map = self._build_mic_options()
         self._mic_var = ctk.StringVar(value=self._mic_options[0])
         self._mic_menu = ctk.CTkOptionMenu(
@@ -890,9 +889,8 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._mic_menu.grid(row=1, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="w")
 
         # ── Step 2: what to do with the recording ─────────────────────────────
-        self._step_header(rec_card, "2", "What do you want?", C.CORAL_INK, C.CORAL_SOFT).grid(
-            row=2, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="ew"
-        )
+        step2 = self._step_header(rec_card, "2", "What do you want?", C.CORAL_INK, C.CORAL_SOFT)
+        step2.grid(row=2, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="ew")
         self._rec_mode_var = ctk.StringVar(value=_REC_BEST)
         self._rec_tiles: dict[str, tuple[ctk.CTkFrame, ctk.CTkRadioButton]] = {}
         self._rec_choice_tile(
@@ -905,6 +903,23 @@ class TranscriberApp(_AppBase):  # type: ignore
             title="Show words as I speak",
             body="Saves the recording.\nQuick text while you talk. Less accurate.",
         )
+
+        # Steps 1 and 2 fold into one line during and after a live recording,
+        # so the live transcript keeps its room on short screens.
+        self._rec_setup = [step1, self._mic_menu, step2] + [t for t, _r in self._rec_tiles.values()]
+        self._rec_summary = ctk.CTkFrame(rec_card, fg_color="transparent")
+        self._rec_summary.grid(row=0, column=0, columnspan=2, padx=18, pady=(16, 10), sticky="ew")
+        self._rec_summary.grid_columnconfigure(0, weight=1)
+        self._rec_summary_label = ctk.CTkLabel(
+            self._rec_summary, text="", font=self._f_small, text_color=C.MUTED, anchor="w"
+        )
+        self._rec_summary_label.grid(row=0, column=0, sticky="w")
+        self._rec_change_btn = _button(
+            self._rec_summary, "Change", kind="link", width=70, height=28,
+            command=self._on_change_options,
+        )
+        self._rec_change_btn.grid(row=0, column=1)
+        self._rec_summary.grid_remove()
 
         self._rec_speakers_var = ctk.BooleanVar(value=False)
         self._rec_speakers_cb = self._speakers_checkbox(rec_card)
@@ -930,7 +945,8 @@ class TranscriberApp(_AppBase):  # type: ignore
         # matters most when no words appear during the recording.
         self._level_bar = ctk.CTkProgressBar(
             rec_row, width=120, height=8, corner_radius=4,
-            fg_color=C.BORDER, progress_color=C.CORAL, mode="determinate",
+            # The track colour while idle: an empty bar would show a coral dot.
+            fg_color=C.BORDER, progress_color=C.BORDER, mode="determinate",
         )
         self._level_bar.set(0)
         self._level_bar.grid(row=0, column=2)
@@ -1889,6 +1905,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._action_row.grid()
 
     def _fold_options(self, folded: bool) -> None:
+        self._fold_rec_setup(folded and self._rec_mode_var.get() == _REC_LIVE)
         if not folded or self._mode != _MODE_FILES:
             self._options_summary.grid_remove()
             self._change_options_btn.grid_remove()
@@ -1909,6 +1926,21 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._change_options_btn.grid()
         else:
             self._change_options_btn.grid_remove()
+
+    def _fold_rec_setup(self, folded: bool) -> None:
+        for widget in self._rec_setup:
+            widget.grid_remove() if folded else widget.grid()
+        if not folded:
+            self._rec_summary.grid_remove()
+            return
+        self._rec_summary_label.configure(
+            text=f"{_shorten(self._mic_var.get(), 50)}. Show words as I speak."
+        )
+        self._rec_summary.grid()
+        if self._ui_state == "idle":
+            self._rec_change_btn.grid()
+        else:
+            self._rec_change_btn.grid_remove()
 
     def _on_change_options(self) -> None:
         if self._ui_state == "idle":
@@ -1992,7 +2024,9 @@ class TranscriberApp(_AppBase):  # type: ignore
     def _tick_level(self) -> None:
         if self._rec_started_at is None:
             self._level_bar.set(0)
+            self._level_bar.configure(progress_color=C.BORDER)
             return
+        self._level_bar.configure(progress_color=C.CORAL)
         # Square root: quiet speech still moves the bar clearly.
         self._level_bar.set(min(1.0, self._mic_recorder.get_level() ** 0.5))
         self.after(100, self._tick_level)
