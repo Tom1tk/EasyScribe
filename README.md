@@ -23,6 +23,7 @@
 - **Know who said what.** EasyScribe can find the different speakers, and you can give them names.
 - **Fast on most PCs.** It uses your graphics card (NVIDIA, AMD or Intel) when it can, and your processor when it cannot.
 - **One file, no setup wizard.** Download one `.exe`, double-click it, and start. No admin rights needed.
+- **Windows and Mac.** A Mac version for Apple silicon (M1 or later) uses the Mac's graphics (Metal).
 
 ---
 
@@ -87,6 +88,9 @@ Select **Privacy** at the bottom of the window to see what EasyScribe stores and
 
 ## Get started
 
+On Windows:
+
+
 1. Download `EasyScribe-<version>.exe` from the [Releases](../../releases) page.
 2. Put it in a folder of your choice. A local folder or a USB stick are both good.
 3. Double-click it. A small **Getting ready** window shows while the `.exe` unpacks itself. The first time, Windows also checks the large downloaded file before it starts, so the window can take up to a minute to show. To make this fast, unblock the file first (see the note below).
@@ -96,6 +100,18 @@ Select **Privacy** at the bottom of the window to see what EasyScribe stores and
 > **Windows SmartScreen:** EasyScribe is not code-signed yet, so Windows may show a warning the first time. Select **More info → Run anyway**.
 >
 > **Tip:** Before the first start, right-click the `.exe`, select **Properties**, select **Unblock**, then **OK**. Or in PowerShell: `Unblock-File .\EasyScribe-<version>.exe`. Then Windows does not show the warning, and **Getting ready** shows at once. Only do this for a file that you downloaded from this project's Releases page.
+
+### On a Mac
+
+EasyScribe for Mac needs a Mac with Apple silicon (M1 or later) and macOS 14 or later.
+
+1. Download `EasyScribe-<version>-macOS.dmg` from the [Releases](../../releases) page and open it.
+2. Drag **EasyScribe** to **Applications**.
+3. Open EasyScribe from Applications. macOS says that it cannot check the app, because EasyScribe is not notarized yet. Select **Done**.
+4. Open **System Settings → Privacy & Security**. Scroll down and select **Open Anyway** next to "EasyScribe was blocked". Enter your password. You do this only one time.
+5. The first time you record, allow access to the microphone.
+
+Recordings go to `Documents/EasyScribe`. To update, drag the new version to Applications and replace the old one. Your recordings stay.
 
 ### Update to a new version
 
@@ -139,6 +155,8 @@ After a pause, the next block starts here.
 | "Model files missing" when it starts | Run the `.exe` again. The first install may have been stopped. |
 | **Name the speakers** is grey | The speaker models are missing. Run the `.exe` again. |
 | No microphones in the list | Check your microphone in the Windows sound settings. |
+| Mac: "EasyScribe cannot be opened" | Open **System Settings → Privacy & Security** and select **Open Anyway**. |
+| Mac: the recording is silent | Open **System Settings → Privacy & Security → Microphone** and turn on EasyScribe. |
 | Antivirus flags the `.exe` | Some antivirus tools flag PyInstaller apps by mistake. Add an exclusion. |
 | Transcription is slow | Without a supported graphics card, EasyScribe uses the processor. Long files take longer. **Details** shows which device is used. |
 
@@ -153,7 +171,7 @@ The sections below are for developers and IT staff.
 
 | Task | Engine | Device |
 |---|---|---|
-| File transcription | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli`, large-v3-turbo q5_0, beam size 5 | Vulkan GPU (any vendor), else CPU |
+| File transcription | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli`, large-v3-turbo q5_0, beam size 5 | Windows: Vulkan GPU (any vendor); macOS: Metal; else CPU |
 | File transcription (fallback) | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) Whisper large-v3-turbo int8, VAD + greedy | CPU |
 | Live transcription | sherpa-onnx, Silero VAD chunks | CPU |
 | Speaker diarization | sherpa-onnx: pyannote segmentation-3.0 + WeSpeaker ResNet34-LM | CPU |
@@ -216,6 +234,21 @@ EasyScribe\
 
 **Start-up splash.** The PyInstaller one-file bootloader unpacks `app.bundle` (about 1.5 GB) to `%TEMP%` before any Python code runs. This can take a minute. A PyInstaller `Splash` (`assets/splash.png`) shows at once during that time; the launcher closes it when its own window opens.
 
+**macOS.** There is no launcher. The `.dmg` holds `EasyScribe.app` (`EasyScribe_macos.spec`), Apple silicon only, macOS 14 or later:
+
+```
+EasyScribe.app/Contents/
+  MacOS/EasyScribe           <- the app (config.BASE_DIR)
+  MacOS/ffmpeg/              <- ffmpeg, ffprobe (LGPL build, made in CI)
+  MacOS/whispercpp/          <- whisper-cli (Metal, static)
+  Frameworks/                <- PyInstaller runtime
+  Resources/models/          <- the same models as on Windows (config.RESOURCES_DIR)
+  Resources/whispercpp/      <- ggml-large-v3-turbo-q5_0.bin
+  Resources/licenses/, LICENSE.txt, THIRD-PARTY-NOTICES.txt
+```
+
+User data is kept out of the signed app: recordings in `~/Documents/EasyScribe`, logs in `~/Library/Logs/EasyScribe`, temporary files in `~/Library/Caches/EasyScribe/temp`. The app has an ad hoc signature only (no Apple Developer ID), so it is not notarized.
+
 **Why not a "no-extract" single exe?** whisper-cli, ffmpeg and the models (about 1.5 GB) must be real files on disk. A one-file app that unpacks to `%TEMP%` at each start would copy 1.5 GB every time. Extract-once keeps start-up at about one second and still needs no installer, registry or admin rights.
 
 ## Project layout
@@ -243,7 +276,8 @@ launcher/
 
 assets/
   EasyScribe.ico/.png    App icon (both .exe files, all windows, shortcuts)
-  make_icon.py           Regenerates the icon from the logo design (needs Pillow)
+  EasyScribe.icns        macOS app icon
+  make_icon.py           Regenerates the icons from the logo design (needs Pillow)
   splash.png             "Getting ready" window shown while the .exe unpacks
   make_splash.py         Regenerates splash.png (needs Pillow and customtkinter)
   version_resource.py    Windows file-version info for both specs, from APP_VERSION
@@ -262,11 +296,14 @@ Releases are built by GitHub Actions: **Actions → Build and Publish Release**,
 5. Assembles the app folder, validates it again and checks that the bundled `whisper-cli` starts.
 6. Packs `app.bundle` into the launcher and publishes the release.
 
+A second job on `macos-14` builds the Mac version at the same time: it builds ffmpeg (LGPL) and `whisper-cli` (Metal) from source, runs `EasyScribe_macos.spec`, assembles and validates `EasyScribe.app`, signs it ad hoc and makes the `.dmg`. After both jobs pass, the `.dmg` is added to the same draft release.
+
 The version is set in one place: `APP_VERSION` in `src/config.py`. Keep `VERSION` in `launcher/launcher.py` the same; `tests/test_version.py` checks this.
 
 | Requirement (build machine) | Notes |
 |---|---|
 | Windows 10/11 64-bit | Build and target platform |
+| macOS 14+ on Apple silicon | For the Mac version (CI: `macos-14`) |
 | Python 3.11 | Used by CI |
 | Internet access | Only during the build, to get models and tools |
 
@@ -280,7 +317,7 @@ This project is released under the MIT License.
 
 The app includes third-party programs and models. Each one keeps its own license:
 
-- FFmpeg (GPL v3). The source and a written offer are in `licenses/THIRD-PARTY-NOTICES.txt`.
+- FFmpeg: GPL v3 on Windows, LGPL 2.1 on macOS. The source and a written offer are in `licenses/THIRD-PARTY-NOTICES.txt`.
 - whisper.cpp, ONNX Runtime, PortAudio, the Whisper weights, Silero VAD and pyannote segmentation (MIT).
 - sherpa-onnx (Apache 2.0).
 - The WeSpeaker ResNet34-LM speaker model (CC BY 4.0, trained on VoxCeleb).

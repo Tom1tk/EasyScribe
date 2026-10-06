@@ -2,7 +2,7 @@
 """
 Checks that every version number matches APP_VERSION in src/config.py:
 the launcher, the workflow's default release tag, and the version resource
-helper used by both PyInstaller specs. Also checks the icon files exist.
+helper used by the Windows PyInstaller specs, and the macOS spec. Also checks the icon files exist.
 
 No network, model files or GPU needed. Run from project root:
     python tests/test_version.py
@@ -43,9 +43,15 @@ for spec in ("EasyScribe_whisper.spec", "launcher/launcher.spec"):
     text = (ROOT / spec).read_text(encoding="utf-8")
     check(f"{spec} sets the icon and the version resource", "EasyScribe.ico" in text and "version=_version_info(" in text)
 
-for name in ("EasyScribe.ico", "EasyScribe.png"):
+mac_spec = (ROOT / "EasyScribe_macos.spec").read_text(encoding="utf-8")
+check("EasyScribe_macos.spec sets the icns icon and APP_VERSION",
+      'icon="assets/EasyScribe.icns"' in mac_spec and "version=APP_VERSION" in mac_spec)
+check("EasyScribe_macos.spec has the microphone usage text", "NSMicrophoneUsageDescription" in mac_spec)
+
+for name in ("EasyScribe.ico", "EasyScribe.png", "EasyScribe.icns"):
     check(f"assets/{name} exists", (ROOT / "assets" / name).is_file())
 check("ICO header is valid", (ROOT / "assets" / "EasyScribe.ico").read_bytes()[:4] == b"\x00\x00\x01\x00")
+check("ICNS header is valid", (ROOT / "assets" / "EasyScribe.icns").read_bytes()[:4] == b"icns")
 
 if failures:
     print(f"\nFAILED: {len(failures)} check(s)", file=sys.stderr)

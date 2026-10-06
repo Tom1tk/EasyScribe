@@ -1,7 +1,11 @@
 name: Build and Publish Release
 
 # Trigger manually from the GitHub Actions tab.
-# Builds a single EasyScribe .exe: launcher.exe with the app.bundle zip embedded.
+# Job "build" (Windows): a single EasyScribe .exe, launcher.exe with the
+# app.bundle zip embedded. It creates the draft release.
+# Job "build-macos" (Apple Silicon, macOS 14+): EasyScribe.app in a .dmg.
+# Job "publish-macos" adds the .dmg to the same draft after both jobs pass,
+# so the two jobs never race to create the release.
 #
 # Cache strategy:
 #   ffmpeg              ~150 MB   key: ffmpeg-win64-gyan-7.1.1-essentials-v1
@@ -13,6 +17,8 @@ name: Build and Publish Release
 #                                 (whisper-cli.exe + DLLs; Vulkan SDK install + shader
 #                                 build only run on cache miss — see step 7b)
 #   whisper.cpp model   ~547 MB   key: ggml-large-v3-turbo-q5_0-v1
+#   macOS: venv-macos-arm64-py3.11-v1, ffmpeg-macos-arm64-lgpl-7.1.1-v1,
+#          whispercpp-metal-v1.8.6-macos14-v1 (models: same keys, own OS cache)
 
 on:
   workflow_dispatch:
@@ -20,7 +26,7 @@ on:
       tag:
         description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0)'
         required: true
-        default: 'v3.1.0'
+        default: 'v3.2.0'
 
 permissions:
   contents: write
@@ -355,6 +361,7 @@ jobs:
             ## EasyScribe ${{ github.event.inputs.tag }} — Portable Offline Speech-to-Text
 
             Transcribe audio and video files, or record live from a microphone. All processing stays on your computer.
+            For Windows (the .exe) and for Apple Silicon Macs (the .dmg, see **macOS** below).
 
             **Portable — no admin rights, no registry.**
             Put the .exe in any folder (local drive or USB stick) and double-click it.
@@ -381,7 +388,20 @@ jobs:
             Open EasyScribe from the Desktop or Start Menu shortcut. It starts in about one second.
             (The downloaded .exe also works, but it must unpack itself each time, which is slow.)
 
+            ### macOS (Apple Silicon, macOS 14 or later)
+            1. Download `EasyScribe-${{ github.event.inputs.tag }}-macOS.dmg` below and open it.
+            2. Drag **EasyScribe** to **Applications**.
+            3. Open EasyScribe from Applications. macOS says that it cannot check the app, because EasyScribe is not notarized yet. Select **Done**.
+            4. Open **System Settings → Privacy & Security**. Scroll down and select **Open Anyway** next to "EasyScribe was blocked". Enter your password. You do this only one time.
+            5. The first time you record, allow access to the microphone.
+
+            Recordings go to `Documents/EasyScribe`. Logs are in `~/Library/Logs/EasyScribe`. File transcription uses the GPU (Metal).
+            Intel Macs are not supported.
+
             ---
+            ### What's new in 3.2.0
+            - **macOS version** — EasyScribe for Apple Silicon Macs (M1 or later, macOS 14 or later), with GPU file transcription (Metal). All processing stays on your Mac
+
             ### What's new in 3.1.0
             - **New Record tab** — first choose what you want: **Best quality transcript after recording** (the default) or **Show words as I speak**. Both save the recording
             - **Best quality after recording** — EasyScribe records only; when you stop, it makes the transcript at once with the more accurate engine, with times, and with speakers if you tick **More than one person speaking**
@@ -403,10 +423,264 @@ jobs:
             - **Licenses included** — `THIRD-PARTY-NOTICES.txt` and the `licenses` folder list the included software and models
 
             ### Licenses
-            EasyScribe is MIT-licensed. It includes FFmpeg (GPL v3), whisper.cpp, sherpa-onnx and the models listed in `THIRD-PARTY-NOTICES.txt` in the install folder.
+            EasyScribe is MIT-licensed. It includes FFmpeg (GPL v3 on Windows, LGPL 2.1 on macOS), whisper.cpp, sherpa-onnx and the models listed in `THIRD-PARTY-NOTICES.txt` in the install folder (on macOS: EasyScribe.app → Show Package Contents → Contents/Resources).
           files: EasyScribe-${{ github.event.inputs.tag }}.exe
           draft: true
           # Tags with a suffix (v3.0.0-beta2) are marked as pre-releases
           prerelease: ${{ contains(github.event.inputs.tag, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # macOS (Apple Silicon). See CLAUDE.md Rule 21 and EasyScribe_macos.spec.
+  # ═══════════════════════════════════════════════════════════════════════════
+  build-macos:
+    name: Build EasyScribe (macOS)
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache Python venv
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: venv
+          key: venv-macos-arm64-py3.11-v1
+
+      - name: Install Python dependencies
+        if: steps.venv-cache.outputs.cache-hit != 'true'
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip --quiet
+          pip install -r requirements.txt --quiet
+          pip list --format=columns
+
+      - name: Run unit tests
+        run: |
+          source venv/bin/activate
+          python -c "import tkinter; print('Tk', tkinter.TkVersion)"
+          python tests/test_sherpa_api.py
+          python tests/run_all.py
+
+      # FFmpeg is built from the unchanged source, as LGPL (no --enable-gpl,
+      # no --enable-nonfree). --disable-autodetect keeps out every system
+      # library that is not named here; the native decoders and demuxers
+      # (mp3, aac, opus, vorbis, flac, pcm; mp4, mkv, mov, webm, avi) are
+      # always included. The configure line is the build record for the
+      # LGPL notice in licenses/THIRD-PARTY-NOTICES.txt.
+      - name: Cache ffmpeg (LGPL build)
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: tools/ffmpeg
+          key: ffmpeg-macos-arm64-lgpl-7.1.1-v1
+
+      - name: Build ffmpeg 7.1.1 (LGPL)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz
+          tar xf ffmpeg.tar.xz
+          cd ffmpeg-7.1.1
+          ./configure --disable-autodetect --enable-zlib --disable-network \
+            --disable-doc --disable-ffplay --enable-static --disable-shared \
+            --extra-cflags="-mmacosx-version-min=14.0" \
+            --extra-ldflags="-mmacosx-version-min=14.0"
+          make -j"$(sysctl -n hw.ncpu)"
+          mkdir -p ../tools/ffmpeg
+          cp ffmpeg ffprobe ../tools/ffmpeg/
+          cd ..
+          rm -rf ffmpeg-7.1.1 ffmpeg.tar.xz
+
+      - name: Verify ffmpeg (LGPL, local libraries only)
+        run: |
+          tools/ffmpeg/ffmpeg -hide_banner -version | head -3
+          if tools/ffmpeg/ffmpeg -hide_banner -version | grep -q -- "--enable-gpl"; then
+            echo "ffmpeg must be the LGPL build"; exit 1
+          fi
+          otool -L tools/ffmpeg/ffmpeg
+          if otool -L tools/ffmpeg/ffmpeg | tail -n +2 | grep -v -e "^[[:space:]]*/usr/lib/" -e "^[[:space:]]*/System/Library/"; then
+            echo "ffmpeg links a library that is not part of macOS"; exit 1
+          fi
+
+      # whisper.cpp with Metal (the default on Apple Silicon), the Metal shader
+      # library embedded, static, so whisper-cli is one file. Pinned tag.
+      - name: Cache whisper.cpp Metal build
+        id: whispercpp-cache
+        uses: actions/cache@v4
+        with:
+          path: tools/whispercpp
+          key: whispercpp-metal-v1.8.6-macos14-v1
+
+      - name: Build whisper-cli (Metal)
+        if: steps.whispercpp-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --branch v1.8.6 --depth 1 https://github.com/ggml-org/whisper.cpp.git
+          cmake -S whisper.cpp -B whisper.cpp/build -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DGGML_NATIVE=OFF -DWHISPER_SDL2=OFF \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+          cmake --build whisper.cpp/build --config Release --target whisper-cli --parallel
+          mkdir -p tools/whispercpp
+          cp whisper.cpp/build/bin/whisper-cli tools/whispercpp/
+          rm -rf whisper.cpp
+
+      - name: Verify whisper-cli runs
+        run: |
+          tools/whispercpp/whisper-cli --help > /dev/null
+          otool -L tools/whispercpp/whisper-cli
+
+      - name: Cache Whisper ONNX model
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: models/whisper
+          key: sherpa-onnx-whisper-turbo-v1
+
+      - name: Download Whisper ONNX model
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models/whisper
+          curl -fsSL -o whisper.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-turbo.tar.bz2
+          tar xjf whisper.tar.bz2
+          cp sherpa-onnx-whisper-turbo/turbo-encoder.int8.onnx \
+             sherpa-onnx-whisper-turbo/turbo-decoder.int8.onnx \
+             sherpa-onnx-whisper-turbo/turbo-tokens.txt models/whisper/
+          rm -rf sherpa-onnx-whisper-turbo whisper.tar.bz2
+
+      - name: Cache Silero VAD model
+        id: vad-cache
+        uses: actions/cache@v4
+        with:
+          path: models/silero_vad.onnx
+          key: sherpa-onnx-silero-vad-v1
+
+      - name: Download Silero VAD model
+        if: steps.vad-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          curl -fsSL -o models/silero_vad.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+
+      - name: Cache diarization models
+        id: diarization-cache
+        uses: actions/cache@v4
+        with:
+          path: models/diarization
+          key: sherpa-onnx-diarization-v1
+
+      - name: Download diarization models
+        if: steps.diarization-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models/diarization
+          curl -fsSL -o segmentation.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+          tar xjf segmentation.tar.bz2
+          mv sherpa-onnx-pyannote-segmentation-3-0/model.onnx models/diarization/segmentation.onnx
+          rm -rf sherpa-onnx-pyannote-segmentation-3-0 segmentation.tar.bz2
+          # NOTE: "recongition" typo is upstream's actual release tag; do not "fix"
+          curl -fsSL -o models/diarization/embedding.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx
+
+      - name: Cache whisper.cpp GGUF model
+        id: ggml-cache
+        uses: actions/cache@v4
+        with:
+          path: models/ggml-large-v3-turbo-q5_0.bin
+          key: ggml-large-v3-turbo-q5_0-v1
+
+      - name: Download whisper.cpp GGUF model
+        if: steps.ggml-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p models
+          curl -fsSL -o models/ggml-large-v3-turbo-q5_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
+
+      - name: Build EasyScribe.app
+        run: |
+          source venv/bin/activate
+          pyinstaller EasyScribe_macos.spec --noconfirm
+          python tests/validate_build.py dist/EasyScribe.app
+
+      # Programs go in Contents/MacOS (config.BASE_DIR), data in
+      # Contents/Resources (config.RESOURCES_DIR). Only Mach-O files may be in
+      # Contents/MacOS, or the code signature cannot be made.
+      - name: Assemble EasyScribe.app
+        run: |
+          source venv/bin/activate
+          app=dist/EasyScribe.app
+          mkdir -p "$app/Contents/MacOS/ffmpeg" "$app/Contents/MacOS/whispercpp" \
+                   "$app/Contents/Resources/models" "$app/Contents/Resources/whispercpp"
+          cp tools/ffmpeg/ffmpeg tools/ffmpeg/ffprobe "$app/Contents/MacOS/ffmpeg/"
+          cp tools/whispercpp/whisper-cli "$app/Contents/MacOS/whispercpp/"
+          cp models/silero_vad.onnx "$app/Contents/Resources/models/"
+          cp -R models/whisper models/diarization "$app/Contents/Resources/models/"
+          cp models/ggml-large-v3-turbo-q5_0.bin "$app/Contents/Resources/whispercpp/"
+          python assets/collect_licenses.py "$app/Contents/Resources"
+          python tests/validate_build.py "$app" --assembled
+          du -sh "$app"
+
+      # Ad hoc signature (no Apple Developer ID yet, so not notarized). Apple
+      # Silicon runs only signed code, and the copy above changed the bundle.
+      # Sign the inner programs first, then the app.
+      - name: Sign EasyScribe.app (ad hoc)
+        run: |
+          app=dist/EasyScribe.app
+          for f in "$app"/Contents/MacOS/ffmpeg/* "$app"/Contents/MacOS/whispercpp/*; do
+            codesign --force --sign - --timestamp=none "$f"
+          done
+          codesign --force --sign - --timestamp=none "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # The copied programs must still start from inside the app
+          "$app/Contents/MacOS/whispercpp/whisper-cli" --help > /dev/null
+          "$app/Contents/MacOS/ffmpeg/ffmpeg" -hide_banner -version > /dev/null
+
+      - name: Make the .dmg
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          mkdir dmg
+          cp -R dist/EasyScribe.app dmg/
+          ln -s /Applications dmg/Applications
+          # hdiutil sometimes fails with "Resource busy" on CI runners
+          for i in 1 2 3; do
+            hdiutil create -volname "EasyScribe" -srcfolder dmg -fs HFS+ \
+              -format UDZO -imagekey zlib-level=9 "EasyScribe-${tag}-macOS.dmg" && break
+            rm -f "EasyScribe-${tag}-macOS.dmg"
+            [ "$i" = 3 ] && exit 1
+            sleep 10
+          done
+          hdiutil verify "EasyScribe-${tag}-macOS.dmg"
+          ls -lh "EasyScribe-${tag}-macOS.dmg"
+
+      - name: Upload the .dmg as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easyscribe-macos-dmg
+          path: EasyScribe-${{ github.event.inputs.tag }}-macOS.dmg
+          retention-days: 7
+          compression-level: 0
+
+  # Adds the .dmg to the draft that the Windows job made. It waits for both
+  # jobs, so only one job creates the release.
+  publish-macos:
+    name: Add the .dmg to the draft release
+    needs: [build, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the .dmg
+        uses: actions/download-artifact@v4
+        with:
+          name: easyscribe-macos-dmg
+
+      - name: Upload the .dmg to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.inputs.tag }}" \
+            "EasyScribe-${{ github.event.inputs.tag }}-macOS.dmg" \
+            --clobber --repo "${{ github.repository }}"

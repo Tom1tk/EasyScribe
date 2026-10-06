@@ -83,9 +83,9 @@ def _parse_time(line: str) -> float:
 def validate_ffmpeg() -> None:
     missing = []
     if not FFMPEG_BIN.exists():
-        missing.append(f"ffmpeg.exe not found at: {FFMPEG_BIN}")
+        missing.append(f"{FFMPEG_BIN.name} not found at: {FFMPEG_BIN}")
     if not FFPROBE_BIN.exists():
-        missing.append(f"ffprobe.exe not found at: {FFPROBE_BIN}")
+        missing.append(f"{FFPROBE_BIN.name} not found at: {FFPROBE_BIN}")
     if missing:
         raise FFmpegNotFoundError("\n".join(missing))
 

@@ -4,6 +4,8 @@ EasyScribe - Third-party notices
 EasyScribe is released under the MIT License (see LICENSE.txt).
 EasyScribe includes the third-party software and models below. Each one keeps
 its own license. The license texts are in the "licenses" folder.
+In the macOS app, this file and the "licenses" folder are in
+EasyScribe.app/Contents/Resources (in Finder: Show Package Contents).
 
 Source code of EasyScribe: https://github.com/Tom1tk/EasyScribe
 
@@ -11,7 +13,7 @@ Source code of EasyScribe: https://github.com/Tom1tk/EasyScribe
 Programs and libraries
 ----------------------
 
-FFmpeg 7.1.1 (ffmpeg.exe, ffprobe.exe in the "ffmpeg" folder)
+FFmpeg 7.1.1, Windows (ffmpeg.exe, ffprobe.exe in the "ffmpeg" folder)
   License:  GNU General Public License version 3 (GPL v3)
             licenses/FFmpeg-GPL-3.0.txt, licenses/FFmpeg-LICENSE.md
   Binaries: "essentials" build by Gyan Doshi
@@ -25,7 +27,22 @@ FFmpeg 7.1.1 (ffmpeg.exe, ffprobe.exe in the "ffmpeg" folder)
   EasyScribe runs ffmpeg as a separate program. EasyScribe's own code is not
   a derivative work of FFmpeg.
 
-whisper.cpp v1.8.6 and ggml (the "whispercpp" folder)
+FFmpeg 7.1.1, macOS (ffmpeg, ffprobe in EasyScribe.app/Contents/MacOS/ffmpeg)
+  License:  GNU Lesser General Public License version 2.1 or later (LGPL)
+            licenses/FFmpeg-LGPL-2.1.txt, licenses/FFmpeg-LICENSE.md
+  Binaries: built from the unchanged source by the EasyScribe GitHub Actions
+            workflow (.github/workflows/build-release.yml, job "build-macos"),
+            without --enable-gpl and without --enable-nonfree. The workflow
+            file has the complete configure command.
+  Source:   https://ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz
+  Written offer: for three years after this release, we will give a copy of
+  the source code of these ffmpeg binaries to any person who asks. Open an
+  issue at https://github.com/Tom1tk/EasyScribe/issues.
+  EasyScribe runs ffmpeg as a separate program. EasyScribe's own code is not
+  a derivative work of FFmpeg.
+
+whisper.cpp v1.8.6 and ggml (the "whispercpp" folder; Vulkan on Windows,
+Metal on macOS)
   License:  MIT - licenses/whisper.cpp-MIT.txt
   Source:   https://github.com/ggml-org/whisper.cpp/tree/v1.8.6
 
@@ -41,7 +58,7 @@ PortAudio (included in sounddevice)
   License:  MIT - licenses/PortAudio-MIT.txt
   Source:   https://github.com/PortAudio/portaudio
 
-Python 3.11, Tcl/Tk and the libraries in the Python Windows build
+Python 3.11, Tcl/Tk and the libraries in the Python build (Windows or macOS)
   License:  PSF License Agreement and others - licenses/Python-LICENSE.txt
 
 Python packages: numpy, sounddevice, cffi, pycparser, customtkinter,

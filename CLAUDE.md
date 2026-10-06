@@ -304,6 +304,31 @@ offer for the source: keep the matching source available.
 The ASIO PortAudio DLLs (`_sounddevice_data/portaudio-binaries/*-asio.dll`, Steinberg
 SDK) are removed in CI: sounddevice loads them only when `SD_ENABLE_ASIO` is set.
 
+### Rule 21: macOS app layout — programs in MacOS, data in Resources, user data outside
+
+The macOS build (`EasyScribe_macos.spec`, CI job `build-macos`, Apple silicon,
+macOS 14+) is a plain `EasyScribe.app` in a `.dmg`. There is no launcher.
+
+- **Layout.** `config.IS_MAC_APP` / `config.RESOURCES_DIR`: ffmpeg and whisper-cli go
+  in `Contents/MacOS/` (`BASE_DIR`), models and the ggml model go in
+  `Contents/Resources/`. Put only Mach-O files in `Contents/MacOS/`, or `codesign`
+  cannot seal the app.
+- **User data outside the bundle** (`config.user_data_dirs`): `~/Documents/EasyScribe`,
+  `~/Library/Logs/EasyScribe`, `~/Library/Caches/EasyScribe/temp`. A write into the
+  app breaks its signature, and `/Applications` may not be writable.
+- **Signing.** No Developer ID, so: ad hoc signature (`codesign -s -`), inner programs
+  first, then the app, after the assemble step; then `codesign --verify --deep --strict`.
+  Apple silicon does not run unsigned code. Users must use Privacy & Security →
+  Open Anyway once. UPX stays off (it breaks Mach-O signatures).
+- **Microphone.** Keep `NSMicrophoneUsageDescription` in the spec's `info_plist`.
+  Without it macOS gives the app silence, with no error. `validate_build.py` checks it.
+- **ffmpeg is LGPL on macOS.** CI builds it from the release tarball with
+  `--disable-autodetect` and without `--enable-gpl`/`--enable-nonfree`; the verify step
+  fails on a GPL build or on a link to a library outside macOS. Keep
+  `licenses/THIRD-PARTY-NOTICES.txt` in step with the configure line.
+- **Deployment target 14.0** in the spec, the ffmpeg and whisper.cpp builds: the
+  numpy wheel for macos-14 is `macosx_14_0_arm64`.
+
 ---
 
 ## Version History
@@ -332,3 +357,4 @@ SDK) are removed in CI: sounddevice loads them only when `SD_ENABLE_ASIO` is set
 | v3.0.0-beta3 | PyInstaller `Splash` ("Getting ready") during the one-file extraction; installer waits for the user before an update and uses the app's light CustomTkinter theme; `win_paint.py` stops the black-block flash on refocus (Windows); Show details / Privacy drawn as small outlined buttons |
 | v3.0.0 | First full release. Third-party licenses and notices in the bundle (`licenses/`, `assets/collect_licenses.py`, checked by `validate_build.py`); ASIO PortAudio DLLs removed; exe renamed `EasyScribe-v3.0.0.exe` (no `-whisper`); release notes and README explain Mark of the Web (Unblock tip). Code signing deferred to 3.1 |
 | v3.1.0 | Record tab (was "Record live") asks first: "Best quality transcript after recording" (default: record only, `MicRecorder.start(feed_vad=False)`, then the whisper.cpp file pipeline starts at stop with timestamps and the speakers switch) or "Show words as I speak" (live sherpa-onnx). "Make best quality transcript" after a live recording or a cancel stays in the Record tab and keeps the live transcript (`(best quality).txt`); mic level meter (`MicRecorder.get_level`); in live mode steps 1-2 fold to one line while the activity panel shows, so the live transcript keeps its room |
+| v3.2.0 | macOS version for Apple silicon (Rule 21): `EasyScribe.app` in a `.dmg`, whisper.cpp with Metal, LGPL ffmpeg built in CI, ad hoc signature (not notarized); user data in `~/Documents/EasyScribe` and `~/Library`; `afplay` for speaker clips; `EasyScribe.icns`; CI jobs `build-macos` and `publish-macos` add the `.dmg` to the Windows draft release |

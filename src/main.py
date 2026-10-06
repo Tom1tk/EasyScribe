@@ -68,12 +68,12 @@ def _check_dependencies() -> list[str]:
 
     if not FFMPEG_BIN.exists():
         errors.append(
-            f"ffmpeg.exe not found.\nExpected at: {FFMPEG_BIN}\n\n"
+            f"{FFMPEG_BIN.name} not found.\nExpected at: {FFMPEG_BIN}\n\n"
             "The bundled ffmpeg folder may be missing."
         )
 
     if not FFPROBE_BIN.exists():
-        errors.append(f"ffprobe.exe not found.\nExpected at: {FFPROBE_BIN}")
+        errors.append(f"{FFPROBE_BIN.name} not found.\nExpected at: {FFPROBE_BIN}")
 
     model_errors = validate_model_directory()
     if model_errors:

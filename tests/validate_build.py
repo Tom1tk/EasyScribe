@@ -6,6 +6,7 @@ creating app.bundle so broken bundles are caught before the 30-minute compress s
 Usage: python tests/validate_build.py <dist_dir> [--assembled]
        python tests/validate_build.py dist/EasyScribe
        python tests/validate_build.py dist/EasyScribe --assembled
+       python tests/validate_build.py dist/EasyScribe.app --assembled   (macOS)
 
 --assembled also checks the files that the CI assembly step copies next to the
 exe (models, ffmpeg, whisper.cpp, license files). Run it after that step,
@@ -21,19 +22,48 @@ def _find_pyds(directory: Path, pattern: str = "**/*.pyd") -> list[Path]:
     return list(directory.glob(pattern))
 
 
-# Files that config.py loads from BASE_DIR (the folder of the exe).
-_ASSEMBLED_FILES = [
-    "ffmpeg/ffmpeg.exe",
-    "ffmpeg/ffprobe.exe",
-    "models/silero_vad.onnx",
-    "models/whisper/turbo-encoder.int8.onnx",
-    "models/whisper/turbo-decoder.int8.onnx",
-    "models/whisper/turbo-tokens.txt",
-    "models/diarization/segmentation.onnx",
-    "models/diarization/embedding.onnx",
-    "whispercpp/whisper-cli.exe",
-    "whispercpp/ggml-large-v3-turbo-q5_0.bin",
-]
+class _Layout:
+    """Where each part of the build is, on Windows or in a macOS .app.
+
+    exe_dir: the folder of the executable (config.BASE_DIR) - ffmpeg, whispercpp
+    res_dir: config.RESOURCES_DIR - models, the whisper.cpp model, licenses
+    internal: the PyInstaller folder with the Python packages
+    """
+
+    def __init__(self, dist: Path) -> None:
+        self.mac = dist.suffix == ".app"
+        if self.mac:
+            self.exe_dir = dist / "Contents" / "MacOS"
+            self.res_dir = dist / "Contents" / "Resources"
+            self.internal = dist / "Contents" / "Frameworks"
+            self.exe = self.exe_dir / "EasyScribe"
+            self.ext = ""
+            self.ext_glob = "**/*.so"
+            self.icon = "assets/EasyScribe.png"
+        else:
+            self.exe_dir = self.res_dir = dist
+            self.internal = dist / "_internal"
+            self.exe = dist / "EasyScribe.exe"
+            self.ext = ".exe"
+            self.ext_glob = "**/*.pyd"
+            self.icon = "assets/EasyScribe.ico"
+
+    def assembled_files(self) -> list[tuple[Path, str]]:
+        e = self.exe_dir
+        r = self.res_dir
+        return [
+            (e, f"ffmpeg/ffmpeg{self.ext}"),
+            (e, f"ffmpeg/ffprobe{self.ext}"),
+            (r, "models/silero_vad.onnx"),
+            (r, "models/whisper/turbo-encoder.int8.onnx"),
+            (r, "models/whisper/turbo-decoder.int8.onnx"),
+            (r, "models/whisper/turbo-tokens.txt"),
+            (r, "models/diarization/segmentation.onnx"),
+            (r, "models/diarization/embedding.onnx"),
+            (e, f"whispercpp/whisper-cli{self.ext}"),
+            (r, "whispercpp/ggml-large-v3-turbo-q5_0.bin"),
+        ]
+
 
 _REPO_LICENSES = Path(__file__).resolve().parent.parent / "licenses"
 
@@ -45,37 +75,39 @@ _LICENSE_FILES = ["LICENSE.txt", "THIRD-PARTY-NOTICES.txt", "licenses/Python-LIC
 ]
 
 
-def _check_assembled(dist: Path, ok: list[str], errors: list[str]) -> None:
-    for rel in _ASSEMBLED_FILES + _LICENSE_FILES:
-        path = dist / rel
+def _check_assembled(lay: _Layout, ok: list[str], errors: list[str]) -> None:
+    files = lay.assembled_files() + [(lay.res_dir, f) for f in _LICENSE_FILES]
+    for base, rel in files:
+        path = base / rel
         if path.is_file() and path.stat().st_size > 0:
             ok.append(f"{rel}  ({path.stat().st_size // 1024} KB)")
         else:
             errors.append(f"MISSING: {rel}  (expected {path})")
 
-    dlls = list((dist / "whispercpp").glob("*.dll"))
-    if dlls:
-        ok.append(f"whispercpp/*.dll  ({len(dlls)} file(s))")
-    else:
-        errors.append("MISSING: whispercpp/*.dll  (whisper-cli.exe cannot start without them)")
+    if not lay.mac:
+        dlls = list((lay.exe_dir / "whispercpp").glob("*.dll"))
+        if dlls:
+            ok.append(f"whispercpp/*.dll  ({len(dlls)} file(s))")
+        else:
+            errors.append("MISSING: whispercpp/*.dll  (whisper-cli.exe cannot start without them)")
 
-    pkg_licenses = [p for p in (dist / "licenses" / "python-packages").rglob("*") if p.is_file()]
+    pkg_licenses = [p for p in (lay.res_dir / "licenses" / "python-packages").rglob("*") if p.is_file()]
     if pkg_licenses:
         ok.append(f"licenses/python-packages/  ({len(pkg_licenses)} file(s))")
     else:
         errors.append("MISSING: licenses/python-packages/  (run assets/collect_licenses.py)")
 
     # Only libportaudio64bit.dll is loaded; the ASIO builds are removed (see CI).
-    asio = list(dist.glob("_internal/_sounddevice_data/portaudio-binaries/*-asio.dll"))
+    asio = list(lay.internal.glob("_sounddevice_data/portaudio-binaries/*-asio.dll"))
     if asio:
         errors.append(f"UNEXPECTED: {asio[0].name}  (ASIO PortAudio DLLs must be removed)")
 
-    # Models load from BASE_DIR only; a copy in _internal/ doubles the size.
-    stale = dist / "_internal" / "models"
-    if stale.exists():
-        errors.append(f"UNEXPECTED: {stale}  (models must not be packed into _internal/)")
+    # Models load from RESOURCES_DIR only; a copy in the PyInstaller folder doubles the size.
+    stale = lay.internal / "models"
+    if stale.exists() and stale.resolve() != (lay.res_dir / "models").resolve():
+        errors.append(f"UNEXPECTED: {stale}  (models must not be packed by PyInstaller)")
     else:
-        ok.append("_internal/models absent  (no duplicate models)")
+        ok.append(f"{lay.internal.name}/models absent  (no duplicate models)")
 
 
 def main() -> None:
@@ -86,21 +118,22 @@ def main() -> None:
         sys.exit(1)
 
     dist = Path(args[0])
-    internal = dist / "_internal"
+    lay = _Layout(dist)
+    internal = lay.internal
 
     errors: list[str] = []
     ok: list[str] = []
 
-    # ── EasyScribe.exe ────────────────────────────────────────────────────────
-    exe = dist / "EasyScribe.exe"
+    # ── The executable ────────────────────────────────────────────────────────
+    exe = lay.exe
     if exe.is_file():
-        ok.append(f"EasyScribe.exe  ({exe.stat().st_size // 1024} KB)")
+        ok.append(f"{exe.name}  ({exe.stat().st_size // 1024} KB)")
     else:
         errors.append(f"MISSING: {exe}")
 
-    # ── _internal must exist ──────────────────────────────────────────────────
+    # ── The PyInstaller folder must exist ─────────────────────────────────────
     if not internal.is_dir():
-        errors.append(f"MISSING: _internal/ directory under {dist}")
+        errors.append(f"MISSING: {internal.name}/ directory under {dist}")
         # Can't check anything else without _internal
         _report(ok, errors)
         return
@@ -108,8 +141,8 @@ def main() -> None:
     # ── Per-package checks ────────────────────────────────────────────────────
     # Packages with their own subdirectory in _internal:
     dir_checks = [
-        ("numpy",        "numpy",        1),   # numpy/*.pyd
-        ("sherpa_onnx",  "sherpa_onnx",  1),   # sherpa_onnx/*.pyd
+        ("numpy",        "numpy",        1),   # numpy/*.pyd (*.so on macOS)
+        ("sherpa_onnx",  "sherpa_onnx",  1),   # sherpa_onnx/*.pyd (*.so on macOS)
         ("customtkinter","customtkinter", 0),   # directory only
         ("tkinterdnd2",  "tkinterdnd2",  0),   # directory only
     ]
@@ -120,13 +153,13 @@ def main() -> None:
             errors.append(f"MISSING package dir: {name}  (expected {pkg_dir})")
             continue
         if min_pyds > 0:
-            pyds = _find_pyds(pkg_dir)
+            pyds = _find_pyds(pkg_dir, lay.ext_glob)
             if len(pyds) < min_pyds:
                 errors.append(
-                    f"MISSING binaries: {name}  (found {len(pyds)} .pyd files, need >= {min_pyds})"
+                    f"MISSING binaries: {name}  (found {len(pyds)} {lay.ext_glob} files, need >= {min_pyds})"
                 )
             else:
-                ok.append(f"{name}  ({len(pyds)} .pyd file(s))")
+                ok.append(f"{name}  ({len(pyds)} extension file(s))")
         else:
             ok.append(f"{name}  (directory present)")
 
@@ -149,15 +182,23 @@ def main() -> None:
             f"    Required for microphone recording."
         )
 
-    # App icon for the windows (config.APP_ICON)
-    icon = internal / "assets" / "EasyScribe.ico"
+    # App icon for the windows (config.APP_ICON, APP_ICON_PNG on macOS)
+    icon = internal / lay.icon
     if icon.is_file():
-        ok.append("assets/EasyScribe.ico  (window icon)")
+        ok.append(f"{lay.icon}  (window icon)")
     else:
         errors.append(f"MISSING: window icon  (expected {icon})")
 
+    if lay.mac:
+        plist = dist / "Contents" / "Info.plist"
+        text = plist.read_text(encoding="utf-8", errors="replace") if plist.is_file() else ""
+        if "NSMicrophoneUsageDescription" in text:
+            ok.append("Info.plist  (microphone usage text)")
+        else:
+            errors.append(f"MISSING: NSMicrophoneUsageDescription in {plist}  (no microphone without it)")
+
     if assembled:
-        _check_assembled(dist, ok, errors)
+        _check_assembled(lay, ok, errors)
 
     _report(ok, errors)
 

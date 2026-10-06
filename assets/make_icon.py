@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate assets/EasyScribe.ico and assets/EasyScribe.png from the logo design.
+Generate assets/EasyScribe.ico, .png and .icns (macOS) from the logo design.
 
 The geometry matches _logo() in src/gui.py: a teal rounded tile with five
 white sound-wave bars. Needs Pillow (dev machine only, not bundled):
@@ -43,7 +43,12 @@ def main() -> None:
         sizes=[(s, s) for s in ICO_SIZES], append_images=frames[:-1],
     )
     frames[-1].save(OUT / "EasyScribe.png")
-    print("Wrote EasyScribe.ico and EasyScribe.png")
+    # macOS: the tile fills 824 of 1024 px, with a transparent margin, like
+    # the other icons in the Dock and in Finder.
+    mac = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    mac.paste(render(824), (100, 100))
+    mac.save(OUT / "EasyScribe.icns", format="ICNS")
+    print("Wrote EasyScribe.ico, EasyScribe.png and EasyScribe.icns")
 
 
 if __name__ == "__main__":

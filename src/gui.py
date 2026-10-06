@@ -46,6 +46,7 @@ from config import (
     APP_ICON_PNG,
     APP_NAME,
     APP_VERSION,
+    IS_MAC_APP,
     DEFAULT_OUTPUT_DIR,
     LOGS_DIR,
     MAX_LOG_FILES,
@@ -171,7 +172,9 @@ def _ui_family() -> str | None:
 
 
 def _mono_family() -> str:
-    return "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
+    if sys.platform == "win32":
+        return "Consolas"
+    return "Menlo" if sys.platform == "darwin" else "DejaVu Sans Mono"
 
 
 def _shorten(text: str, limit: int) -> str:
@@ -403,6 +406,10 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
             if sys.platform == "win32":
                 import winsound
                 winsound.PlaySound(str(clip_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
+            elif sys.platform == "darwin":
+                # afplay: the macOS system audio player (local file only)
+                self._stop_playback()
+                self._player = subprocess.Popen(["/usr/bin/afplay", str(clip_path)])
         except Exception as exc:
             logger.warning(f"Clip playback failed: {exc}")
 
@@ -411,6 +418,9 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
             if sys.platform == "win32":
                 import winsound
                 winsound.PlaySound(None, 0)
+            elif getattr(self, "_player", None) is not None:
+                self._player.terminate()
+                self._player = None
         except Exception:
             pass
 
@@ -488,8 +498,13 @@ class PrivacyDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             self,
-            text="To remove everything, delete the transcripts you made and the\n"
-                 "EasyScribe folder. Nothing is stored anywhere else.",
+            text=(
+                "To remove everything, delete the transcripts you made, the app,\n"
+                "and the two folders above. Nothing is stored anywhere else."
+                if IS_MAC_APP else
+                "To remove everything, delete the transcripts you made and the\n"
+                "EasyScribe folder. Nothing is stored anywhere else."
+            ),
             font=f_body, text_color=C.MUTED, justify="left",
         ).grid(row=4, column=0, padx=24, pady=(12, 0), sticky="w")
 
@@ -1620,9 +1635,13 @@ class TranscriberApp(_AppBase):  # type: ignore
         except Exception as exc:
             logger.exception("Recording worker error")
             self._safe_append_log(f"[Error] {exc}")
+            where = (
+                "macOS allows EasyScribe to use it (System Settings, Privacy & Security, Microphone)."
+                if sys.platform == "darwin"
+                else "Windows allows apps to use it (Settings, Privacy, Microphone)."
+            )
             outcome["error"] = (
-                f"Could not record: {exc}\nCheck that a microphone is connected, and that "
-                "Windows allows apps to use it (Settings, Privacy, Microphone)."
+                f"Could not record: {exc}\nCheck that a microphone is connected, and that {where}"
             )
             self._safe_update_status("Failed")
 
