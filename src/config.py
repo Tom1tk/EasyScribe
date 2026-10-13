@@ -100,7 +100,9 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset(
 # ─── Inference performance ─────────────────────────────────────────────────────
 # sherpa-onnx is CPU-only here (no Vulkan provider — see CLAUDE.md Rule 7).
 
-NUM_THREADS: int = min(4, os.cpu_count() or 4)
+# About one thread per physical core (cpu_count counts hyper-threads), 4 to 8.
+# Measured: whisper.cpp on CPU and diarization run ~2x faster at 8 threads than 4.
+NUM_THREADS: int = min(8, max(4, (os.cpu_count() or 4) // 2))
 
 # ─── Miscellaneous ────────────────────────────────────────────────────────────
 

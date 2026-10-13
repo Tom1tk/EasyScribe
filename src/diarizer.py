@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 from typing import Callable
 
+import config
 from common import fmt_duration, load_wav_float32
 
 logger = logging.getLogger(__name__)
@@ -80,9 +81,9 @@ class DiarizationEngine:
             logger.exception("Could not load audio for diarization")
             raise DiarizationError(f"Could not load audio for diarization: {exc}") from exc
 
-        # Measured ~0.45x the audio length on CPU.
+        # Measured ~0.2x the audio length on CPU with 4 threads.
         audio_sec = len(samples) / sr
-        est_sec = audio_sec * 0.45
+        est_sec = audio_sec * 0.2
         est_str = f"~{int(est_sec / 60)} min" if est_sec >= 60 else f"~{int(est_sec)} sec"
         log_callback(
             f"[Diarize] Estimated wait: {est_str} for {fmt_duration(audio_sec)} of audio. "
@@ -178,10 +179,12 @@ class DiarizationEngine:
             pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
                 model=str(DIARIZATION_SEGMENTATION_MODEL)
             ),
+            num_threads=config.NUM_THREADS,
             provider="cpu",
         )
         emb_cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
             model=str(DIARIZATION_EMBEDDING_MODEL),
+            num_threads=config.NUM_THREADS,
             provider="cpu",
         )
         clu_cfg = sherpa_onnx.FastClusteringConfig(num_clusters=-1, threshold=0.5)
