@@ -24,7 +24,7 @@ on:
       tag:
         description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0)'
         required: true
-        default: 'v3.2.0'
+        default: 'v3.2.1'
 
 permissions:
   contents: write
@@ -413,6 +413,10 @@ jobs:
             (The downloaded .exe also works, but it must unpack itself each time, which is slow.)
 
             ---
+            ### What's new in 3.2.1
+            - **Uses the fast graphics card** — on laptops with two GPUs, EasyScribe now picks the dedicated one (for example an RTX 5070) instead of whichever Windows lists first, which could be the small built-in one
+            - **Show details** lists every graphics card with its details, including the ones not used
+
             ### What's new in 3.2.0
             - **Find speakers after recording** — after a recording's transcript, select **Find speakers**. It shows a rough estimate of how long it takes first, and **Stop** works at any time. The names go into a copy, `<name> (speakers).txt`; your first transcript is kept
             - **Name speakers in the main window** — play a sample of each voice and type the names in the app window. No more popup that could hide behind the window
