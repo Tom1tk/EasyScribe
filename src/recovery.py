@@ -55,11 +55,18 @@ def recover_pcm_to_wav(pcm_path: Path, metadata: dict, wav_path: Path) -> None:
     logger.info(f"Recovered {pcm_path.name} → {wav_path.name} ({len(raw):,} bytes)")
 
 
-def _handle_orphan(pcm_path: Path, json_path: Path, metadata: dict, recover: bool) -> Path | None:
+def _handle_orphan(
+    pcm_path: Path,
+    json_path: Path,
+    metadata: dict,
+    recover: bool,
+    dest_dir: Path | None = None,
+) -> Path | None:
     """
     Apply the user's recovery choice for one orphaned recording.
 
-    If recover is True, converts the PCM to a WAV file and deletes the
+    If recover is True, converts the PCM to a WAV file in *dest_dir* (default:
+    next to the PCM; also used if *dest_dir* cannot be written) and deletes the
     .pcm/.json pair. If recover is False, leaves both files untouched so
     the prompt reappears next launch — declining must never delete the
     only copy of the recording.
@@ -69,15 +76,25 @@ def _handle_orphan(pcm_path: Path, json_path: Path, metadata: dict, recover: boo
     if not recover:
         return None
     wav_path = pcm_path.with_suffix(".wav")
-    recover_pcm_to_wav(pcm_path, metadata, wav_path)
+    if dest_dir is not None:
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            recover_pcm_to_wav(pcm_path, metadata, dest_dir / wav_path.name)
+            wav_path = dest_dir / wav_path.name
+        except OSError as exc:
+            logger.error(f"Could not recover into {dest_dir}, keeping it next to the raw file: {exc}")
+            recover_pcm_to_wav(pcm_path, metadata, wav_path)
+    else:
+        recover_pcm_to_wav(pcm_path, metadata, wav_path)
     pcm_path.unlink(missing_ok=True)
     json_path.unlink(missing_ok=True)
     return wav_path
 
 
-def prompt_and_recover(output_dir: Path) -> None:
+def prompt_and_recover(output_dir: Path, dest_dir: Path | None = None) -> None:
     """
-    Show a tkinter dialog for each orphaned recording and recover if confirmed.
+    Show a tkinter dialog for each orphaned recording in *output_dir* and
+    recover it into *dest_dir* if confirmed.
     Called before the main GUI window is created.
     """
     import tkinter as tk
@@ -108,7 +125,7 @@ def prompt_and_recover(output_dir: Path) -> None:
         )
 
         try:
-            wav_path = _handle_orphan(pcm_path, json_path, metadata, answer)
+            wav_path = _handle_orphan(pcm_path, json_path, metadata, answer, dest_dir)
         except Exception as exc:
             logger.error(f"Recovery failed for {pcm_path.name}: {exc}")
             messagebox.showerror(

@@ -22,7 +22,7 @@ import sys
 import tkinter as tk
 from tkinter import messagebox
 
-from config import APP_NAME, DEFAULT_OUTPUT_DIR, FFMPEG_BIN, FFPROBE_BIN, TEMP_DIR
+from config import APP_NAME, DEFAULT_RECORDINGS_DIR, FFMPEG_BIN, FFPROBE_BIN, RECORDING_WORK_DIR, TEMP_DIR
 from logger import setup_logging
 from transcriber import validate_model_directory
 
@@ -98,13 +98,14 @@ def main() -> None:
     _cleanup_temp_files()
     atexit.register(_cleanup_temp_files)
 
-    # Create default output directory on first launch
-    DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Folder for in-progress recordings (crash recovery scans it)
+    RECORDING_WORK_DIR.mkdir(parents=True, exist_ok=True)
 
     # Offer to recover any recordings interrupted by a previous crash
     try:
         from recovery import prompt_and_recover
-        prompt_and_recover(DEFAULT_OUTPUT_DIR)
+        from settings import load_recordings_dir
+        prompt_and_recover(RECORDING_WORK_DIR, load_recordings_dir() or DEFAULT_RECORDINGS_DIR)
     except Exception as exc:
         log.warning(f"Recovery check failed: {exc}")
 

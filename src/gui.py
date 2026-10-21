@@ -46,12 +46,14 @@ from config import (
     APP_ICON_PNG,
     APP_NAME,
     APP_VERSION,
-    DEFAULT_OUTPUT_DIR,
+    DEFAULT_RECORDINGS_DIR,
     LOGS_DIR,
     MAX_LOG_FILES,
     MIN_FREE_DISK_BYTES,
+    RECORDING_WORK_DIR,
     SUPPORTED_EXTENSIONS,
 )
+import settings
 from common import CancelledError
 from ffmpeg_wrapper import (
     FFmpegExtractionError,
@@ -469,7 +471,7 @@ class PrivacyDialog(ctk.CTkToplevel):
         )
         items = [
             ("Transcripts", "Next to each recording, or in the folder you choose."),
-            ("Live recordings", str(DEFAULT_OUTPUT_DIR)),
+            ("Recordings", f"{DEFAULT_RECORDINGS_DIR}, or the folder you choose."),
             ("Temporary audio", "Deleted after each file, and again when EasyScribe closes."),
             ("Technical logs", f"{LOGS_DIR}\nFile names and progress only, never the transcript "
                                f"text. Only the last {MAX_LOG_FILES} are kept."),
@@ -551,6 +553,8 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._selected_files: list[Path] = []
         self._file_states: dict[Path, str] = {}
         self._output_folder: Path | None = None
+        # Record tab: the folder the user chose (remembered), or None for the default.
+        self._rec_folder: Path | None = settings.load_recordings_dir()
         self._cancel_event = threading.Event()
         self._stop_recording_event = threading.Event()
         self._engine = TranscriptionEngine()
@@ -925,12 +929,38 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._rec_speakers_cb = self._speakers_checkbox(rec_card)
         self._rec_speakers_cb.grid(row=4, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="w")
 
+        # Where the recordings go: the same design as "Save transcripts to".
+        rec_where = ctk.CTkFrame(rec_card, fg_color="transparent")
+        rec_where.grid(row=5, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="ew")
+        rec_where.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            rec_where, text="Save recordings to", font=self._f_strong, text_color=C.INK
+        ).grid(row=0, column=0, sticky="w")
+        rec_out_row = ctk.CTkFrame(rec_where, fg_color="transparent")
+        rec_out_row.grid(row=1, column=0, pady=(2, 0), sticky="ew")
+        rec_out_row.grid_columnconfigure(0, weight=1)
+        self._rec_folder_label = ctk.CTkLabel(
+            rec_out_row, text="", font=self._f_body, text_color=C.MUTED, anchor="w"
+        )
+        self._rec_folder_label.grid(row=0, column=0, sticky="ew")
+        self._reset_rec_folder_btn = _button(
+            rec_out_row, "Use default", kind="link", width=100, height=32,
+            command=self._on_reset_rec_folder,
+        )
+        self._reset_rec_folder_btn.grid(row=0, column=1, padx=(8, 0))
+        self._select_rec_folder_btn = _button(
+            rec_out_row, "Change folder", width=130, height=32, command=self._on_select_rec_folder
+        )
+        self._select_rec_folder_btn.grid(row=0, column=2, padx=(8, 0))
+        self._rec_setup.append(rec_where)
+        self._refresh_rec_folder_label()
+
         # ── Step 3: record ────────────────────────────────────────────────────
         self._step_header(rec_card, "3", "Record", C.CORAL_INK, C.CORAL_SOFT).grid(
-            row=5, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="ew"
+            row=6, column=0, columnspan=2, padx=18, pady=(0, 8), sticky="ew"
         )
         rec_row = ctk.CTkFrame(rec_card, fg_color="transparent")
-        rec_row.grid(row=6, column=0, columnspan=2, padx=18, pady=(0, 16), sticky="ew")
+        rec_row.grid(row=7, column=0, columnspan=2, padx=18, pady=(0, 16), sticky="ew")
         rec_row.grid_columnconfigure(3, weight=1)
         self._record_btn = _button(
             rec_row, "Start recording", kind="coral", width=200, height=44,
@@ -951,15 +981,6 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._level_bar.set(0)
         self._level_bar.grid(row=0, column=2)
 
-        where = ctk.CTkFrame(rec_row, fg_color="transparent")
-        where.grid(row=0, column=3, sticky="e")
-        ctk.CTkLabel(
-            where, text="Saved in the recordings folder", font=self._f_small, text_color=C.MUTED
-        ).grid(row=0, column=0, padx=(0, 4))
-        _button(
-            where, "Open", kind="link", width=60, height=28,
-            command=lambda: self._open_folder(DEFAULT_OUTPUT_DIR),
-        ).grid(row=0, column=1)
 
         # ── Live transcript (only for "Show words as I speak") ────────────────
         live_card = _card(view)
@@ -1289,6 +1310,23 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._output_folder = None
         self._refresh_output_label()
 
+    def _on_select_rec_folder(self) -> None:
+        folder = filedialog.askdirectory(
+            title="Choose where to save recordings", initialdir=str(self._recordings_folder())
+        )
+        if folder:
+            self._rec_folder = Path(folder)
+            settings.save_recordings_dir(self._rec_folder)
+            self._refresh_rec_folder_label()
+
+    def _on_reset_rec_folder(self) -> None:
+        self._rec_folder = None
+        settings.save_recordings_dir(None)
+        self._refresh_rec_folder_label()
+
+    def _recordings_folder(self) -> Path:
+        return self._rec_folder or DEFAULT_RECORDINGS_DIR
+
     def _on_transcribe(self) -> None:
         if not self._selected_files:
             self._start_hint.configure(text="Add at least one recording first.", text_color=C.CRIMSON)
@@ -1359,7 +1397,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._cancel_btn.configure(state="disabled")
 
     def _on_open_output_folder(self) -> None:
-        folder = self._last_output_folder or self._output_folder or DEFAULT_OUTPUT_DIR
+        folder = self._last_output_folder or self._output_folder or self._recordings_folder()
         self._open_folder(folder)
 
     def _on_open_transcript(self) -> None:
@@ -1562,8 +1600,11 @@ class TranscriberApp(_AppBase):  # type: ignore
             # Record only: no speech model to load, so the recording starts at once.
             recognizer = self._engine.get_recognizer(self._safe_update_status) if live else None
 
-            DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            self._mic_recorder.start(device_index, DEFAULT_OUTPUT_DIR, feed_vad=live)
+            # The raw recording is written to the work folder (crash recovery
+            # looks there); the finished WAV goes to the chosen folder at Stop.
+            dest_dir = self._recordings_folder()
+            RECORDING_WORK_DIR.mkdir(parents=True, exist_ok=True)
+            self._mic_recorder.start(device_index, RECORDING_WORK_DIR, feed_vad=live)
             self._safe_update_status("Recording")
             self.after(0, self._start_timer)
             mic_queue = self._mic_recorder.get_queue()
@@ -1587,15 +1628,20 @@ class TranscriberApp(_AppBase):  # type: ignore
                 self._live_transcriber.stop()
             else:
                 self._safe_update_status("Saving Recording")
-            wav_path = self._mic_recorder.stop(convert_to_wav=True)
+            wav_path = self._mic_recorder.stop(convert_to_wav=True, dest_dir=dest_dir)
+            if wav_path and wav_path.parent != dest_dir:
+                self._safe_append_log(
+                    f"[Warning] Could not save to {dest_dir}. The recording is in {wav_path.parent}"
+                )
+            saved_dir = wav_path.parent if wav_path else RECORDING_WORK_DIR
 
             # Transcript filename matches the recording's start timestamp
             # (session_stem), the same stem the .wav was saved under.
             if transcript_lines and session_stem:
-                txt_path = DEFAULT_OUTPUT_DIR / f"{session_stem}.txt"
+                txt_path = saved_dir / f"{session_stem}.txt"
                 try:
                     txt_path.write_text("\n".join(transcript_lines) + "\n", encoding="utf-8")
-                    self._last_output_folder = DEFAULT_OUTPUT_DIR
+                    self._last_output_folder = saved_dir
                     outcome["transcript"] = txt_path
                     self._safe_append_log(f"[Done] Transcript saved: {txt_path}")
                 except OSError as exc:
@@ -1605,7 +1651,7 @@ class TranscriberApp(_AppBase):  # type: ignore
             if wav_path:
                 outcome["audio"] = wav_path
                 self._safe_append_log(f"[Done] Audio saved: {wav_path}")
-                self._last_output_folder = DEFAULT_OUTPUT_DIR
+                self._last_output_folder = saved_dir
 
             self._safe_update_status("Done")
 
@@ -1657,14 +1703,15 @@ class TranscriberApp(_AppBase):  # type: ignore
             return
 
         self._status_label.configure(text="Recording saved", text_color=C.GREEN_INK)
+        where = _shorten(str(self._last_output_folder or self._recordings_folder()), 60)
         if not live:
-            self._batch_label.configure(text="The audio is in the recordings folder.")
+            self._batch_label.configure(text=f"The audio is in {where}.")
         elif transcript:
-            self._batch_label.configure(text="The audio and the live transcript are in the recordings folder.")
+            self._batch_label.configure(text=f"The audio and the live transcript are in {where}.")
         else:
             self._batch_label.configure(
                 text="No speech was heard live, so there is no live transcript. "
-                     "The audio is in the recordings folder."
+                     f"The audio is in {where}."
             )
         self._show_message(str(error) if error else "", "error")
         self._progress_bar.configure(progress_color=C.GREEN)
@@ -1685,9 +1732,10 @@ class TranscriberApp(_AppBase):  # type: ignore
         if self._ui_state != "idle" or audio is None:
             return
         if not audio.exists():
-            self._show_message("The recording is no longer in the recordings folder.", "error")
+            self._show_message("The recording was moved or deleted.", "error")
             return
-        folder = self._output_folder or audio.parent
+        # Next to the recording: the Files tab's folder choice is for that tab.
+        folder = audio.parent
         name = f"{audio.stem}.txt"
         if (folder / name).exists():
             name = f"{audio.stem} (best quality).txt"
@@ -1879,6 +1927,18 @@ class TranscriberApp(_AppBase):  # type: ignore
                 text="The same folder as each recording", text_color=C.MUTED
             )
             self._reset_output_btn.grid_remove()
+
+    def _refresh_rec_folder_label(self) -> None:
+        if self._rec_folder:
+            self._rec_folder_label.configure(
+                text=_shorten(str(self._rec_folder), 70), text_color=C.INK
+            )
+            self._reset_rec_folder_btn.grid()
+        else:
+            self._rec_folder_label.configure(
+                text=_shorten(str(DEFAULT_RECORDINGS_DIR), 70), text_color=C.MUTED
+            )
+            self._reset_rec_folder_btn.grid_remove()
 
     def _resolve_output_path(self, input_file: Path) -> Path:
         if input_file in self._output_overrides:
@@ -2092,6 +2152,8 @@ class TranscriberApp(_AppBase):  # type: ignore
         for cb, available in ((self._timestamps_cb, True), (self._diarize_cb, self._diarization_available)):
             cb.configure(state="normal" if (available and not is_busy) else "disabled")
         self._mic_menu.configure(state="disabled" if is_busy else "normal")
+        self._select_rec_folder_btn.configure(state=normal_if_idle)
+        self._reset_rec_folder_btn.configure(state=normal_if_idle)
         for _tile, radio in self._rec_tiles.values():
             radio.configure(state="disabled" if is_busy else "normal")
         # The speakers switch is read when the recording stops, so it can

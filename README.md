@@ -61,7 +61,7 @@ Select **Record** and choose your microphone. Then choose what you want:
 - **Best quality transcript after recording** (the default). EasyScribe records only. When you stop, it makes the transcript at once with the more accurate engine, with times. Tick **More than one person speaking** to name the speakers too.
 - **Show words as I speak**. The words appear as you speak. This is quicker but less accurate.
 
-Both choices save the recording in the `recordings` folder. Select **Start recording**. The small bar next to the timer shows that the microphone hears you.
+Both choices save the recording in `Documents\EasyScribe`. To use a different folder, select **Change folder** under **Save recordings to**; EasyScribe remembers it. Select **Start recording**. The small bar next to the timer shows that the microphone hears you.
 
 <p align="center">
   <img src="docs/screenshots/recording.png" alt="EasyScribe recording" width="640">
@@ -175,7 +175,7 @@ EasyScribe never sends data off the computer. How this is enforced:
 | Data | Location | Kept until |
 |---|---|---|
 | Transcripts | Next to each recording, or the folder you choose | You delete them |
-| Live recordings | `recordings/` in the install folder | You delete them |
+| Recordings | `Documents\EasyScribe`, or the folder you choose | You delete them |
 | Technical logs | `logs/` in the install folder. File names and progress only, never transcript text | The last 10 are kept |
 
 To remove all data, delete your transcripts and the `EasyScribe` folder.
@@ -203,7 +203,7 @@ EasyScribe\
   LICENSE.txt                <- EasyScribe license (MIT)
   THIRD-PARTY-NOTICES.txt    <- included components, their licenses and source
   licenses\                  <- license texts (assets/collect_licenses.py)
-  recordings\                <- live recordings and their transcripts (user data)
+  recordings\                <- recordings in progress (crash recovery) and settings.json (user data)
   logs\                      <- rotating log files (user data)
   temp\                      <- temporary WAV files (auto-cleaned)
 ```

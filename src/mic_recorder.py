@@ -116,9 +116,11 @@ class MicRecorder:
         self._stream.start()
         logger.info(f"MicRecorder started: {self._pcm_path.name}")
 
-    def stop(self, convert_to_wav: bool = True) -> Optional[Path]:
+    def stop(self, convert_to_wav: bool = True, dest_dir: Optional[Path] = None) -> Optional[Path]:
         """
         Stop capture. If convert_to_wav=True, convert PCM → WAV and delete raw files.
+        The WAV goes to *dest_dir* (default: next to the PCM). If it cannot be
+        written there, it goes next to the PCM instead.
         Returns WAV path on success, None on failure or if convert_to_wav=False.
         """
         if self._stream is not None:
@@ -134,23 +136,31 @@ class MicRecorder:
         if not convert_to_wav or self._pcm_path is None:
             return None
 
-        wav_path = self._pcm_path.with_suffix(".wav")
         metadata = {
             "sample_rate": _SAMPLE_RATE,
             "channels": _CHANNELS,
             "bit_depth": 16,
             "samples_written": self._samples_written,
         }
-        try:
-            recover_pcm_to_wav(self._pcm_path, metadata, wav_path)
+        wav_name = self._pcm_path.with_suffix(".wav").name
+        folders = [self._pcm_path.parent]
+        if dest_dir is not None and dest_dir != self._pcm_path.parent:
+            folders.insert(0, dest_dir)
+        for folder in folders:
+            wav_path = folder / wav_name
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                recover_pcm_to_wav(self._pcm_path, metadata, wav_path)
+            except Exception as exc:
+                logger.error(f"PCM→WAV conversion to {folder} failed: {exc}")
+                continue
+            # The raw files go only once the WAV is safely written.
             self._pcm_path.unlink(missing_ok=True)
             if self._json_path:
                 self._json_path.unlink(missing_ok=True)
-            logger.info(f"Recording saved: {wav_path.name}")
+            logger.info(f"Recording saved: {wav_path}")
             return wav_path
-        except Exception as exc:
-            logger.error(f"PCM→WAV conversion failed: {exc}")
-            return None
+        return None
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
         if status:
