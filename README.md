@@ -48,7 +48,7 @@ When it is done, open the transcript or the folder with one click. Each transcri
 
 ### Name the speakers
 
-Tick **Name the speakers** to find who is talking. When the speakers are found, a panel opens in the main window. Play a short sample of each voice and type a name. The names go into the transcript.
+In **Transcribe files**, tick **Name the speakers** to find who is talking. (After a recording, use **Find speakers**; see below.) When the speakers are found, a panel opens in the main window. Play a short sample of each voice and type a name. The names go into the transcript.
 
 <p align="center">
   <img src="docs/screenshots/name-speakers.png" alt="The panel to name each speaker" width="560">
@@ -64,18 +64,26 @@ Select **Record** and choose your microphone. Then choose what you want:
 Both choices save the recording in `Documents\EasyScribe`. To use a different folder, select **Change folder** under **Save recordings to**; EasyScribe remembers it. Select **Start recording**. The small bar next to the timer shows that the microphone hears you.
 
 <p align="center">
-  <img src="docs/screenshots/recording.png" alt="EasyScribe recording" width="640">
+  <img src="docs/screenshots/recording.png" alt="The Record tab: microphone, what you want, and where recordings are saved" width="640">
+</p>
+
+When the transcript is ready, you can name the files and find the speakers:
+
+<p align="center">
+  <img src="docs/screenshots/transcript-ready.png" alt="A recording's transcript is ready, with the Name box and the Find speakers card" width="640">
 </p>
 
 After a live recording, you can still get the best result: select **Make best quality transcript**. This runs the saved recording through the more accurate engine, with times. Then you can select **Find speakers**. Your live transcript is kept, and the new one is saved as a separate `(best quality).txt` file.
 
 <p align="center">
-  <img src="docs/screenshots/recording-saved.png" alt="A saved recording, with the Make best quality transcript button" width="640">
+  <img src="docs/screenshots/recording-saved.png" alt="A saved live recording, with the Name box and the Make best quality transcript button" width="640">
 </p>
 
-After a result, you can give the files a name: type it in the **Name** box and select **Rename**. A recording and its transcripts are renamed together (`Team meeting.wav`, `Team meeting.txt`, `Team meeting (speakers).txt`). In **Transcribe files**, only the new transcript is renamed; your original file is not changed.
-
 If your computer stops during a recording, EasyScribe offers to recover the audio the next time it opens.
+
+### Name your files
+
+After a result, the **Name** box shows the file's current name. Change it or add to it, then select **Rename** (or press Enter). You can also ignore it: nothing changes unless you select Rename. A recording and its transcripts are renamed together (`Team meeting.wav`, `Team meeting.txt`, `Team meeting (speakers).txt`). In **Transcribe files**, only the new transcript is renamed; your original file is not changed.
 
 ### Your privacy
 
@@ -145,7 +153,7 @@ After a pause, the next block starts here.
 | **Name the speakers** is grey | The speaker models are missing. Run the `.exe` again. |
 | No microphones in the list | Check your microphone in the Windows sound settings. |
 | Antivirus flags the `.exe` | Some antivirus tools flag PyInstaller apps by mistake. Add an exclusion. |
-| Transcription is slow | Without a supported graphics card, EasyScribe uses the processor. Long files take longer. **Details** shows which device is used. |
+| Transcription is slow | Without a supported graphics card, EasyScribe uses the processor. Long files take longer. **Show details** shows which graphics card or processor is used. |
 
 ---
 ---
@@ -241,6 +249,8 @@ src/
   live_transcriber.py    Silero VAD loop + OfflineRecognizer for live mode
   recovery.py            Orphaned .pcm scanner and WAV recovery
   gui.py                 CustomTkinter UI with threaded workers
+  rename.py              Renames a recording and its transcripts together (the Name box)
+  transitions.py         Windows only: fade out and in when the screen changes
   win_paint.py           Windows only: paints window backgrounds at once (no black blocks)
 
 launcher/
@@ -253,6 +263,7 @@ assets/
   splash.png             "Getting ready" window shown while the .exe unpacks
   make_splash.py         Regenerates splash.png (needs Pillow and customtkinter)
   version_resource.py    Windows file-version info for both specs, from APP_VERSION
+  make_update_bundle.py  Builds the bundle for the small EasyScribe-update-vX.exe
 
 tests/                   Fast offline checks; run all with `python tests/run_all.py`
 ```
