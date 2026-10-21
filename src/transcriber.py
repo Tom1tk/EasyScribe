@@ -343,7 +343,9 @@ class TranscriptionEngine:
             try:
                 from diarizer import DiarizationEngine
                 _diarizer = DiarizationEngine()
-                turns = _diarizer.diarize(audio_path, log_callback)
+                turns = _diarizer.diarize(
+                    audio_path, log_callback, cancel_event, progress_callback
+                )
                 assigned = _diarizer.assign_speakers(raw_segments, turns)
                 speaker_map: dict[str, str] = {}
                 for _ts, _te, spk in turns:
@@ -365,6 +367,8 @@ class TranscriptionEngine:
                             pass
 
                 transcript_text = _build_diarized_transcript(assigned, speaker_map, add_timestamps)
+            except CancelledError:
+                raise
             except Exception as exc:
                 logger.warning(f"Diarization failed, falling back to plain: {exc}")
                 log_callback(f"[Diarize] Warning: {exc}. Writing the transcript without speaker names.")

@@ -2,7 +2,7 @@
 """
 Runs every fast, offline tests/test_*.py file and aggregates the results.
 
-Excludes test_diarization.py: it's an end-to-end test that needs real model
+Excludes test_diarization.py and test_diarizer_process.py: they need real model
 files (models/whisper, models/diarization) and tests/data/test_speech.wav,
 which aren't available before CI's model-download steps. Run it
 manually/locally instead.
@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 
-_EXCLUDE = {"test_diarization.py"}
+_EXCLUDE = {"test_diarization.py", "test_diarizer_process.py"}
 
 
 def main() -> None:

@@ -17,6 +17,7 @@ import config  # 1st: BASE_DIR + runtime dirs must be set before anything else
 
 import atexit
 import logging
+import multiprocessing
 import sys
 import tkinter as tk
 from tkinter import messagebox
@@ -135,4 +136,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Speaker identification runs in a child process (diarizer.py). In the
+    # frozen app the child starts this exe again; freeze_support() runs the
+    # child's task there instead of opening a second window.
+    multiprocessing.freeze_support()
     main()
