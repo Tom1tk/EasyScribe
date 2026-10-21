@@ -42,8 +42,12 @@ class WhisperCppError(RuntimeError):
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-_DEVICE_RE = re.compile(r"whisper_backend_init_gpu: device \d+: (.+)")
+_USING_RE = re.compile(r"whisper_backend_init_gpu: using (\S+) backend")
 _NO_GPU_RE = re.compile(r"whisper_backend_init_gpu: no GPU found")
+# ggml-vulkan's own line is the only one with the real GPU name, e.g.
+# "ggml_vulkan: 0 = NVIDIA GeForce RTX 5070 (NVIDIA) | uma: 0 | fp16: 1 | ..."
+_VULKAN_DEV_RE = re.compile(r"ggml_vulkan: (\d+) = (.+?) \| (.*)")
+_SYSTEM_INFO_RE = re.compile(r"system_info: n_threads = (\d+) / (\d+) \|(.*)")
 _PROGRESS_RE = re.compile(r"whisper_print_progress_callback: progress = (\d+)%")
 
 
@@ -62,21 +66,59 @@ def validate_whispercpp() -> None:
         raise WhisperCppNotFoundError("\n".join(missing))
 
 
-def _parse_device_line(line: str) -> str | None:
+def _cpu_name() -> str:
+    """The processor's marketing name, read from the OS (no network)."""
+    try:
+        if sys.platform == "win32":
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+            )
+            return str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip()
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    import platform
+    return platform.processor() or "unknown CPU"
+
+
+def _describe_devices(lines: list[str]) -> list[str]:
     """
-    Return a human-readable device description from a whisper.cpp stderr
-    line, or None if the line isn't a device-init line.
+    Turn whisper.cpp's start-up stderr into readable device lines for the log:
+    which engine runs the model (Vulkan GPU or CPU), the GPU's real name, and
+    the CPU's name and thread use.
 
     Even CPU-only builds attempt GPU init and log the outcome either way
     (CLAUDE.md Rule 7) — never assume Vulkan was used just because the
     binary was built with -DGGML_VULKAN=ON.
     """
-    m = _DEVICE_RE.search(line)
-    if m:
-        return m.group(1).strip()
-    if _NO_GPU_RE.search(line):
-        return "CPU (no GPU found)"
-    return None
+    using = next((m.group(1) for l in lines if (m := _USING_RE.search(l))), None)
+    vulkan = {m.group(1): (m.group(2), m.group(3)) for l in lines if (m := _VULKAN_DEV_RE.search(l))}
+    info = next((m for l in lines if (m := _SYSTEM_INFO_RE.search(l))), None)
+
+    out: list[str] = []
+    if using and using.startswith("Vulkan"):
+        name, details = vulkan.get(using[len("Vulkan"):], (None, ""))
+        out.append(f"Engine: Vulkan (GPU {using})")
+        out.append(f"GPU: {name or 'name not reported'}" + (f" | {details}" if details else ""))
+    elif using:
+        out.append(f"Engine: {using}")
+    else:
+        out.append("Engine: CPU (no GPU found)")
+    for idx, (name, _details) in sorted(vulkan.items()):
+        if f"Vulkan{idx}" != using:
+            out.append(f"Other Vulkan device {idx}: {name} (not used)")
+
+    cpu = f"CPU: {_cpu_name()}"
+    if info:
+        features = [f.split("=")[0].split()[-1] for f in info.group(3).split("|") if f.strip().endswith("= 1")]
+        cpu += f" | {info.group(1)} of {info.group(2)} threads"
+        if features:
+            cpu += f" | {' '.join(features)}"
+    out.append(cpu)
+    return out
 
 
 def _parse_progress_line(line: str) -> int | None:
@@ -152,18 +194,16 @@ def transcribe_file(
         )
 
         stderr_lines: list[str] = []
-        device_logged = [False]
 
         def _read_stderr() -> None:
             for raw in proc.stderr:  # type: ignore[union-attr]
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 stderr_lines.append(line)
 
-                if not device_logged[0]:
-                    device = _parse_device_line(line)
-                    if device:
-                        device_logged[0] = True
-                        log(f"[whisper.cpp] Device: {device}")
+                # system_info is printed once, after the devices are set up.
+                if _SYSTEM_INFO_RE.search(line):
+                    for text in _describe_devices(stderr_lines):
+                        log(f"[whisper.cpp] {text}")
 
                 pct = _parse_progress_line(line)
                 if pct is not None and progress_callback:

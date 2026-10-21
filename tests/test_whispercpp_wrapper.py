@@ -81,27 +81,43 @@ def _check_parse_output_json_empty() -> None:
         path.unlink()
 
 
-# ─── _parse_device_line ────────────────────────────────────────────────────
+# ─── _describe_devices ─────────────────────────────────────────────────────
+
+_INFO = "system_info: n_threads = 8 / 16 | WHISPER : COREML = 0 | CPU : SSE3 = 1 | AVX2 = 1 | AVX512 = 0 |"
 
 
-def _check_parse_device_line_cpu() -> None:
-    line = "whisper_backend_init_gpu: device 0: CPU (type: 0)"
-    assert whispercpp_wrapper._parse_device_line(line) == "CPU (type: 0)"
+def _check_describe_devices_vulkan() -> None:
+    lines = [
+        "ggml_vulkan: Found 2 Vulkan devices:",
+        "ggml_vulkan: 0 = NVIDIA GeForce RTX 5070 (NVIDIA) | uma: 0 | fp16: 1 | matrix cores: NV_coopmat2",
+        "ggml_vulkan: 1 = AMD Radeon(TM) Graphics (AMD proprietary driver) | uma: 1 | fp16: 1",
+        "whisper_backend_init_gpu: device 0: CPU (type: 0)",
+        "whisper_backend_init_gpu: device 1: Vulkan0 (type: 1)",
+        "whisper_backend_init_gpu: using Vulkan0 backend",
+        _INFO,
+    ]
+    out = whispercpp_wrapper._describe_devices(lines)
+    assert out[0] == "Engine: Vulkan (GPU Vulkan0)", out
+    assert out[1] == "GPU: NVIDIA GeForce RTX 5070 (NVIDIA) | uma: 0 | fp16: 1 | matrix cores: NV_coopmat2", out
+    assert out[2] == "Other Vulkan device 1: AMD Radeon(TM) Graphics (AMD proprietary driver) (not used)", out
+    assert out[3].startswith("CPU: ") and out[3].endswith("| 8 of 16 threads | SSE3 AVX2"), out
 
 
-def _check_parse_device_line_gpu() -> None:
-    line = "whisper_backend_init_gpu: device 0: NVIDIA GeForce RTX 5070 (Vulkan)"
-    assert whispercpp_wrapper._parse_device_line(line) == "NVIDIA GeForce RTX 5070 (Vulkan)"
+def _check_describe_devices_cpu_only() -> None:
+    lines = [
+        "whisper_backend_init_gpu: device 0: CPU (type: 0)",
+        "whisper_backend_init_gpu: no GPU found",
+        _INFO,
+    ]
+    out = whispercpp_wrapper._describe_devices(lines)
+    assert out[0] == "Engine: CPU (no GPU found)", out
+    assert len(out) == 2 and out[1].startswith("CPU: "), out
 
 
-def _check_parse_device_line_no_gpu() -> None:
-    line = "whisper_backend_init_gpu: no GPU found"
-    assert whispercpp_wrapper._parse_device_line(line) == "CPU (no GPU found)"
-
-
-def _check_parse_device_line_unrelated() -> None:
-    line = "whisper_model_load: n_vocab       = 51866"
-    assert whispercpp_wrapper._parse_device_line(line) is None
+def _check_describe_devices_unnamed_gpu() -> None:
+    lines = ["whisper_backend_init_gpu: using Vulkan0 backend", _INFO]
+    out = whispercpp_wrapper._describe_devices(lines)
+    assert out[1] == "GPU: name not reported", out
 
 
 # ─── _parse_progress_line ──────────────────────────────────────────────────
@@ -161,10 +177,9 @@ def main() -> None:
     print("\n-- whispercpp_wrapper tests --------------------------------------------------")
     _check("parse_output_json: skips blank text, converts ms to sec", _check_parse_output_json)
     _check("parse_output_json: empty transcription list", _check_parse_output_json_empty)
-    _check("parse_device_line: CPU device", _check_parse_device_line_cpu)
-    _check("parse_device_line: GPU device", _check_parse_device_line_gpu)
-    _check("parse_device_line: no GPU found", _check_parse_device_line_no_gpu)
-    _check("parse_device_line: unrelated line returns None", _check_parse_device_line_unrelated)
+    _check("describe_devices: Vulkan GPU with real name", _check_describe_devices_vulkan)
+    _check("describe_devices: CPU only", _check_describe_devices_cpu_only)
+    _check("describe_devices: GPU without a name line", _check_describe_devices_unnamed_gpu)
     _check("parse_progress_line: matches percentage", _check_parse_progress_line)
     _check("parse_progress_line: unrelated line returns None", _check_parse_progress_line_unrelated)
     _check("is_available: False when binary/model missing", _check_is_available_false_when_missing)

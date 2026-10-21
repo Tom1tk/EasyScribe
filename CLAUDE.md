@@ -140,8 +140,12 @@ or check the ONNX Runtime execution-provider list) before building features on t
 > `-DGGML_VULKAN=ON` (see `.github/workflows/build-release.yml` and
 > `src/whispercpp_wrapper.py`) — a different binary/codebase from sherpa-onnx,
 > so this doesn't contradict the finding above. `whisper-cli` logs which device
-> it actually used (`whisper_backend_init_gpu: device N: <name>` or
-> `no GPU found`), and `whispercpp_wrapper.py` surfaces that line to the UI log
+> it actually used (`whisper_backend_init_gpu: using Vulkan0 backend` or
+> `no GPU found`; the `device N: Vulkan0 (type: 1)` lines only list backends, not
+> the device in use). The real GPU name is only in ggml-vulkan's own
+> `ggml_vulkan: 0 = <name> | ...` line. `whispercpp_wrapper._describe_devices()`
+> combines these, plus the CPU name from the OS and the `system_info` threads,
+> into "Engine / GPU / CPU" lines in the UI log
 > — the same "verify empirically, never assume from build flags" discipline
 > this rule established. `vulkan_probe.py` was deliberately *not* resurrected:
 > a separate ctypes GPU probe would be a second, possibly-disagreeing source of
