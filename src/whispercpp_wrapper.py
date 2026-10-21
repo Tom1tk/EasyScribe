@@ -108,9 +108,9 @@ def _describe_devices(lines: list[str]) -> list[str]:
         out.append(f"Engine: {using}")
     else:
         out.append("Engine: CPU (no GPU found)")
-    for idx, (name, _details) in sorted(vulkan.items()):
+    for idx, (name, details) in sorted(vulkan.items()):
         if f"Vulkan{idx}" != using:
-            out.append(f"Other Vulkan device {idx}: {name} (not used)")
+            out.append(f"Other Vulkan device {idx} (not used): {name} | {details}")
 
     cpu = f"CPU: {_cpu_name()}"
     if info:

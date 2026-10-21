@@ -99,7 +99,7 @@ def _check_describe_devices_vulkan() -> None:
     out = whispercpp_wrapper._describe_devices(lines)
     assert out[0] == "Engine: Vulkan (GPU Vulkan0)", out
     assert out[1] == "GPU: NVIDIA GeForce RTX 5070 (NVIDIA) | uma: 0 | fp16: 1 | matrix cores: NV_coopmat2", out
-    assert out[2] == "Other Vulkan device 1: AMD Radeon(TM) Graphics (AMD proprietary driver) (not used)", out
+    assert out[2] == "Other Vulkan device 1 (not used): AMD Radeon(TM) Graphics (AMD proprietary driver) | uma: 1 | fp16: 1", out
     assert out[3].startswith("CPU: ") and out[3].endswith("| 8 of 16 threads | SSE3 AVX2"), out
 
 
