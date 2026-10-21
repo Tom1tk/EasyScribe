@@ -318,6 +318,22 @@ offer for the source: keep the matching source available.
 The ASIO PortAudio DLLs (`_sounddevice_data/portaudio-binaries/*-asio.dll`, Steinberg
 SDK) are removed in CI: sounddevice loads them only when `SD_ENABLE_ASIO` is set.
 
+### Rule 21: Hide Tk's piecemeal redraw — hold drawing, never restack the views
+
+**The problem:** a screen change (`grid_remove` / `grid`) makes every CustomTkinter widget
+draw itself on its own idle pass: 3-4 half-drawn frames (empty card, grey boxes without
+text, radios without labels). Stacking both views and using `tkraise` hides this, but the
+views have different heights, so the layout shifts.
+
+**The rule:** methods that change the screen carry `@_screen_change` (`gui.py`), which runs
+them through `transitions.Veil.run()`: `WM_SETREDRAW` off on the root's client window, the
+change runs at once (callers keep their order), an owned `WS_EX_LAYERED | WS_EX_NOACTIVATE`
+Toplevel in `C.BG` fades in over the area below the tabs, drawing comes back with
+`RedrawWindow`, then the veil fades out. Changes during a fade join it. It is skipped when
+the app is not the front window, Windows "Animation effects" is off (drawing is still held),
+or `EASYSCRIBE_TRANSITIONS=0`. Create the veil after `win_paint.install()`, so its
+background is painted at once. `tests/test_transitions.py` checks the order.
+
 ---
 
 ## Version History
@@ -348,3 +364,4 @@ SDK) are removed in CI: sounddevice loads them only when `SD_ENABLE_ASIO` is set
 | v3.1.0 | Record tab (was "Record live") asks first: "Best quality transcript after recording" (default: record only, `MicRecorder.start(feed_vad=False)`, then the whisper.cpp file pipeline starts at stop with timestamps and the speakers switch) or "Show words as I speak" (live sherpa-onnx). "Make best quality transcript" after a live recording or a cancel stays in the Record tab and keeps the live transcript (`(best quality).txt`); mic level meter (`MicRecorder.get_level`); in live mode steps 1-2 fold to one line while the activity panel shows, so the live transcript keeps its room |
 | v3.2.0 | "Find speakers" after a recording's transcript (time estimate from `diarizer.estimate_seconds`, per-PC speed in `settings.json`, output `(speakers).txt`); speakers switch removed from the Record tab; speaker names typed in an inline `SpeakerNamingPanel` (no popup); "Save recordings to" folder (default Documents\\EasyScribe); diarization in a child process so Stop works, more threads; device log names engine, GPU and CPU; small `EasyScribe-update-vX.exe` (see Rule 14) |
 | v3.2.1 | whisper-cli is probed once with an empty model to list its Vulkan devices; `_pick_gpu` passes `-dev` for a dedicated GPU (uma: 0) before an integrated one, then matrix cores, then Vulkan's order (whisper.cpp always took device 0, and Windows' Vulkan order differs between identical laptops); unused devices logged with their details |
+| v3.2.2 | Screen changes (tabs, activity panel, results, speakers card, names panel, details) fade out and in: `transitions.py` holds drawing with `WM_SETREDRAW` and covers the area below the tabs with an owned layered window (see Rule 21) |

@@ -17,6 +17,7 @@ Design notes (for whoever edits this next):
   - Visible text: sentence case, no em/en dashes, no exclamation marks.
 """
 
+import functools
 import logging
 import os
 import shutil
@@ -69,6 +70,7 @@ from transcriber import (
 )
 from mic_recorder import MicRecorder
 from live_transcriber import LiveTranscriber
+import transitions
 import win_paint
 
 logger = logging.getLogger(__name__)
@@ -520,6 +522,18 @@ class PrivacyDialog(ctk.CTkToplevel):
 # ─── Main window ─────────────────────────────────────────────────────────────
 
 
+def _screen_change(method: Callable) -> Callable:
+    """Run a method that changes the screen under the fade (transitions.py)."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        veil = getattr(self, "_veil", None)
+        if veil is None:
+            method(self, *args, **kwargs)
+        else:
+            veil.run(lambda: method(self, *args, **kwargs))
+    return wrapper
+
+
 class TranscriberApp(_AppBase):  # type: ignore
     """Main application window."""
 
@@ -606,6 +620,8 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._render_files()
         self._set_ui_state("idle")
         self._update_status("Ready")
+        # Screen changes from here on fade out and in (Windows).
+        self._veil = transitions.create(self, self._mode_switch, C.BG)
 
         logger.info("GUI initialised")
 
@@ -1204,6 +1220,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         )
         self._log_box.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
 
+    @_screen_change
     def _toggle_details(self) -> None:
         self._details_open = not self._details_open
         if self._details_open:
@@ -1223,6 +1240,7 @@ class TranscriberApp(_AppBase):  # type: ignore
             return
         self._show_mode(value)
 
+    @_screen_change
     def _show_mode(self, mode: str) -> None:
         self._mode = mode
         if self._mode_switch.get() != mode:
@@ -1792,6 +1810,7 @@ class TranscriberApp(_AppBase):  # type: ignore
 
         return callback
 
+    @_screen_change
     def _show_naming_panel(
         self, speaker_map: dict, clips_dict: dict, shares: dict, done_event: threading.Event
     ) -> None:
@@ -1808,6 +1827,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._naming_host.grid()
         self._flash_taskbar()
 
+    @_screen_change
     def _close_naming_panel(self) -> None:
         if self._naming_panel is not None:
             self._naming_panel.destroy()
@@ -1826,6 +1846,7 @@ class TranscriberApp(_AppBase):  # type: ignore
 
     # ── Find speakers (after a recording) ────────────────────────────────────
 
+    @_screen_change
     def _offer_speakers(self) -> None:
         audio, segments = self._last_recording, self._last_segments
         if not (self._diarization_available and audio and segments and self._last_transcript):
@@ -2112,6 +2133,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         folder = self._output_folder or input_file.parent
         return folder / (input_file.stem + ".txt")
 
+    @_screen_change
     def _show_activity(self) -> None:
         self._activity.grid(row=3, column=0, padx=24, pady=(0, 10), sticky="ew")
         self._message_label.grid_remove()
@@ -2126,6 +2148,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         # result fit on short screens. "Change" or new files bring it back.
         self._action_row.grid_remove()
 
+    @_screen_change
     def _hide_activity(self) -> None:
         self._activity.grid_remove()
         self._fold_options(False)
@@ -2184,6 +2207,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._message_label.configure(text=text, text_color=fg, fg_color=bg)
         self._message_label.grid(ipadx=10, ipady=8)
 
+    @_screen_change
     def _show_results(
         self, transcript: bool, folder: bool = True, retry: bool = False, full: bool = False
     ) -> None:

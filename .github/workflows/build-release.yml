@@ -24,7 +24,7 @@ on:
       tag:
         description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0)'
         required: true
-        default: 'v3.2.1'
+        default: 'v3.2.2'
 
 permissions:
   contents: write
@@ -413,6 +413,9 @@ jobs:
             (The downloaded .exe also works, but it must unpack itself each time, which is slow.)
 
             ---
+            ### What's new in 3.2.2
+            - **Smoother screen changes** — switching between Files and Record, starting a job and showing a result now fade out and in, instead of showing half-drawn boxes for a moment. Turned off when Windows "Animation effects" is off
+
             ### What's new in 3.2.1
             - **Uses the fast graphics card** — on laptops with two GPUs, EasyScribe now picks the dedicated one (for example an RTX 5070) instead of whichever Windows lists first, which could be the small built-in one
             - **Show details** lists every graphics card with its details, including the ones not used
