@@ -2281,7 +2281,10 @@ class TranscriberApp(_AppBase):  # type: ignore
             what = "Renames the recording and its transcripts together."
         else:
             what = "Renames the recording."
-        self._rename_note.configure(text=f"Now: {stem}. {what}", text_color=C.MUTED)
+        # The current name, so a word can be added instead of typed again.
+        self._rename_entry.delete(0, "end")
+        self._rename_entry.insert(0, stem)
+        self._rename_note.configure(text=what, text_color=C.MUTED)
         self._rename_row.grid()
 
     def _on_rename(self) -> None:
@@ -2306,7 +2309,6 @@ class TranscriberApp(_AppBase):  # type: ignore
         for attr in ("_last_recording", "_last_transcript", "_batch_recording"):
             path = getattr(self, attr)
             setattr(self, attr, moved.get(path, path) if path else path)
-        self._rename_entry.delete(0, "end")
         self._rename_note.configure(text=f"\u2713 Renamed to {name}", text_color=C.GREEN_INK)
         self._append_log(f"[Rename] {stem} -> {name} ({len(moved)} files)")
 
