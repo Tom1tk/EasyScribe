@@ -71,6 +71,7 @@ from transcriber import (
 from mic_recorder import MicRecorder
 from live_transcriber import LiveTranscriber
 import transitions
+from rename import check_name, recording_set, rename_all
 import win_paint
 
 logger = logging.getLogger(__name__)
@@ -1132,9 +1133,34 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._retry_btn.grid(row=0, column=2)
         self._result_row.grid_remove()
 
+        # After a result: an optional new name for the files just made.
+        self._rename_row = ctk.CTkFrame(panel, fg_color=C.SURFACE_ALT, corner_radius=R_MD)
+        self._rename_row.grid(row=5, column=0, padx=18, pady=(0, 16), sticky="ew")
+        self._rename_row.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            self._rename_row, text="Name", font=self._f_strong, text_color=C.INK
+        ).grid(row=0, column=0, padx=(14, 10), pady=(12, 2), sticky="w")
+        self._rename_entry = ctk.CTkEntry(
+            self._rename_row, height=36, corner_radius=R_SM, font=self._f_body,
+            placeholder_text="Type a new name, for example Team meeting 21 Oct",
+            fg_color=C.SURFACE, border_color=C.BORDER_STRONG, text_color=C.INK,
+        )
+        self._rename_entry.grid(row=0, column=1, pady=(12, 2), sticky="ew")
+        self._rename_entry.bind("<Return>", lambda _e: self._on_rename())
+        _button(
+            self._rename_row, "Rename", kind="teal", width=100,
+            font=self._f_strong, command=self._on_rename,
+        ).grid(row=0, column=2, padx=14, pady=(12, 2))
+        self._rename_note = ctk.CTkLabel(
+            self._rename_row, text="", font=self._f_small, text_color=C.MUTED,
+            anchor="w", justify="left", wraplength=620,
+        )
+        self._rename_note.grid(row=1, column=1, columnspan=2, pady=(0, 10), sticky="w")
+        self._rename_row.grid_remove()
+
         # After a recording: the same choices as before it, for the saved file.
         self._best_row = ctk.CTkFrame(panel, fg_color=C.SURFACE_ALT, corner_radius=R_MD)
-        self._best_row.grid(row=5, column=0, padx=18, pady=(0, 16), sticky="ew")
+        self._best_row.grid(row=6, column=0, padx=18, pady=(0, 16), sticky="ew")
         self._best_row.grid_columnconfigure(1, weight=1)
         self._full_transcript_btn = _button(
             self._best_row, "Make best quality transcript", kind="teal", width=240,
@@ -1152,7 +1178,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._speakers_card = ctk.CTkFrame(
             panel, fg_color=C.SURFACE, corner_radius=R_MD, border_width=2, border_color=C.AMBER
         )
-        self._speakers_card.grid(row=6, column=0, padx=18, pady=(0, 16), sticky="ew")
+        self._speakers_card.grid(row=7, column=0, padx=18, pady=(0, 16), sticky="ew")
         self._speakers_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             self._speakers_card, text="Who said what?", font=self._f_title, text_color=C.INK
@@ -1187,7 +1213,7 @@ class TranscriberApp(_AppBase):  # type: ignore
 
         # Speaker names are typed here (SpeakerNamingPanel), not in a popup.
         self._naming_host = ctk.CTkFrame(panel, fg_color="transparent")
-        self._naming_host.grid(row=7, column=0, padx=18, pady=(0, 16), sticky="ew")
+        self._naming_host.grid(row=8, column=0, padx=18, pady=(0, 16), sticky="ew")
         self._naming_host.grid_columnconfigure(0, weight=1)
         self._naming_host.grid_remove()
 
@@ -2138,6 +2164,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._activity.grid(row=3, column=0, padx=24, pady=(0, 10), sticky="ew")
         self._message_label.grid_remove()
         self._result_row.grid_remove()
+        self._rename_row.grid_remove()
         self._best_row.grid_remove()
         self._speakers_card.grid_remove()
         self._batch_label.configure(text="")
@@ -2228,6 +2255,60 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._best_row.grid()
         else:
             self._best_row.grid_remove()
+        self._offer_rename()
+
+    # ── Rename (after a result) ──────────────────────────────────────────────
+
+    def _rename_targets(self) -> tuple[list[Path], str] | None:
+        """The files the Name box renames, and the name they share now."""
+        audio = self._last_recording if self._mode == _MODE_RECORD else None
+        if audio is not None and audio.exists():
+            return recording_set(audio), audio.stem
+        transcript = self._last_transcript
+        if transcript is not None and transcript.exists():
+            return [transcript], transcript.stem
+        return None
+
+    def _offer_rename(self) -> None:
+        targets = self._rename_targets()
+        if targets is None:
+            self._rename_row.grid_remove()
+            return
+        files, stem = targets
+        if self._mode != _MODE_RECORD:
+            what = "Renames the transcript. Your original file is not changed."
+        elif len(files) > 1:
+            what = "Renames the recording and its transcripts together."
+        else:
+            what = "Renames the recording."
+        self._rename_note.configure(text=f"Now: {stem}. {what}", text_color=C.MUTED)
+        self._rename_row.grid()
+
+    def _on_rename(self) -> None:
+        targets = self._rename_targets()
+        if self._ui_state != "idle" or targets is None:
+            return
+        files, stem = targets
+        name = self._rename_entry.get().strip()
+        problem = check_name(name)
+        if not problem:
+            try:
+                moved = rename_all(files, stem, name)
+            except FileExistsError as exc:
+                problem = f'"{exc}" already exists in that folder. Please choose another name.'
+            except OSError as exc:
+                logger.warning(f"Rename failed: {exc}")
+                problem = ("Could not rename. If the file is open in another program, "
+                           "close it and try again.")
+        if problem:
+            self._rename_note.configure(text=problem, text_color=C.CRIMSON)
+            return
+        for attr in ("_last_recording", "_last_transcript", "_batch_recording"):
+            path = getattr(self, attr)
+            setattr(self, attr, moved.get(path, path) if path else path)
+        self._rename_entry.delete(0, "end")
+        self._rename_note.configure(text=f"\u2713 Renamed to {name}", text_color=C.GREEN_INK)
+        self._append_log(f"[Rename] {stem} -> {name} ({len(moved)} files)")
 
     def _update_status(self, status: str) -> None:
         title, colour, bar_colour, mode = _STATUS.get(

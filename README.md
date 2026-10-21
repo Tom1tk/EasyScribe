@@ -73,6 +73,8 @@ After a live recording, you can still get the best result: select **Make best qu
   <img src="docs/screenshots/recording-saved.png" alt="A saved recording, with the Make best quality transcript button" width="640">
 </p>
 
+After a result, you can give the files a name: type it in the **Name** box and select **Rename**. A recording and its transcripts are renamed together (`Team meeting.wav`, `Team meeting.txt`, `Team meeting (speakers).txt`). In **Transcribe files**, only the new transcript is renamed; your original file is not changed.
+
 If your computer stops during a recording, EasyScribe offers to recover the audio the next time it opens.
 
 ### Your privacy

@@ -36,7 +36,7 @@ from pathlib import Path
 
 import customtkinter as ctk
 
-VERSION = "3.2.2"
+VERSION = "3.2.3"
 MARKER_FILENAME = ".easyscribe-install.json"
 # Old app files are moved here during an update, then deleted. It only ever
 # holds app files (never user data), so a leftover copy is safe to remove.
