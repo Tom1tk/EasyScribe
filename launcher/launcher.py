@@ -8,12 +8,19 @@ If the installed version is older than this launcher, it shows the installer
 and updates the app files in place only when the user selects "Update and
 open". User data (recordings/, logs/) is never moved or deleted.
 
+An update .exe (EasyScribe-update-vX.exe, made by assets/make_update_bundle.py)
+carries a smaller app.bundle without the big files that rarely change (models,
+ffmpeg, the whisper.cpp model). It lists them with their SHA-256 in
+UPDATE_INFO_FILENAME; the update checks the installed copies first and keeps
+them. It cannot do a new install.
+
 The bootloader shows a splash (launcher.spec) while it unpacks; it is
 closed when the installer window or the app window is open.
 
 INSTALL_DIR defaults to <directory containing this exe>/EasyScribe/
 """
 
+import hashlib
 import json
 import os
 import queue
@@ -29,13 +36,15 @@ from pathlib import Path
 
 import customtkinter as ctk
 
-VERSION = "3.1.0"
+VERSION = "3.2.0"
 MARKER_FILENAME = ".easyscribe-install.json"
 # Old app files are moved here during an update, then deleted. It only ever
 # holds app files (never user data), so a leftover copy is safe to remove.
 BACKUP_DIRNAME = ".easyscribe-old"
 # Never deleted by the installer: the user's recordings and transcripts, and logs.
 USER_DATA_DIRS = frozenset({"recordings", "logs"})
+# In an update bundle only: {"keep": {"models/x.onnx": "<sha256>", ...}}.
+UPDATE_INFO_FILENAME = ".easyscribe-update.json"
 _exe_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent.parent
 
 
@@ -208,6 +217,34 @@ def _create_shortcuts(install_dir: Path) -> None:
     )
 
 
+def _install_dir_from_shortcut() -> Path | None:
+    """The folder the Start Menu or Desktop shortcut opens, if it holds EasyScribe.
+
+    An update .exe is usually run from Downloads, so it looks for the
+    install the user already has.
+    """
+    if sys.platform != "win32":
+        return None
+    links = (
+        Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "EasyScribe.lnk",
+        Path(os.environ["USERPROFILE"]) / "Desktop" / "EasyScribe.lnk",
+    )
+    for link in links:
+        if not link.is_file():
+            continue
+        try:
+            target = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 f"(New-Object -ComObject WScript.Shell).CreateShortcut({_ps_quote(str(link))}).TargetPath"],
+                capture_output=True, text=True, timeout=15, creationflags=0x08000000,
+            ).stdout.strip()
+        except Exception:
+            continue
+        if target and _main_exe(Path(target).parent).is_file():
+            return Path(target).parent
+    return None
+
+
 def _ensure_shortcuts(install_dir: Path) -> None:
     """Create shortcuts once per install, tracked via the marker file."""
     if _shortcuts_created(install_dir):
@@ -242,7 +279,50 @@ _move = os.replace
 def _bundle_app_items(names: list[str]) -> set[str]:
     """Top-level names in the bundle that are app files (not user data)."""
     tops = {n.replace("\\", "/").split("/", 1)[0] for n in names}
-    return {t for t in tops if t and t not in USER_DATA_DIRS and t != MARKER_FILENAME}
+    return {
+        t for t in tops
+        if t and t not in USER_DATA_DIRS and t not in (MARKER_FILENAME, UPDATE_INFO_FILENAME)
+    }
+
+
+class NeedsFullInstallError(RuntimeError):
+    """An update bundle, but a file it keeps is missing or different in this install."""
+
+
+def _bundle_keeps(bundle: Path) -> dict[str, str] | None:
+    """The files an update bundle keeps from the install, or None for a full bundle."""
+    with zipfile.ZipFile(bundle, "r") as zf:
+        if UPDATE_INFO_FILENAME not in zf.namelist():
+            return None
+        keep = json.loads(zf.read(UPDATE_INFO_FILENAME)).get("keep")
+    if not isinstance(keep, dict) or not keep:
+        raise ValueError("The update information in this installer is damaged.")
+    return keep
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _check_kept_files(install_dir: Path, keep: dict[str, str]) -> None:
+    """Raise NeedsFullInstallError unless every kept file is there, unchanged."""
+    for rel, sha in keep.items():
+        path = install_dir / rel
+        if not path.is_file() or _file_sha256(path) != sha:
+            raise NeedsFullInstallError(rel)
+
+
+def _carry_over(src: Path, dst: Path) -> None:
+    """Put a kept file into the new app folder; the backup keeps its own copy."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dst)  # same drive: instant, no extra space
+    except OSError:
+        shutil.copy2(src, dst)
 
 
 def _restore_backup(install_dir: Path) -> None:
@@ -309,9 +389,15 @@ def _update_install(bundle: Path, install_dir: Path, progress=None) -> None:
     are and are never touched. The old app files are first moved to
     BACKUP_DIRNAME; if anything fails they are moved back.
 
+    An update bundle (see UPDATE_INFO_FILENAME) leaves out files that rarely
+    change. They are checked before anything is changed, and kept.
+
     Raises UpdateBlockedError if the old files cannot be moved because they
-    are in use.
+    are in use, and NeedsFullInstallError if a kept file is missing or
+    different.
     """
+    keep = _bundle_keeps(bundle) or {}
+    _check_kept_files(install_dir, keep)
     backup = install_dir / BACKUP_DIRNAME
     if backup.exists():
         shutil.rmtree(backup)  # only ever holds app files, see BACKUP_DIRNAME
@@ -342,6 +428,11 @@ def _update_install(bundle: Path, install_dir: Path, progress=None) -> None:
                 zf.extract(member, install_dir)
                 if progress and (i % 200 == 0 or i == total):
                     progress(int(100 * i / total))
+            # Kept files inside a replaced folder (whispercpp/*.bin) come
+            # from the backup; kept folders not in the bundle were not moved.
+            for rel in keep:
+                if rel.split("/", 1)[0] in app_items:
+                    _carry_over(backup / rel, install_dir / rel)
             for name in USER_DATA_DIRS:
                 (install_dir / name).mkdir(exist_ok=True)
         except BaseException:
@@ -476,6 +567,11 @@ class InstallerApp(ctk.CTk):
         self._f_primary = ctk.CTkFont(family=family, size=14, weight="bold")
 
         self._install_dir = ctk.StringVar(value=str(install_dir or _exe_dir / "EasyScribe"))
+        bundle = _find_bundle()
+        try:
+            self._is_update_only = bundle is not None and _bundle_keeps(bundle) is not None
+        except Exception:
+            self._is_update_only = False  # a damaged bundle fails later with a message
         self._q: queue.Queue = queue.Queue()
         self._busy = False
         self._build_ui()
@@ -586,7 +682,16 @@ class InstallerApp(ctk.CTk):
         if self._busy:
             return
         install_dir = Path(self._install_dir.get().strip())
-        if _main_exe(install_dir).is_file() and _needs_update(install_dir):
+        self._btn.configure(state="normal", fg_color=C.TEAL)
+        if self._is_update_only and not _main_exe(install_dir).is_file():
+            self._set_status(
+                f"This file updates an installed EasyScribe to {VERSION}. It cannot install it new.\n"
+                f"Select Browse and choose your EasyScribe folder, or download the full "
+                f"EasyScribe-v{VERSION}.exe.",
+                "error",
+            )
+            self._btn.configure(text="Install", state="disabled", fg_color=C.FAINT)
+        elif _main_exe(install_dir).is_file() and _needs_update(install_dir):
             installed = _installed_version(install_dir) or "an older version"
             self._set_status(
                 f"EasyScribe {installed} is installed in this folder.\n"
@@ -622,7 +727,7 @@ class InstallerApp(ctk.CTk):
             self._do_install(install_dir, update=True)
         elif _main_exe(install_dir).is_file():
             self._do_launch(install_dir)
-        else:
+        elif not self._is_update_only:
             self._do_install(install_dir)
 
     def _do_launch(self, install_dir: Path):
@@ -662,10 +767,16 @@ class InstallerApp(ctk.CTk):
     # ── Background extraction ─────────────────────────────────────────────────
 
     def _update_thread(self, bundle: Path, install_dir: Path):
-        self._q.put(("status", f"Updating EasyScribe to {VERSION}… Your recordings are kept."))
+        self._q.put(("status", f"Checking the installed files, then updating to {VERSION}…"))
         try:
             _update_install(bundle, install_dir, lambda pct: self._q.put(("progress", pct)))
             self._q.put(("done", install_dir))
+        except NeedsFullInstallError as exc:
+            self._q.put((
+                "error",
+                f"this update needs a file that is missing or different in your install ({exc}).\n"
+                f"Download the full EasyScribe-v{VERSION}.exe instead. Nothing was changed.",
+            ))
         except UpdateBlockedError:
             self._q.put((
                 "error",
@@ -733,6 +844,13 @@ class InstallerApp(ctk.CTk):
 
 def main():
     default_dir = _exe_dir / "EasyScribe"
+    bundle = _find_bundle()
+    if not _main_exe(default_dir).is_file() and bundle is not None:
+        try:
+            if _bundle_keeps(bundle) is not None:
+                default_dir = _install_dir_from_shortcut() or default_dir
+        except Exception:
+            pass  # the installer window shows the problem
     _recover_interrupted_update(default_dir)
     if _main_exe(default_dir).is_file() and not _needs_update(default_dir):
         # Same or newer version at the default location: open it, no installer

@@ -16,8 +16,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "launcher"))
+sys.path.insert(0, str(ROOT / "assets"))
 
 import launcher
+import make_update_bundle
 
 failures: list[str] = []
 
@@ -343,6 +345,102 @@ def _check_clean_incomplete_install_keeps_user_data() -> None:
         assert not (install_dir / "_internal").exists()
 
 
+# ── Update .exe (partial bundle) ─────────────────────────────────────────────
+
+def _make_app_folder(root: Path, exe: str) -> Path:
+    """An assembled app folder, as CI builds it; the big files are the same each time."""
+    app = root
+    (app / "_internal").mkdir(parents=True)
+    (app / "_internal" / "lib.dll").write_text(exe, encoding="utf-8")
+    (app / "EasyScribe.exe").write_text(exe, encoding="utf-8")
+    (app / "models" / "whisper").mkdir(parents=True)
+    (app / "models" / "whisper" / "encoder.onnx").write_text("model", encoding="utf-8")
+    (app / "ffmpeg").mkdir()
+    (app / "ffmpeg" / "ffmpeg.exe").write_text("ffmpeg", encoding="utf-8")
+    (app / "whispercpp").mkdir()
+    (app / "whispercpp" / "whisper-cli.exe").write_text(exe, encoding="utf-8")
+    (app / "whispercpp" / "ggml-model.bin").write_text("gguf", encoding="utf-8")
+    (app / "recordings").mkdir()
+    return app
+
+
+def _make_partial_setup(root: Path) -> tuple[Path, Path]:
+    """An installed 3.1.0 (full) and an update bundle built from the new app folder."""
+    install_dir = _make_app_folder(root / "EasyScribe", "old")
+    (install_dir / "recordings" / "meeting.wav").write_text("precious audio", encoding="utf-8")
+    data = {"app": "EasyScribe", "version": "3.1.0", "shortcuts_created": True}
+    (install_dir / launcher.MARKER_FILENAME).write_text(json.dumps(data), encoding="utf-8")
+    bundle = root / "update.bundle"
+    make_update_bundle.build(_make_app_folder(root / "dist", "new"), bundle)
+    return install_dir, bundle
+
+
+def _check_update_bundle_leaves_out_big_files() -> None:
+    assert make_update_bundle.UPDATE_INFO_FILENAME == launcher.UPDATE_INFO_FILENAME
+    with tempfile.TemporaryDirectory() as tmp:
+        _install, bundle = _make_partial_setup(Path(tmp))
+        names = set(zipfile.ZipFile(bundle).namelist())
+        assert "EasyScribe.exe" in names and "whispercpp/whisper-cli.exe" in names, names
+        assert not any(n.startswith(("models/", "ffmpeg/", "recordings")) for n in names), names
+        assert "whispercpp/ggml-model.bin" not in names, names
+        keep = launcher._bundle_keeps(bundle)
+        assert set(keep) == {"models/whisper/encoder.onnx", "ffmpeg/ffmpeg.exe", "whispercpp/ggml-model.bin"}, keep
+        assert launcher._bundle_keeps(_make_bundle(Path(tmp))) is None  # a full bundle
+
+
+def _check_partial_update_keeps_big_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        install_dir, bundle = _make_partial_setup(Path(tmp))
+        launcher._update_install(bundle, install_dir)
+        assert launcher._main_exe(install_dir).read_text(encoding="utf-8") == "new"
+        assert (install_dir / "whispercpp" / "whisper-cli.exe").read_text(encoding="utf-8") == "new"
+        assert (install_dir / "whispercpp" / "ggml-model.bin").read_text(encoding="utf-8") == "gguf"
+        assert (install_dir / "models" / "whisper" / "encoder.onnx").read_text(encoding="utf-8") == "model"
+        assert (install_dir / "ffmpeg" / "ffmpeg.exe").is_file()
+        assert (install_dir / "recordings" / "meeting.wav").read_text(encoding="utf-8") == "precious audio"
+        assert not (install_dir / launcher.UPDATE_INFO_FILENAME).exists()
+        assert not (install_dir / launcher.BACKUP_DIRNAME).exists()
+        assert launcher._installed_version(install_dir) == launcher.VERSION
+
+
+def _check_partial_update_refuses_changed_install() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        install_dir, bundle = _make_partial_setup(Path(tmp))
+        (install_dir / "models" / "whisper" / "encoder.onnx").write_text("other model", encoding="utf-8")
+        try:
+            launcher._update_install(bundle, install_dir)
+            raise AssertionError("expected NeedsFullInstallError")
+        except launcher.NeedsFullInstallError as exc:
+            assert "encoder.onnx" in str(exc), exc
+        assert launcher._main_exe(install_dir).read_text(encoding="utf-8") == "old"
+        assert not (install_dir / launcher.BACKUP_DIRNAME).exists()
+        assert launcher._installed_version(install_dir) == "3.1.0"
+        assert launcher._update_in_progress(install_dir) is False
+
+
+def _check_partial_update_failure_restores_kept_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        install_dir, bundle = _make_partial_setup(Path(tmp))
+        original = launcher._carry_over
+
+        def broken(src, dst):
+            raise OSError("disk full")
+
+        launcher._carry_over = broken
+        try:
+            launcher._update_install(bundle, install_dir)
+            raise AssertionError("expected OSError")
+        except OSError:
+            pass
+        finally:
+            launcher._carry_over = original
+        assert launcher._main_exe(install_dir).read_text(encoding="utf-8") == "old"
+        assert (install_dir / "whispercpp" / "ggml-model.bin").read_text(encoding="utf-8") == "gguf"
+        assert (install_dir / "whispercpp" / "whisper-cli.exe").read_text(encoding="utf-8") == "old"
+        assert not (install_dir / launcher.BACKUP_DIRNAME).exists()
+        assert launcher._installed_version(install_dir) == "3.1.0"
+
+
 def main() -> None:
     print("\n-- launcher install-safety tests -------------------------------------------")
     _check("_resolve_install_dir(picked dir) -> <dir>/EasyScribe", _check_resolve_picked_dir_redirects_to_subdir)
@@ -368,6 +466,10 @@ def main() -> None:
     _check("_recover_interrupted_update puts old files back", _check_recover_interrupted_update)
     _check("_recover_interrupted_update removes a finished backup", _check_recover_removes_leftover_backup_of_finished_update)
     _check("_clean_incomplete_install keeps recordings+logs", _check_clean_incomplete_install_keeps_user_data)
+    _check("update bundle leaves out models, ffmpeg, GGUF", _check_update_bundle_leaves_out_big_files)
+    _check("partial update keeps the big files, replaces the rest", _check_partial_update_keeps_big_files)
+    _check("partial update refuses a changed install, changes nothing", _check_partial_update_refuses_changed_install)
+    _check("partial update failure -> old files and GGUF back", _check_partial_update_failure_restores_kept_file)
     print("---------------------------------------------------------------------------\n")
 
     if failures:

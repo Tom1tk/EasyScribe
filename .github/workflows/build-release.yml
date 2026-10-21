@@ -1,7 +1,11 @@
 name: Build and Publish Release
 
 # Trigger manually from the GitHub Actions tab.
-# Builds a single EasyScribe .exe: launcher.exe with the app.bundle zip embedded.
+# Builds two .exe files, both launcher.exe with a bundle zip embedded:
+#   EasyScribe-<tag>.exe         full install (app.bundle, about 1.5 GB)
+#   EasyScribe-update-<tag>.exe  update only: leaves out models, ffmpeg and the
+#                                whisper.cpp model, which the launcher checks and keeps
+#                                (assets/make_update_bundle.py)
 #
 # Cache strategy:
 #   ffmpeg              ~150 MB   key: ffmpeg-win64-gyan-7.1.1-essentials-v1
@@ -20,7 +24,7 @@ on:
       tag:
         description: 'Release tag: "v" + APP_VERSION in src/config.py (e.g. v3.0.0)'
         required: true
-        default: 'v3.1.0'
+        default: 'v3.2.0'
 
 permissions:
   contents: write
@@ -335,15 +339,38 @@ jobs:
           $sizeMB = [math]::Round((Get-Item dist\launcher.exe).Length / 1MB, 1)
           Write-Host "launcher.exe (with embedded app.bundle): $sizeMB MB"
 
-      # ── 14. Rename to final release artifact ──────────────────────────────────
-      - name: Rename to release artifact
+      # ── 13b. Build the update .exe ───────────────────────────────────────────
+      # Same launcher, but its app.bundle leaves out the big downloaded files
+      # (models, ffmpeg, the whisper.cpp GGUF). It lists their SHA-256; the
+      # launcher checks the installed copies before it changes anything. If a
+      # download URL or version above changes, users need the full .exe for
+      # that release (say so in the release notes).
+      - name: Build update .exe
+        shell: pwsh
+        run: |
+          & venv\Scripts\Activate.ps1
+          python assets/make_update_bundle.py dist\EasyScribe update.bundle
+          if ($LASTEXITCODE -ne 0) { throw "update bundle failed" }
+          Move-Item app.bundle full.bundle
+          Move-Item update.bundle app.bundle
+          pyinstaller launcher/launcher.spec --noconfirm --distpath dist-update --workpath build-update
+          if ($LASTEXITCODE -ne 0) { throw "update launcher build failed" }
+          $sizeMB = [math]::Round((Get-Item dist-update\launcher.exe).Length / 1MB, 1)
+          Write-Host "update launcher.exe: $sizeMB MB"
+
+      # ── 14. Rename to final release artifacts ─────────────────────────────────
+      - name: Rename to release artifacts
         shell: pwsh
         run: |
           $tag    = "${{ github.event.inputs.tag }}"
           $outExe = "EasyScribe-${tag}.exe"
+          $updExe = "EasyScribe-update-${tag}.exe"
           Move-Item "dist\launcher.exe" $outExe
-          $sizeMB = [math]::Round((Get-Item $outExe).Length / 1MB, 1)
-          Write-Host "Release artifact: $outExe ($sizeMB MB)"
+          Move-Item "dist-update\launcher.exe" $updExe
+          foreach ($f in $outExe, $updExe) {
+            $sizeMB = [math]::Round((Get-Item $f).Length / 1MB, 1)
+            Write-Host "Release artifact: $f ($sizeMB MB)"
+          }
 
       # ── 15. Publish GitHub Release ────────────────────────────────────────────
       - name: Create GitHub Release
@@ -373,6 +400,10 @@ jobs:
             To start faster, unblock the file before the first start: right-click the .exe → **Properties** → select **Unblock** → **OK**.
 
             ### Updating from an earlier version
+            **Smaller download:** if EasyScribe 3.1.0 or later is installed, download `EasyScribe-update-${{ github.event.inputs.tag }}.exe` instead of the full .exe.
+            It keeps the large speech models already on your computer, after checking that they are unchanged. It finds your install from its shortcut; if not, select **Browse** and choose your `EasyScribe` folder.
+            If it says it needs the full download, use `EasyScribe-${{ github.event.inputs.tag }}.exe`. Nothing is changed in that case.
+
             Close EasyScribe, then double-click the new .exe. It finds the older version and asks first:
             select **Update and open** to update it in place, or **Browse** to install in a different folder.
             Your recordings and logs are kept. If the update fails, the previous version is restored.
@@ -382,6 +413,14 @@ jobs:
             (The downloaded .exe also works, but it must unpack itself each time, which is slow.)
 
             ---
+            ### What's new in 3.2.0
+            - **Find speakers after recording** — after a recording's transcript, select **Find speakers**. It shows a rough estimate of how long it takes first, and **Stop** works at any time. The names go into a copy, `<name> (speakers).txt`; your first transcript is kept
+            - **Name speakers in the main window** — play a sample of each voice and type the names in the app window. No more popup that could hide behind the window
+            - **Choose where recordings are saved** — "Save recordings to" in the Record tab; the default is `Documents\EasyScribe`
+            - **Faster speaker detection** — uses more processor threads (about 3× faster)
+            - **Small update download** — `EasyScribe-update-${{ github.event.inputs.tag }}.exe` updates an installed EasyScribe without the large models
+            - **Clearer details** — Show details names the engine (Vulkan or CPU), your graphics card and your processor
+
             ### What's new in 3.1.0
             - **New Record tab** — first choose what you want: **Best quality transcript after recording** (the default) or **Show words as I speak**. Both save the recording
             - **Best quality after recording** — EasyScribe records only; when you stop, it makes the transcript at once with the more accurate engine, with times, and with speakers if you tick **More than one person speaking**
@@ -404,7 +443,9 @@ jobs:
 
             ### Licenses
             EasyScribe is MIT-licensed. It includes FFmpeg (GPL v3), whisper.cpp, sherpa-onnx and the models listed in `THIRD-PARTY-NOTICES.txt` in the install folder.
-          files: EasyScribe-${{ github.event.inputs.tag }}.exe
+          files: |
+            EasyScribe-${{ github.event.inputs.tag }}.exe
+            EasyScribe-update-${{ github.event.inputs.tag }}.exe
           draft: true
           # Tags with a suffix (v3.0.0-beta2) are marked as pre-releases
           prerelease: ${{ contains(github.event.inputs.tag, '-') }}

@@ -101,6 +101,8 @@ Select **Privacy** at the bottom of the window to see what EasyScribe stores and
 
 Close EasyScribe, then double-click the new `.exe`. It finds your older version and asks first. Select **Update and open** to update it in place, or **Browse** to install in a different folder. Your recordings and logs are kept. If something goes wrong during the update, the previous version is restored.
 
+If EasyScribe 3.1.0 or later is installed, you can download the much smaller `EasyScribe-update-vX.exe` instead. It keeps the speech models already on your computer, after checking that they are unchanged. It finds your install from its shortcut, or you select **Browse** and choose your `EasyScribe` folder. If it says it needs the full download, nothing was changed: use the full `.exe`.
+
 ### Take it with you
 
 EasyScribe is portable. It does not use the registry and does not need admin rights. To move it, copy the `.exe` and the `EasyScribe` folder next to it.
@@ -135,6 +137,7 @@ After a pause, the next block starts here.
 |---|---|
 | SmartScreen blocks the `.exe` | Select **More info → Run anyway**, or unblock the file first (**Properties → Unblock**). The app is not signed yet. |
 | Nothing shows for up to a minute after the first double-click | Windows checks the large downloaded file first. Wait, or unblock the file first (**Properties → Unblock**). |
+| The update `.exe` says it needs the full download | A model or ffmpeg file in your install is missing or different, or the release changed one. Download the full `.exe`. |
 | "Close EasyScribe" message during an update | EasyScribe is still open. Close it, then select **Update and open** again. |
 | "Model files missing" when it starts | Run the `.exe` again. The first install may have been stopped. |
 | **Name the speakers** is grey | The speaker models are missing. Run the `.exe` again. |
@@ -213,6 +216,7 @@ EasyScribe\
 - Same or newer install: it opens the installed `EasyScribe.exe` directly. It never downgrades.
 - Older install: it shows the installer window and waits. Only when the user selects **Update and open** does it move the app files to `.easyscribe-old\`, extract the new files, then delete the backup. On any failure, the backup is moved back. `recordings\` and `logs\` are never moved. If a file is locked (the app is open), the update stops and the user is told to close EasyScribe.
 - If an update is interrupted (power loss), the next start restores the backup first.
+- The update `.exe` has a bundle without `models\`, `ffmpeg\` and the whisper.cpp model (`assets/make_update_bundle.py`). It lists their SHA-256 in `.easyscribe-update.json`. The launcher checks the installed copies before it changes anything, then keeps them (a kept file inside a replaced folder is hard-linked from the backup). It cannot do a new install.
 
 **Start-up splash.** The PyInstaller one-file bootloader unpacks `app.bundle` (about 1.5 GB) to `%TEMP%` before any Python code runs. This can take a minute. A PyInstaller `Splash` (`assets/splash.png`) shows at once during that time; the launcher closes it when its own window opens.
 

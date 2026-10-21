@@ -236,6 +236,16 @@ extracted, and the backup is restored on any error. `recordings\` and `logs\`
 file is replaced. An `"updating"` flag in the marker lets the next start recover from a
 power loss. `tests/test_launcher_safety.py` covers each path; it needs tkinter.
 
+The update .exe (`EasyScribe-update-vX.exe`) embeds a bundle from
+`assets/make_update_bundle.py` without the downloaded files (`KEEP`: models, ffmpeg,
+`whispercpp/*.bin`), listed by SHA-256 in `.easyscribe-update.json`. `_update_install`
+checks them before any file moves (`NeedsFullInstallError`) and hard-links kept files
+back into a replaced folder. whisper-cli.exe and its DLLs are always shipped: CI
+rebuilds them when the cache expires, so their bytes change. When a KEEP file's URL or
+version changes, the release notes must say "use the full .exe". No signature: the
+user runs the .exe itself, so a signed manifest adds nothing until updates download
+in-app (that would also break Rule 13).
+
 ### Rule 15: Set an AppUserModelID, or Windows shows a stale taskbar icon
 
 `iconbitmap()` sets the window icon only. The taskbar groups by AppUserModelID and caches
@@ -336,3 +346,4 @@ SDK) are removed in CI: sounddevice loads them only when `SD_ENABLE_ASIO` is set
 | v3.0.0-beta3 | PyInstaller `Splash` ("Getting ready") during the one-file extraction; installer waits for the user before an update and uses the app's light CustomTkinter theme; `win_paint.py` stops the black-block flash on refocus (Windows); Show details / Privacy drawn as small outlined buttons |
 | v3.0.0 | First full release. Third-party licenses and notices in the bundle (`licenses/`, `assets/collect_licenses.py`, checked by `validate_build.py`); ASIO PortAudio DLLs removed; exe renamed `EasyScribe-v3.0.0.exe` (no `-whisper`); release notes and README explain Mark of the Web (Unblock tip). Code signing deferred to 3.1 |
 | v3.1.0 | Record tab (was "Record live") asks first: "Best quality transcript after recording" (default: record only, `MicRecorder.start(feed_vad=False)`, then the whisper.cpp file pipeline starts at stop with timestamps and the speakers switch) or "Show words as I speak" (live sherpa-onnx). "Make best quality transcript" after a live recording or a cancel stays in the Record tab and keeps the live transcript (`(best quality).txt`); mic level meter (`MicRecorder.get_level`); in live mode steps 1-2 fold to one line while the activity panel shows, so the live transcript keeps its room |
+| v3.2.0 | "Find speakers" after a recording's transcript (time estimate from `diarizer.estimate_seconds`, per-PC speed in `settings.json`, output `(speakers).txt`); speakers switch removed from the Record tab; speaker names typed in an inline `SpeakerNamingPanel` (no popup); "Save recordings to" folder (default Documents\\EasyScribe); diarization in a child process so Stop works, more threads; device log names engine, GPU and CPU; small `EasyScribe-update-vX.exe` (see Rule 14) |
