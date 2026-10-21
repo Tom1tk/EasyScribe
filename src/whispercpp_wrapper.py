@@ -11,6 +11,7 @@ Modeled on ffmpeg_wrapper.py: subprocess + cancellation polling + stderr
 streamed to the log callback.
 """
 
+import functools
 import json
 import logging
 import re
@@ -121,6 +122,45 @@ def _describe_devices(lines: list[str]) -> list[str]:
     return out
 
 
+def _pick_gpu(lines: list[str]) -> int | None:
+    """
+    The Vulkan device whisper-cli should use: a dedicated GPU before an
+    integrated one (uma: 1), then one with matrix cores, then the first.
+
+    whisper.cpp takes device 0, the first one Vulkan lists. On laptops that is
+    often the small integrated GPU, next to a much faster dedicated one.
+    """
+    devices = [(int(m.group(1)), m.group(3)) for l in lines if (m := _VULKAN_DEV_RE.search(l))]
+    if not devices:
+        return None
+
+    def rank(device: tuple[int, str]) -> tuple:
+        idx, details = device
+        return ("uma: 1" not in details, "matrix cores: none" not in details, -idx)
+
+    return max(devices, key=rank)[0]
+
+
+@functools.lru_cache(maxsize=1)
+def _best_gpu() -> int | None:
+    """Ask whisper-cli which GPUs it sees, without loading the model (about 0.1 s)."""
+    empty_model = TEMP_DIR / f"probe_{uuid.uuid4().hex}.bin"
+    try:
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        empty_model.write_bytes(b"")
+        # whisper-cli lists the devices, then stops at the empty model.
+        result = subprocess.run(
+            [str(WHISPERCPP_BIN), "-m", str(empty_model), "-f", str(empty_model)],
+            capture_output=True, timeout=30, creationflags=_CREATE_NO_WINDOW,
+        )
+        return _pick_gpu(result.stderr.decode("utf-8", errors="replace").splitlines())
+    except Exception as exc:
+        logger.warning(f"GPU probe failed, whisper.cpp picks the device: {exc}")
+        return None
+    finally:
+        empty_model.unlink(missing_ok=True)
+
+
 def _parse_progress_line(line: str) -> int | None:
     m = _PROGRESS_RE.search(line)
     return int(m.group(1)) if m else None
@@ -174,6 +214,7 @@ def transcribe_file(
         "-f", str(audio_path),
         "-bs", str(WHISPERCPP_BEAM_SIZE),
         "-t", str(config.NUM_THREADS),
+        *(["-dev", str(gpu)] if (gpu := _best_gpu()) is not None else []),
         "-pp",
         "--output-json",
         "--output-file", str(out_stem),

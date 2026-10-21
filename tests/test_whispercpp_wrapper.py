@@ -120,6 +120,21 @@ def _check_describe_devices_unnamed_gpu() -> None:
     assert out[1] == "GPU: name not reported", out
 
 
+def _check_pick_gpu_prefers_dedicated() -> None:
+    lines = [
+        "ggml_vulkan: 0 = AMD Radeon(TM) 610M (AMD proprietary driver) | uma: 1 | fp16: 1 | matrix cores: none",
+        "ggml_vulkan: 1 = NVIDIA GeForce RTX 5070 Laptop GPU (NVIDIA) | uma: 0 | fp16: 1 | matrix cores: NV_coopmat2",
+    ]
+    assert whispercpp_wrapper._pick_gpu(lines) == 1
+    assert whispercpp_wrapper._pick_gpu(lines[:1]) == 0  # only an integrated GPU
+    assert whispercpp_wrapper._pick_gpu(["whisper_backend_init_gpu: no GPU found"]) is None
+    two_dedicated = [
+        "ggml_vulkan: 0 = GPU A | uma: 0 | matrix cores: none",
+        "ggml_vulkan: 1 = GPU B | uma: 0 | matrix cores: none",
+    ]
+    assert whispercpp_wrapper._pick_gpu(two_dedicated) == 0  # tie: keep Vulkan's order
+
+
 # ─── _parse_progress_line ──────────────────────────────────────────────────
 
 
@@ -180,6 +195,7 @@ def main() -> None:
     _check("describe_devices: Vulkan GPU with real name", _check_describe_devices_vulkan)
     _check("describe_devices: CPU only", _check_describe_devices_cpu_only)
     _check("describe_devices: GPU without a name line", _check_describe_devices_unnamed_gpu)
+    _check("pick_gpu: dedicated before integrated", _check_pick_gpu_prefers_dedicated)
     _check("parse_progress_line: matches percentage", _check_parse_progress_line)
     _check("parse_progress_line: unrelated line returns None", _check_parse_progress_line_unrelated)
     _check("is_available: False when binary/model missing", _check_is_available_false_when_missing)
