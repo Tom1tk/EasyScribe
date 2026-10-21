@@ -164,6 +164,111 @@ def _extract_speaker_clip(
         return False
 
 
+# ─── Speakers ─────────────────────────────────────────────────────────────────
+
+
+def _write_transcript(
+    output_path: Path, transcript_text: str, log_callback: Callable[[str], None]
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    log_callback(f"[Output] Writing transcript to: {output_path}")
+    logger.info(f"Writing transcript: {output_path}")
+    try:
+        with open(output_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(transcript_text)
+            fh.write("\n")
+    except PermissionError as exc:
+        raise TranscriptionError(
+            f"Cannot write to output file.\n"
+            f"The file may be open in another program: {output_path}\n\n{exc}"
+        ) from exc
+    except OSError as exc:
+        raise TranscriptionError(
+            f"Failed to write transcript: {output_path}\n\n{exc}"
+        ) from exc
+
+
+def speaker_transcript(
+    audio_path: Path,
+    raw_segments: list[tuple[float, float, str]],
+    add_timestamps: bool,
+    cancel_event: threading.Event,
+    status_callback: Callable[[str], None],
+    progress_callback: Callable[[float], None],
+    log_callback: Callable[[str], None],
+    speaker_name_callback: Callable[[dict, dict, dict], None] | None = None,
+) -> str:
+    """
+    Find the speakers in *audio_path* and return the transcript text with
+    their names. *speaker_name_callback(speaker_map, clips, shares)* lets the
+    user rename them; it must return once the names are in *speaker_map*.
+
+    Raises CancelledError, or DiarizationError / other errors on failure.
+    """
+    from diarizer import DiarizationEngine, save_measured_speed
+
+    status_callback("Identifying Speakers")
+    started = time.monotonic()
+    engine = DiarizationEngine()
+    turns = engine.diarize(audio_path, log_callback, cancel_event, progress_callback)
+    save_measured_speed(audio_path, raw_segments, time.monotonic() - started)
+    assigned = engine.assign_speakers(raw_segments, turns)
+
+    speaker_map: dict[str, str] = {}
+    talk: dict[str, float] = {}
+    for t_start, t_end, spk in turns:
+        if spk not in speaker_map:
+            speaker_map[spk] = f"Speaker {len(speaker_map) + 1}"
+        talk[spk] = talk.get(spk, 0.0) + max(0.0, t_end - t_start)
+
+    if speaker_name_callback is not None and speaker_map:
+        status_callback("Naming Speakers")
+        total_talk = sum(talk.values()) or 1.0
+        shares = {spk: talk.get(spk, 0.0) / total_talk for spk in speaker_map}
+        clips: dict[str, Path] = {}
+        for raw_spk in speaker_map:
+            clip_path = TEMP_DIR / f"spk_clip_{raw_spk}.wav"
+            if _extract_speaker_clip(audio_path, turns, raw_spk, clip_path):
+                clips[raw_spk] = clip_path
+        try:
+            speaker_name_callback(speaker_map, clips, shares)
+        finally:
+            for clip in clips.values():
+                try:
+                    clip.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    return _build_diarized_transcript(assigned, speaker_map, add_timestamps)
+
+
+def add_speakers_to_file(
+    audio_path: Path,
+    raw_segments: list[tuple[float, float, str]],
+    output_path: Path,
+    cancel_event: threading.Event,
+    status_callback: Callable[[str], None],
+    progress_callback: Callable[[float], None],
+    log_callback: Callable[[str], None],
+    speaker_name_callback: Callable[[dict, dict, dict], None] | None = None,
+) -> None:
+    """
+    Add speakers to an existing transcript: find them in *audio_path*, then
+    write *raw_segments* with names (and timestamps) to *output_path*.
+    Unlike transcribe(diarize=True) a failure is raised, not hidden.
+    """
+    if not raw_segments:
+        raise TranscriptionError("The transcript has no text to add speakers to.")
+    text = speaker_transcript(
+        audio_path, raw_segments, True, cancel_event,
+        status_callback, progress_callback, log_callback, speaker_name_callback,
+    )
+    status_callback("Writing Transcript")
+    _write_transcript(output_path, text, log_callback)
+    progress_callback(1.0)
+    log_callback(f"[Done] Saved: {output_path}")
+
+
 # ─── Model / recognizer config ────────────────────────────────────────────────
 
 
@@ -247,8 +352,13 @@ class TranscriptionEngine:
         progress_callback: Callable[[float], None],
         log_callback: Callable[[str], None],
         diarize: bool = False,
-        speaker_name_callback: Callable[[dict, dict], None] | None = None,
-    ) -> None:
+        speaker_name_callback: Callable[[dict, dict, dict], None] | None = None,
+    ) -> list[tuple[float, float, str]]:
+        """Transcribe *audio_path* into *output_path*.
+
+        Returns the timed lines (start_sec, end_sec, text), so speakers can be
+        added later with add_speakers_to_file() without transcribing again.
+        """
         if cancel_event.is_set():
             raise CancelledError("Cancelled before transcription started")
 
@@ -339,34 +449,11 @@ class TranscriptionEngine:
 
         # ── Optional speaker diarization ──────────────────────────────────────
         if diarize and raw_segments:
-            status_callback("Identifying Speakers")
             try:
-                from diarizer import DiarizationEngine
-                _diarizer = DiarizationEngine()
-                turns = _diarizer.diarize(
-                    audio_path, log_callback, cancel_event, progress_callback
+                transcript_text = speaker_transcript(
+                    audio_path, raw_segments, add_timestamps, cancel_event,
+                    status_callback, progress_callback, log_callback, speaker_name_callback,
                 )
-                assigned = _diarizer.assign_speakers(raw_segments, turns)
-                speaker_map: dict[str, str] = {}
-                for _ts, _te, spk in turns:
-                    if spk not in speaker_map:
-                        speaker_map[spk] = f"Speaker {len(speaker_map) + 1}"
-
-                if speaker_name_callback is not None:
-                    status_callback("Naming Speakers")
-                    clips_dict: dict[str, Path] = {}
-                    for raw_spk in speaker_map:
-                        clip_path = TEMP_DIR / f"spk_clip_{raw_spk}.wav"
-                        if _extract_speaker_clip(audio_path, turns, raw_spk, clip_path):
-                            clips_dict[raw_spk] = clip_path
-                    speaker_name_callback(speaker_map, clips_dict)
-                    for p in clips_dict.values():
-                        try:
-                            p.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-
-                transcript_text = _build_diarized_transcript(assigned, speaker_map, add_timestamps)
             except CancelledError:
                 raise
             except Exception as exc:
@@ -378,24 +465,9 @@ class TranscriptionEngine:
 
         # ── Write transcript ──────────────────────────────────────────────────
         status_callback("Writing Transcript")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        log_callback(f"[Output] Writing transcript to: {output_path}")
-        logger.info(f"Writing transcript: {output_path}")
-
-        try:
-            with open(output_path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(transcript_text)
-                fh.write("\n")
-        except PermissionError as exc:
-            raise TranscriptionError(
-                f"Cannot write to output file.\n"
-                f"The file may be open in another program: {output_path}\n\n{exc}"
-            ) from exc
-        except OSError as exc:
-            raise TranscriptionError(
-                f"Failed to write transcript: {output_path}\n\n{exc}"
-            ) from exc
+        _write_transcript(output_path, transcript_text, log_callback)
 
         size_kb = output_path.stat().st_size // 1024
         progress_callback(1.0)
         log_callback(f"[Done] Saved: {output_path}  ({size_kb} KB)")
+        return raw_segments

@@ -54,17 +54,18 @@ from config import (
     SUPPORTED_EXTENSIONS,
 )
 import settings
-from common import CancelledError
+from common import CancelledError, wav_duration
 from ffmpeg_wrapper import (
     FFmpegExtractionError,
     FFmpegNotFoundError,
     extract_audio,
 )
-from diarizer import DiarizationEngine  # type: ignore
+from diarizer import DiarizationEngine, estimate_seconds, fmt_estimate, speech_seconds  # type: ignore
 from transcriber import (
     ModelNotFoundError,
     TranscriptionEngine,
     TranscriptionError,
+    add_speakers_to_file,
 )
 from mic_recorder import MicRecorder
 from live_transcriber import LiveTranscriber
@@ -155,7 +156,7 @@ _STATUS: dict[str, tuple[str, str, str, str]] = {
 _STATUS_HINTS: dict[str, str] = {
     "Loading Model": "Loading the speech model. This can take a minute.",
     "Identifying Speakers": "This step can take a while for long recordings.",
-    "Naming Speakers": "Name each speaker in the window that opened.",
+    "Naming Speakers": "Type each speaker's name below.",
 }
 
 _MODE_FILES = "Transcribe files"
@@ -216,9 +217,10 @@ def _open_path(path: Path) -> None:
 
 
 def _button(parent, text: str, kind: str = "secondary", **kw) -> ctk.CTkButton:  # type: ignore[no-untyped-def]
-    """Create a button. kind: teal | coral | secondary | subtle | link."""
+    """Create a button. kind: teal | coral | amber | secondary | subtle | link."""
     styles = {
         "teal": dict(fg_color=C.TEAL, hover_color=C.TEAL_HOVER, text_color=C.SURFACE),
+        "amber": dict(fg_color=C.AMBER, hover_color="#946000", text_color=C.SURFACE),
         "coral": dict(fg_color=C.CORAL, hover_color=C.CORAL_HOVER, text_color=C.SURFACE),
         "secondary": dict(fg_color=C.SECONDARY, hover_color=C.SECONDARY_HOVER, text_color=C.INK),
         # Quiet but clearly a button: white with a thin outline
@@ -238,6 +240,16 @@ def _button(parent, text: str, kind: str = "secondary", **kw) -> ctk.CTkButton: 
     opts.update(styles[kind])
     opts.update(kw)
     return ctk.CTkButton(parent, **opts)
+
+
+def _fmt_minutes(seconds: float) -> str:
+    """"18 min" for a duration; under a minute is "under 1 min"."""
+    return "under 1 min" if seconds < 60 else f"{round(seconds / 60)} min"
+
+
+def _fmt_took(seconds: float) -> str:
+    minutes, secs = divmod(int(round(seconds)), 60)
+    return f"{minutes} min {secs} s" if minutes else f"{secs} s"
 
 
 def _logo(parent, size: int = 40) -> tk.Canvas:  # type: ignore[no-untyped-def]
@@ -293,41 +305,35 @@ def _card(parent) -> ctk.CTkFrame:  # type: ignore[no-untyped-def]
 # ─── Speaker naming dialog ────────────────────────────────────────────────────
 
 
-class SpeakerNamingDialog(ctk.CTkToplevel):
-    """Modal popup for renaming speakers after diarization."""
+class SpeakerNamingPanel(ctk.CTkFrame):
+    """Speaker names, typed in the main window once the speakers are found.
+
+    Shown in the activity panel instead of a popup window: a popup could open
+    behind the main window and block it, so the app looked frozen.
+    """
 
     def __init__(
         self,
-        parent: ctk.CTk,
+        parent,  # type: ignore[no-untyped-def]
         speaker_map: dict[str, str],
         clips_dict: dict[str, Path],
-        done_event: threading.Event,
+        shares: dict[str, float],
+        on_done: Callable[[], None],
     ) -> None:
-        super().__init__(parent)
+        super().__init__(
+            parent, fg_color=C.SURFACE, corner_radius=R_MD, border_width=2, border_color=C.AMBER
+        )
         self._speaker_map = speaker_map
         self._clips_dict = clips_dict
-        self._done_event = done_event
+        self._shares = shares
+        self._on_done = on_done
         self._entries: dict[str, ctk.CTkEntry] = {}
         family = _ui_family()
         self._f_title = ctk.CTkFont(family=family, size=18, weight="bold")
         self._f_body = ctk.CTkFont(family=family, size=13)
         self._f_strong = ctk.CTkFont(family=family, size=13, weight="bold")
-
-        self.title("Name the speakers")
-        _set_window_icon(self)
-        self.configure(fg_color=C.BG)
-        self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
+        self._f_small = ctk.CTkFont(family=family, size=12)
         self._build()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.bind("<Return>", lambda _e: self._on_confirm())
-        self.bind("<Escape>", lambda _e: self._on_close())
-
-        self.update_idletasks()
-        px = parent.winfo_x() + (parent.winfo_width() - self.winfo_width()) // 2
-        py = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
-        self.geometry(f"+{max(0, px)}+{max(0, py)}")
 
         first = next(iter(self._entries.values()), None)
         if first is not None:
@@ -335,32 +341,29 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-
+        count = len(self._speaker_map)
         ctk.CTkLabel(
-            self, text="Who is speaking?", font=self._f_title, text_color=C.INK
-        ).grid(row=0, column=0, padx=24, pady=(22, 2), sticky="w")
+            self,
+            text=f"We found {count} speaker{'s' if count != 1 else ''}",
+            font=self._f_title, text_color=C.INK,
+        ).grid(row=0, column=0, padx=20, pady=(18, 2), sticky="w")
         ctk.CTkLabel(
             self,
             text="Play a short sample of each voice, then type the person's name.\n"
-                 "The names replace \"Speaker 1\", \"Speaker 2\" and so on in the transcript.",
-            font=self._f_body,
-            text_color=C.MUTED,
-            justify="left",
-        ).grid(row=1, column=0, padx=24, pady=(0, 14), sticky="w")
+                 "Leave a box empty to keep \"Speaker 1\", \"Speaker 2\" and so on.",
+            font=self._f_body, text_color=C.MUTED, justify="left",
+        ).grid(row=1, column=0, padx=20, pady=(0, 10), sticky="w")
 
-        many = len(self._speaker_map) > 5
-        if many:
-            rows = ctk.CTkScrollableFrame(
-                self, fg_color="transparent", height=5 * 64, width=460
-            )
+        if count > 4:
+            rows = ctk.CTkScrollableFrame(self, fg_color="transparent", height=4 * 62)
         else:
             rows = ctk.CTkFrame(self, fg_color="transparent")
-        rows.grid(row=2, column=0, padx=16, sticky="ew")
+        rows.grid(row=2, column=0, padx=12, sticky="ew")
         rows.grid_columnconfigure(0, weight=1)
 
         for i, (raw_label, default_name) in enumerate(self._speaker_map.items()):
             row = ctk.CTkFrame(
-                rows, fg_color=C.SURFACE, corner_radius=R_MD,
+                rows, fg_color=C.SURFACE_ALT, corner_radius=R_MD,
                 border_width=1, border_color=C.BORDER,
             )
             row.grid(row=i, column=0, padx=8, pady=4, sticky="ew")
@@ -369,32 +372,40 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
             ctk.CTkLabel(
                 row, text=default_name, font=self._f_strong, text_color=C.AMBER_INK,
                 fg_color=C.AMBER_SOFT, corner_radius=R_SM, width=92, height=28,
-            ).grid(row=0, column=0, padx=(12, 8), pady=12)
+            ).grid(row=0, column=0, padx=(12, 8), pady=10)
 
             clip_path = self._clips_dict.get(raw_label)
             _button(
                 row,
                 "Play sample" if clip_path else "No sample",
-                width=110,
-                height=32,
+                width=110, height=32,
                 state="normal" if clip_path else "disabled",
                 command=lambda p=clip_path: self._play_clip(p),
-            ).grid(row=0, column=1, padx=(0, 8), pady=12)
+            ).grid(row=0, column=1, padx=(0, 8), pady=10)
 
             entry = ctk.CTkEntry(
-                row, width=220, height=34, corner_radius=R_SM, font=self._f_body,
+                row, height=34, corner_radius=R_SM, font=self._f_body,
                 placeholder_text="Type a name",
                 fg_color=C.SURFACE, border_color=C.BORDER_STRONG, text_color=C.INK,
             )
-            entry.insert(0, default_name)
-            entry.grid(row=0, column=2, padx=(0, 12), pady=12, sticky="ew")
+            entry.grid(row=0, column=2, padx=(0, 12), pady=10, sticky="ew")
+            entry.bind("<Return>", lambda _e: self._on_confirm())
             self._entries[raw_label] = entry
 
+            share = self._shares.get(raw_label)
+            if share is not None:
+                ctk.CTkLabel(
+                    row, text=f"{round(share * 100)}% of the talking",
+                    font=self._f_small, text_color=C.MUTED, width=130, anchor="w",
+                ).grid(row=0, column=3, padx=(0, 12), pady=10)
+
         actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(row=3, column=0, padx=24, pady=(14, 22), sticky="e")
-        _button(actions, "Skip", width=90, command=self._on_close).grid(row=0, column=0, padx=(0, 8))
+        actions.grid(row=3, column=0, padx=20, pady=(12, 18), sticky="e")
+        _button(actions, "Skip names", kind="subtle", width=110, command=self._on_skip).grid(
+            row=0, column=0, padx=(0, 8)
+        )
         _button(
-            actions, "Save names", kind="teal", width=140,
+            actions, "Save transcript with names", kind="amber", width=230,
             font=self._f_strong, command=self._on_confirm,
         ).grid(row=0, column=1)
 
@@ -421,16 +432,14 @@ class SpeakerNamingDialog(ctk.CTkToplevel):
             name = entry.get().strip()
             if name:
                 self._speaker_map[raw_label] = name
-        self._dismiss()
+        self._finish()
 
-    def _on_close(self) -> None:
-        self._dismiss()
+    def _on_skip(self) -> None:
+        self._finish()
 
-    def _dismiss(self) -> None:
+    def _finish(self) -> None:
         self._stop_playback()
-        self.grab_release()
-        self.destroy()
-        self._done_event.set()
+        self._on_done()
 
 
 # ─── Privacy dialog ──────────────────────────────────────────────────────────
@@ -566,6 +575,9 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._last_recording: Path | None = None
         # The recording that the running (or last) file batch transcribes
         self._batch_recording: Path | None = None
+        # Timed lines of the last recording's transcript, for "Find speakers".
+        self._last_segments: list[tuple[float, float, str]] | None = None
+        self._naming_panel: SpeakerNamingPanel | None = None
         # Output path per input file, when it must not be "<stem>.txt"
         self._output_overrides: dict[Path, Path] = {}
         self._ui_state = "idle"
@@ -900,7 +912,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._rec_choice_tile(
             rec_card, column=0, value=_REC_BEST,
             title="Best quality transcript after recording",
-            body="Saves the recording.\nAdds speakers and times. Most accurate.",
+            body="Saves the recording.\nAdds times. Most accurate. Find speakers after.",
         )
         self._rec_choice_tile(
             rec_card, column=1, value=_REC_LIVE,
@@ -925,13 +937,9 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._rec_change_btn.grid(row=0, column=1)
         self._rec_summary.grid_remove()
 
-        self._rec_speakers_var = ctk.BooleanVar(value=False)
-        self._rec_speakers_cb = self._speakers_checkbox(rec_card)
-        self._rec_speakers_cb.grid(row=4, column=0, columnspan=2, padx=18, pady=(0, 14), sticky="w")
-
         # Where the recordings go: the same design as "Save transcripts to".
         rec_where = ctk.CTkFrame(rec_card, fg_color="transparent")
-        rec_where.grid(row=5, column=0, columnspan=2, padx=18, pady=(0, 12), sticky="ew")
+        rec_where.grid(row=4, column=0, columnspan=2, padx=18, pady=(4, 12), sticky="ew")
         rec_where.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             rec_where, text="Save recordings to", font=self._f_strong, text_color=C.INK
@@ -1027,29 +1035,6 @@ class TranscriberApp(_AppBase):  # type: ignore
             widget.bind("<Button-1>", lambda _e, v=value: self._select_rec_mode(v))
         self._rec_tiles[value] = (tile, radio)
 
-    def _speakers_checkbox(self, parent) -> ctk.CTkCheckBox:  # type: ignore[no-untyped-def]
-        """A "More than one person speaking" switch on the shared speakers variable."""
-        available = self._diarization_available
-        return ctk.CTkCheckBox(
-            parent,
-            text=(
-                "More than one person speaking"
-                if available else "Speaker names are not available in this copy of EasyScribe"
-            ),
-            variable=self._rec_speakers_var,
-            font=self._f_strong,
-            text_color=C.AMBER_INK if available else C.MUTED,
-            text_color_disabled=C.MUTED,
-            fg_color=C.AMBER,
-            hover_color="#946000",
-            border_color=C.AMBER if available else C.BORDER_STRONG,
-            checkmark_color=C.SURFACE,
-            corner_radius=R_SM,
-            checkbox_width=22,
-            checkbox_height=22,
-            state="normal" if available else "disabled",
-        )
-
     def _select_rec_mode(self, value: str) -> None:
         if self._ui_state != "idle":
             return
@@ -1065,11 +1050,8 @@ class TranscriberApp(_AppBase):  # type: ignore
                 border_color=C.CORAL if selected else C.BORDER,
             )
         if mode == _REC_BEST:
-            self._rec_speakers_cb.grid()
             self._live_card.grid_remove()
         else:
-            # Live mode: the speakers choice moves to the panel after the stop.
-            self._rec_speakers_cb.grid_remove()
             self._live_card.grid()
 
     # ── Activity panel (status, progress, result) ────────────────────────────
@@ -1138,19 +1120,60 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._best_row = ctk.CTkFrame(panel, fg_color=C.SURFACE_ALT, corner_radius=R_MD)
         self._best_row.grid(row=5, column=0, padx=18, pady=(0, 16), sticky="ew")
         self._best_row.grid_columnconfigure(1, weight=1)
-        self._best_speakers_cb = self._speakers_checkbox(self._best_row)
-        self._best_speakers_cb.grid(row=0, column=0, columnspan=2, padx=14, pady=(12, 8), sticky="w")
         self._full_transcript_btn = _button(
             self._best_row, "Make best quality transcript", kind="teal", width=240,
             font=self._f_strong, command=self._on_full_transcript,
         )
-        self._full_transcript_btn.grid(row=1, column=0, padx=(14, 12), pady=(0, 12), sticky="w")
+        self._full_transcript_btn.grid(row=0, column=0, padx=(14, 12), pady=12, sticky="w")
         self._best_note = ctk.CTkLabel(
             self._best_row, text="", font=self._f_small, text_color=C.MUTED,
             anchor="w", justify="left", wraplength=420,
         )
-        self._best_note.grid(row=1, column=1, padx=(0, 14), pady=(0, 12), sticky="w")
+        self._best_note.grid(row=0, column=1, padx=(0, 14), pady=12, sticky="w")
         self._best_row.grid_remove()
+
+        # After a recording's transcript: find the speakers, with a time estimate.
+        self._speakers_card = ctk.CTkFrame(
+            panel, fg_color=C.SURFACE, corner_radius=R_MD, border_width=2, border_color=C.AMBER
+        )
+        self._speakers_card.grid(row=6, column=0, padx=18, pady=(0, 16), sticky="ew")
+        self._speakers_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            self._speakers_card, text="Who said what?", font=self._f_title, text_color=C.INK
+        ).grid(row=0, column=0, columnspan=2, padx=18, pady=(16, 2), sticky="w")
+        ctk.CTkLabel(
+            self._speakers_card,
+            text="Find the different voices in this recording, then type each person's name. "
+                 "The names are added to a copy of the transcript.",
+            font=self._f_body, text_color=C.MUTED, anchor="w", justify="left", wraplength=640,
+        ).grid(row=1, column=0, columnspan=2, padx=18, pady=(0, 10), sticky="w")
+        estimate_row = ctk.CTkFrame(self._speakers_card, fg_color="transparent")
+        estimate_row.grid(row=2, column=0, padx=18, sticky="w")
+        self._speakers_estimate = ctk.CTkLabel(
+            estimate_row, text="", font=self._f_strong, text_color=C.AMBER_INK
+        )
+        self._speakers_estimate.grid(row=0, column=0, padx=(0, 8))
+        ctk.CTkLabel(
+            estimate_row, text="rough estimate", font=self._f_small, text_color=C.AMBER_INK,
+            fg_color=C.AMBER_SOFT, corner_radius=R_SM, height=22,
+        ).grid(row=0, column=1, ipadx=6)
+        self._speakers_basis = ctk.CTkLabel(
+            self._speakers_card, text="", font=self._f_small, text_color=C.MUTED,
+            anchor="w", justify="left", wraplength=520,
+        )
+        self._speakers_basis.grid(row=3, column=0, padx=18, pady=(2, 16), sticky="w")
+        self._find_speakers_btn = _button(
+            self._speakers_card, "Find speakers", kind="amber", width=170, height=40,
+            font=self._f_strong, command=self._on_find_speakers,
+        )
+        self._find_speakers_btn.grid(row=2, column=1, rowspan=2, padx=18, pady=(0, 16), sticky="e")
+        self._speakers_card.grid_remove()
+
+        # Speaker names are typed here (SpeakerNamingPanel), not in a popup.
+        self._naming_host = ctk.CTkFrame(panel, fg_color="transparent")
+        self._naming_host.grid(row=7, column=0, padx=18, pady=(0, 16), sticky="ew")
+        self._naming_host.grid_columnconfigure(0, weight=1)
+        self._naming_host.grid_remove()
 
     # ── Details (technical log) ──────────────────────────────────────────────
 
@@ -1370,6 +1393,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         live = self._rec_mode_var.get() == _REC_LIVE
         self._stop_recording_event.clear()
         self._last_transcript = None
+        self._last_segments = None
         self._set_ui_state("recording")
         self._clear_log()
         self._reset_live_box(listening=True)
@@ -1447,7 +1471,7 @@ class TranscriberApp(_AppBase):  # type: ignore
                 output_path = self._resolve_output_path(input_file)
                 self._last_output_folder = output_path.parent
 
-                self._engine.transcribe(
+                segments = self._engine.transcribe(
                     audio_path=temp_wav,
                     output_path=output_path,
                     add_timestamps=options["timestamps"],
@@ -1461,6 +1485,8 @@ class TranscriberApp(_AppBase):  # type: ignore
                     ),
                 )
                 saved.append(output_path)
+                if self._batch_recording is not None:
+                    self._last_segments = segments
                 self._safe_set_file_state(input_file, "Done")
 
             except CancelledError:
@@ -1566,12 +1592,13 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._progress_bar.set(0.0)
         retry = bool(failed) or status == "Cancelled"
         if self._batch_recording is not None:
-            # A recording: "Try again" is the best quality button, with the
-            # speakers switch, so the user can change it first.
+            # A recording: "Try again" is the best quality button.
             self._show_results(
                 transcript=len(saved) == 1, folder=True,
                 full=retry and not fatal and self._batch_recording.exists(),
             )
+            if status == "Done" and saved:
+                self._offer_speakers()
         elif saved or retry:
             self._show_results(
                 transcript=len(saved) == 1, folder=bool(saved), retry=retry and not fatal
@@ -1723,8 +1750,8 @@ class TranscriberApp(_AppBase):  # type: ignore
 
         Used at once after a "best quality" recording, and by the "Make best
         quality transcript" button. It uses the more accurate engine, always
-        adds timestamps, and names the speakers if "More than one person
-        speaking" is on. It stays in the Record tab and does not touch the
+        adds timestamps; speakers are found afterwards with "Find speakers".
+        It stays in the Record tab and does not touch the
         file list of the Files tab. A live transcript is kept: the new file
         gets its own name.
         """
@@ -1740,24 +1767,163 @@ class TranscriberApp(_AppBase):  # type: ignore
         if (folder / name).exists():
             name = f"{audio.stem} (best quality).txt"
         self._output_overrides[audio] = folder / name
-        options = {
-            "timestamps": True,
-            "diarize": bool(self._rec_speakers_var.get()) and self._diarization_available,
-        }
+        options = {"timestamps": True, "diarize": False}
         self._batch_recording = audio
         self._start_batch([audio], options)
 
     def _make_speaker_naming_callback(self) -> Callable:
-        def callback(speaker_map: dict, clips_dict: dict) -> None:
+        """Called on a worker thread: show the names panel and wait for it."""
+        def callback(speaker_map: dict, clips_dict: dict, shares: dict) -> None:
             done_event = threading.Event()
-            self.after(
-                0,
-                lambda sm=speaker_map, cd=clips_dict, ev=done_event:
-                    SpeakerNamingDialog(self, sm, cd, ev),
-            )
-            done_event.wait()
+
+            def show() -> None:
+                try:
+                    self._show_naming_panel(speaker_map, clips_dict, shares, done_event)
+                except Exception:
+                    # Never leave the worker waiting: keep "Speaker 1, 2…".
+                    logger.exception("Could not show the speaker names panel")
+                    done_event.set()
+
+            self.after(0, show)
+            while not done_event.wait(0.2):
+                if self._cancel_event.is_set():
+                    self.after(0, self._close_naming_panel)
+                    raise CancelledError("Cancelled while naming speakers")
 
         return callback
+
+    def _show_naming_panel(
+        self, speaker_map: dict, clips_dict: dict, shares: dict, done_event: threading.Event
+    ) -> None:
+        self._close_naming_panel()
+
+        def on_done() -> None:
+            self._close_naming_panel()
+            done_event.set()
+
+        self._naming_panel = SpeakerNamingPanel(
+            self._naming_host, speaker_map, clips_dict, shares, on_done
+        )
+        self._naming_panel.grid(row=0, column=0, sticky="ew")
+        self._naming_host.grid()
+        self._flash_taskbar()
+
+    def _close_naming_panel(self) -> None:
+        if self._naming_panel is not None:
+            self._naming_panel.destroy()
+            self._naming_panel = None
+        self._naming_host.grid_remove()
+
+    def _flash_taskbar(self) -> None:
+        """Ask for attention without stealing focus (Windows taskbar flash)."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            ctypes.windll.user32.FlashWindow(int(self.wm_frame(), 16), True)
+        except Exception:
+            pass
+
+    # ── Find speakers (after a recording) ────────────────────────────────────
+
+    def _offer_speakers(self) -> None:
+        audio, segments = self._last_recording, self._last_segments
+        if not (self._diarization_available and audio and segments and self._last_transcript):
+            return
+        try:
+            audio_sec = wav_duration(audio)
+        except Exception:
+            return
+        speech_sec = min(speech_seconds(segments), audio_sec)
+        estimate = fmt_estimate(estimate_seconds(audio_sec, speech_sec))
+        self._speakers_estimate.configure(text=estimate[0].upper() + estimate[1:])
+        self._speakers_basis.configure(
+            text=f"Based on {_fmt_minutes(audio_sec)} of audio, with "
+                 f"{_fmt_minutes(speech_sec)} of speech. You can keep using your computer "
+                 "and stop at any time."
+        )
+        self._find_speakers_btn.configure(state="normal")
+        self._speakers_card.grid()
+
+    def _on_find_speakers(self) -> None:
+        audio, segments, transcript = self._last_recording, self._last_segments, self._last_transcript
+        if self._ui_state != "idle" or not (audio and segments and transcript):
+            return
+        if not audio.exists():
+            self._show_message("The recording was moved or deleted.", "error")
+            return
+        output_path = transcript.with_name(f"{transcript.stem} (speakers).txt")
+        self._cancel_event.clear()
+        self._clear_log()
+        self._set_ui_state("running")
+        self._show_activity()
+        self._batch_label.configure(text=_shorten(audio.name, 80))
+        threading.Thread(
+            target=self._speakers_worker, args=(audio, segments, transcript, output_path),
+            daemon=True, name="SpeakersWorker",
+        ).start()
+
+    def _speakers_worker(
+        self,
+        audio: Path,
+        segments: list[tuple[float, float, str]],
+        transcript: Path,
+        output_path: Path,
+    ) -> None:
+        started = time.monotonic()
+        status, error = "Done", None
+        try:
+            add_speakers_to_file(
+                audio, segments, output_path, self._cancel_event,
+                self._safe_update_status, self._safe_set_progress, self._safe_append_log,
+                self._make_speaker_naming_callback(),
+            )
+        except CancelledError:
+            status = "Cancelled"
+            self._safe_append_log("[Cancelled] Operation stopped by user")
+        except Exception as exc:
+            logger.exception("Finding speakers failed")
+            self._safe_append_log(f"[Error] {exc}")
+            status, error = "Failed", str(exc)
+        took = time.monotonic() - started
+        self._safe_update_status(status)
+        self.after(
+            0, lambda: self._finish_speakers(status, transcript, output_path, error, took)
+        )
+
+    def _finish_speakers(
+        self, status: str, transcript: Path, output_path: Path, error: str | None, took: float
+    ) -> None:
+        self._set_ui_state("idle")
+        self._close_naming_panel()
+        self._stop_progress_motion()
+        self._percent_label.configure(text="")
+        if status == "Done":
+            self._last_transcript = output_path
+            self._last_output_folder = output_path.parent
+            self._status_label.configure(text="Speakers added", text_color=C.GREEN_INK)
+            self._batch_label.configure(
+                text=f"{_shorten(output_path.name, 70)} · took {_fmt_took(took)}"
+            )
+            self._show_message("The first transcript without names is kept too.", "info")
+            self._progress_bar.configure(progress_color=C.GREEN)
+            self._progress_bar.set(1.0)
+            self._show_results(transcript=True, folder=True)
+            return
+        self._last_transcript = transcript
+        if status == "Cancelled":
+            self._status_label.configure(text="Stopped", text_color=C.MUTED)
+            self._batch_label.configure(text="No names were added. Your transcript is unchanged.")
+            self._show_message("", "info")
+        else:
+            self._status_label.configure(text="Could not find the speakers", text_color=C.CRIMSON)
+            self._batch_label.configure(text="Your transcript is unchanged.")
+            self._show_message(
+                f"{error}\nSelect \"Show details\" to see why.", "error"
+            )
+        self._progress_bar.set(0.0)
+        self._show_results(transcript=True, folder=True)
+        self._offer_speakers()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Thread-safe GUI helpers
@@ -1951,6 +2117,7 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._message_label.grid_remove()
         self._result_row.grid_remove()
         self._best_row.grid_remove()
+        self._speakers_card.grid_remove()
         self._batch_label.configure(text="")
         self._percent_label.configure(text="")
 
@@ -1965,7 +2132,8 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._action_row.grid()
 
     def _fold_options(self, folded: bool) -> None:
-        self._fold_rec_setup(folded and self._rec_mode_var.get() == _REC_LIVE)
+        # Both modes: the speakers card and names panel need the room.
+        self._fold_rec_setup(folded)
         if not folded or self._mode != _MODE_FILES:
             self._options_summary.grid_remove()
             self._change_options_btn.grid_remove()
@@ -1994,7 +2162,9 @@ class TranscriberApp(_AppBase):  # type: ignore
             self._rec_summary.grid_remove()
             return
         self._rec_summary_label.configure(
-            text=f"{_shorten(self._mic_var.get(), 50)}. Show words as I speak."
+            text=f"{_shorten(self._mic_var.get(), 50)}. "
+                 + ("Show words as I speak." if self._rec_mode_var.get() == _REC_LIVE
+                    else "Best quality transcript after recording.")
         )
         self._rec_summary.grid()
         if self._ui_state == "idle":
@@ -2026,9 +2196,10 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._result_row.grid()
         if full:
             self._best_note.configure(
-                text="Adds speakers and times. More accurate. Your live transcript is kept."
+                text="Adds times. More accurate. Your live transcript is kept. "
+                     "You can find the speakers after."
                 if self._live_has_text
-                else "Adds speakers and times. Most accurate."
+                else "Adds times. Most accurate. You can find the speakers after."
             )
             self._best_row.grid()
         else:
@@ -2156,11 +2327,6 @@ class TranscriberApp(_AppBase):  # type: ignore
         self._reset_rec_folder_btn.configure(state=normal_if_idle)
         for _tile, radio in self._rec_tiles.values():
             radio.configure(state="disabled" if is_busy else "normal")
-        # The speakers switch is read when the recording stops, so it can
-        # still change while recording, but not while a transcript is made.
-        if self._diarization_available:
-            for cb in (self._rec_speakers_cb, self._best_speakers_cb):
-                cb.configure(state="disabled" if is_running else "normal")
 
         # Record button: disabled while transcription runs; becomes Stop while recording
         self._record_btn.configure(state="disabled" if is_running else "normal")

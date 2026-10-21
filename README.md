@@ -48,17 +48,17 @@ When it is done, open the transcript or the folder with one click. Each transcri
 
 ### Name the speakers
 
-Tick **Name the speakers** to find who is talking. When the speakers are found, a small window opens. Play a short sample of each voice and type a name. The names go into the transcript.
+Tick **Name the speakers** to find who is talking. When the speakers are found, a panel opens in the main window. Play a short sample of each voice and type a name. The names go into the transcript.
 
 <p align="center">
-  <img src="docs/screenshots/name-speakers.png" alt="The window to name each speaker" width="420">
+  <img src="docs/screenshots/name-speakers.png" alt="The panel to name each speaker" width="560">
 </p>
 
 ### Record
 
 Select **Record** and choose your microphone. Then choose what you want:
 
-- **Best quality transcript after recording** (the default). EasyScribe records only. When you stop, it makes the transcript at once with the more accurate engine, with times. Tick **More than one person speaking** to name the speakers too.
+- **Best quality transcript after recording** (the default). EasyScribe records only. When you stop, it makes the transcript at once with the more accurate engine, with times. Then select **Find speakers** to name the speakers. EasyScribe first shows a rough estimate of how long it takes, and you can stop at any time. The names go into a copy, `<name> (speakers).txt`; the first transcript is kept.
 - **Show words as I speak**. The words appear as you speak. This is quicker but less accurate.
 
 Both choices save the recording in `Documents\EasyScribe`. To use a different folder, select **Change folder** under **Save recordings to**; EasyScribe remembers it. Select **Start recording**. The small bar next to the timer shows that the microphone hears you.
@@ -67,7 +67,7 @@ Both choices save the recording in `Documents\EasyScribe`. To use a different fo
   <img src="docs/screenshots/recording.png" alt="EasyScribe recording" width="640">
 </p>
 
-After a live recording, you can still get the best result: select **Make best quality transcript**. This runs the saved recording through the more accurate engine, with times and, if you tick the box, speakers. Your live transcript is kept, and the new one is saved as a separate `(best quality).txt` file.
+After a live recording, you can still get the best result: select **Make best quality transcript**. This runs the saved recording through the more accurate engine, with times. Then you can select **Find speakers**. Your live transcript is kept, and the new one is saved as a separate `(best quality).txt` file.
 
 <p align="center">
   <img src="docs/screenshots/recording-saved.png" alt="A saved recording, with the Make best quality transcript button" width="640">
@@ -158,7 +158,7 @@ The sections below are for developers and IT staff.
 | Live transcription | sherpa-onnx, Silero VAD chunks | CPU |
 | Speaker diarization | sherpa-onnx: pyannote segmentation-3.0 + WeSpeaker ResNet34-LM | CPU |
 
-The device that whisper.cpp actually used is read from its own stderr and shown in the log. It is never assumed from build flags. sherpa-onnx 1.13.2 has no Vulkan provider, so the sherpa-onnx tasks stay on CPU (see `CLAUDE.md`, Rule 7).
+The device that whisper.cpp actually used is read from its own stderr and shown in the log: the engine (Vulkan or CPU), the GPU's name, and the CPU's name with the threads used. It is never assumed from build flags. sherpa-onnx 1.13.2 has no Vulkan provider, so the sherpa-onnx tasks stay on CPU (see `CLAUDE.md`, Rule 7).
 
 Audio is decoded with the bundled ffmpeg to 16 kHz mono. Live recordings write raw PCM plus a JSON sidecar, so `recovery.py` can rebuild a WAV after a crash.
 

@@ -31,6 +31,73 @@ logger = logging.getLogger(__name__)
 # Seconds between checks for Cancel and for the child process ending.
 _POLL_SECONDS = 0.2
 
+# Time model, measured on CPU with 4 threads (tests/data, 5 to 30 min): finding
+# speech takes ~0.045 s per second of audio, telling voices apart ~0.165 s per
+# second of speech, plus a few seconds to start. Each PC's own speed is learned
+# from its last run (settings.save_speaker_speed).
+_SEC_PER_AUDIO_SEC = 0.045
+_SEC_PER_SPEECH_SEC = 0.165
+_START_SECONDS = 3.0
+
+
+def speech_seconds(segments: list[tuple[float, float, str]]) -> float:
+    """Seconds covered by the transcript lines (overlaps counted once)."""
+    total, reach = 0.0, 0.0
+    for start, end, _text in sorted(segments):
+        start = max(start, reach)
+        if end > start:
+            total += end - start
+            reach = end
+    return total
+
+
+def _model_seconds(audio_sec: float, speech_sec: float | None) -> float:
+    speech = audio_sec if speech_sec is None else min(speech_sec, audio_sec)
+    return _START_SECONDS + _SEC_PER_AUDIO_SEC * audio_sec + _SEC_PER_SPEECH_SEC * speech
+
+
+def estimate_seconds(audio_sec: float, speech_sec: float | None = None) -> float:
+    """Rough time to find the speakers in *audio_sec* seconds of audio.
+
+    *speech_sec* (from the transcript) makes it closer; without it all the
+    audio is taken as speech.
+    """
+    from settings import load_speaker_speed
+
+    return _model_seconds(audio_sec, speech_sec) * (load_speaker_speed() or 1.0)
+
+
+def save_measured_speed(
+    audio_path: Path, segments: list[tuple[float, float, str]], took_sec: float
+) -> None:
+    """Learn this PC's speed from a finished run, for the next estimate."""
+    from settings import load_speaker_speed, save_speaker_speed
+
+    try:
+        expected = _model_seconds(wav_duration(audio_path), speech_seconds(segments))
+    except Exception:
+        return
+    factor = min(5.0, max(0.2, took_sec / expected))
+    previous = load_speaker_speed()
+    save_speaker_speed(factor if previous is None else (previous + factor) / 2)
+
+
+def fmt_estimate(seconds: float) -> str:
+    """"About 4 minutes" style text, rounded the way a person would say it."""
+    if seconds < 50:
+        return "less than a minute"
+    minutes = round(seconds / 60)
+    if minutes <= 1:
+        return "about 1 minute"
+    if minutes < 60:
+        return f"about {minutes} minutes"
+    hours, rest = divmod(minutes, 60)
+    rest = 5 * round(rest / 5)
+    if rest == 60:
+        hours, rest = hours + 1, 0
+    hours_text = "1 hour" if hours == 1 else f"{hours} hours"
+    return f"about {hours_text}" + (f" {rest} minutes" if rest else "")
+
 
 class DiarizationError(RuntimeError):
     """Raised when diarization fails."""
@@ -84,12 +151,10 @@ class DiarizationEngine:
         except Exception as exc:
             raise DiarizationError(f"Could not load audio for diarization: {exc}") from exc
 
-        # Measured ~0.2x the audio length on CPU with 4 threads.
-        est_sec = audio_sec * 0.2
-        est_str = f"~{int(est_sec / 60)} min" if est_sec >= 60 else f"~{int(est_sec)} sec"
+        est_str = fmt_estimate(estimate_seconds(audio_sec))
         log_callback(
-            f"[Diarize] Estimated wait: {est_str} for {fmt_duration(audio_sec)} of audio. "
-            "Please wait…"
+            f"[Diarize] Estimated wait: {est_str} for {fmt_duration(audio_sec)} of audio "
+            "(rough estimate). Please wait…"
         )
         logger.info(f"Running diarization on: {audio_path.name} (estimate {est_str})")
         # The first ~20% of the time (finding speech) reports no progress.
