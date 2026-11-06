@@ -345,6 +345,22 @@ fn extract_to_with_progress<F: FnMut(&str, f32)>(
     runtime: &Path,
     progress: &mut F,
 ) -> Result<()> {
+    // The exe is already on disk; unpacking needs roughly its payload size
+    // again in staging, plus room for the old runtime during an update. Check
+    // before writing anything so a low-disk PC gets a clear message instead of
+    // a half-extracted runtime that fails on the next launch.
+    let free = fs2::available_space(runtime_root).unwrap_or(u64::MAX);
+    let needed = footer
+        .payload_size
+        .saturating_add(footer.payload_size / 5)
+        .saturating_add(crate::config::MIN_FREE_DISK_BYTES);
+    if free < needed {
+        return Err(Error::Payload(format!(
+            "Not enough free disk space. EasyScribe needs about {:.1} GB free to unpack its app files; only {:.1} GB is available. Free some space and start EasyScribe again.",
+            needed as f64 / 1_000_000_000.0,
+            free as f64 / 1_000_000_000.0
+        )));
+    }
     let staging = runtime_root.join(format!(
         "{}.tmp-{}-{}",
         runtime
@@ -391,6 +407,10 @@ fn extract_to_with_progress<F: FnMut(&str, f32)>(
             "app_version": footer.app_version,
             "payload_format": footer.version,
             "build_id": footer.build_id,
+            "created": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
         });
         let temp_marker = staging.join(".complete.tmp");
         std::fs::write(&temp_marker, serde_json::to_string_pretty(&marker)?)?;
@@ -453,10 +473,23 @@ fn extract_zip_with_progress<R: Read + Seek, F: FnMut(&str, f32)>(
     Ok(())
 }
 
+fn runtime_created(path: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(path.join(RUNTIME_MARKER)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("created")?.as_u64()
+}
+
 /// Remove extracted runtimes from earlier versions after a successful launch
 /// of the current one. Windows keeps files of a running older copy locked, so a
-/// failed removal is harmless and retried on the next launch.
+/// failed removal is harmless and retried on the next launch. Never remove a
+/// runtime newer than the one we are running: an older exe must not delete a
+/// cache created by an update.
 fn cleanup_old_runtimes(runtime_root: &Path, keep: &Path) {
+    let keep_marker = keep.join(RUNTIME_MARKER);
+    let Ok(keep_time) = std::fs::metadata(&keep_marker).and_then(|m| m.modified()) else {
+        return;
+    };
+    let keep_created = runtime_created(keep);
     let Ok(entries) = std::fs::read_dir(runtime_root) else {
         return;
     };
@@ -468,10 +501,36 @@ fn cleanup_old_runtimes(runtime_root: &Path, keep: &Path) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.starts_with("v1-") || !path.join(RUNTIME_MARKER).is_file() {
+        if !name.starts_with("v1-") {
             continue;
         }
-        if std::fs::remove_dir_all(&path).is_ok() {
+        let marker = path.join(RUNTIME_MARKER);
+        if !marker.is_file() {
+            continue;
+        }
+        let older = match (keep_created, runtime_created(&path)) {
+            (Some(keep_created), Some(other_created)) => other_created < keep_created,
+            _ => {
+                let Ok(other_time) = std::fs::metadata(&marker).and_then(|m| m.modified()) else {
+                    continue;
+                };
+                other_time < keep_time
+            }
+        };
+        if !older {
+            continue;
+        }
+        // Rename first so a partial removal cannot leave a cache that looks
+        // complete but is missing files. A failed rename is retried next launch.
+        let quarantine = runtime_root.join(format!(
+            "{}.tmp-delete-{}",
+            name,
+            uuid::Uuid::new_v4().simple()
+        ));
+        if std::fs::rename(&path, &quarantine).is_err() {
+            continue;
+        }
+        if std::fs::remove_dir_all(&quarantine).is_ok() {
             log::info!("Removed old EasyScribe runtime {}", path.display());
         }
     }
@@ -939,8 +998,8 @@ mod tests {
         std::fs::create_dir_all(&current).unwrap();
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&unrelated).unwrap();
-        std::fs::write(current.join(RUNTIME_MARKER), "{}").unwrap();
-        std::fs::write(old.join(RUNTIME_MARKER), "{}").unwrap();
+        std::fs::write(current.join(RUNTIME_MARKER), r#"{"created":2}"#).unwrap();
+        std::fs::write(old.join(RUNTIME_MARKER), r#"{"created":1}"#).unwrap();
         cleanup_old_runtimes(root, &current);
         assert!(current.exists());
         assert!(!old.exists());
