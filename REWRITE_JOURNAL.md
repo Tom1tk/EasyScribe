@@ -167,3 +167,34 @@ the narrative history.
   Naming scenes; short windows scroll and the folded steps read correctly.
   Dispatched Windows run `42235634403` (`v3.2.3-rust.3`) for the static link,
   selftest, import checks and draft pre-release.
+
+## 2026-11-06 — Session 5: diagnosing the Windows whisper.cpp encode failure
+
+- **rust.3 result.** The static link with `advapi32` worked, the 1.7 GB payload
+  packed, the imports contained no sherpa/ONNX/VC-runtime DLLs, and the exe was
+  correctly a GUI binary. The packed `--selftest` then failed after 10 m 49 s in
+  `whisper.cpp model and decode` with `whisper_full_with_state: failed to
+  encode` (error -6). No beam-search lines were printed, so the first encoder
+  pass is where it stopped. Sherpa Whisper and Silero VAD had loaded first;
+  diarization still loaded afterwards.
+- **Local evidence.** The same model/decoder passes locally with both generic
+  (`GGML_AVX*` off) and AVX2 builds; a 5 s silence decode takes about 70 s with
+  generic kernels and passes both before and after loading sherpa. A standalone
+  reproduction confirmed whisper-rs 0.16's `set_abort_callback_safe` boxes the
+  closure twice and then calls it through the wrong type, so its abort flag is
+  always false; Stop during whisper.cpp decoding never actually worked.
+- **Diagnostic changes.** `whispercpp` now installs a raw C abort callback with
+  a live `AbortProbe` (fixing Stop), and `EASYSCRIBE_WHISPER_TRACE=1` prints
+  model-load time, sample/region count, thread count, per-region `full()` time
+  and abort-callback call counts. The selftest runs a cold whisper decode
+  **before** any sherpa model, then loads sherpa and decodes again; the first
+  pass identifies a Windows build problem, the second an ONNX interference
+  problem. The engine is dropped before the second decode to keep memory out of
+  the comparison.
+- **Windows build hardening.** The workflow now sets `GGML_AVX=ON` and
+  `GGML_AVX2=ON` explicitly (matching the Python release's non-native CPU
+  build), deletes cached `whisper-rs-sys` build/fingerprint directories before
+  compiling, asserts the resulting CMakeCache flags, verifies the GGUF SHA-256
+  (`394221…a7e2`), and uses a fresh Rust cache key. The selftest step logs the
+  runner's CPU and memory. Local verification: fmt, clippy and all 59 tests
+  pass; the traced selftest passes cold and after sherpa.

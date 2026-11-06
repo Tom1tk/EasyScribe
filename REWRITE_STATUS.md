@@ -86,6 +86,22 @@ final validation gate.
 - **Packaging audit** — switched to sherpa 1.12.9, removed the load-time Vulkan
   import, added static CRT, GUI subsystem, native `--selftest`, full runtime
   file checks, import/subsystem checks, cached-launch check and SHA-256 upload.
+- **Windows selftest failure and diagnostic hardening** — `v3.2.3-rust.3`
+  passed the static link, payload pack, import scan and GUI check, but the
+  packed selftest failed in whisper.cpp after 10 m 49 s
+  (`whisper_full_with_state: failed to encode`, error -6) while the same model
+  and decode pass locally. The selftest now decodes once **before** loading any
+  sherpa/ONNX model and once after, with timings in the output, so the next run
+  separates an ONNX-interference cause from a Windows whisper.cpp build cause.
+  `EASYSCRIBE_WHISPER_TRACE=1` adds model-load, region, thread and abort-callback
+  diagnostics. The Windows job now pins and asserts `GGML_AVX`/`GGML_AVX2`,
+  wipes cached whisper build directories before compiling, verifies the GGUF
+  SHA-256 and bumps the Rust cache key.
+- **whisper.cpp Stop fixed** — whisper-rs 0.16's
+  `set_abort_callback_safe` calls the closure through the wrong type, so its
+  abort flag always reads false (verified with a standalone reproduction on
+  Linux). `whispercpp::decode_regions` now installs a plain C abort callback
+  with a live `AbortProbe`, restoring cooperative Stop during long decodes.
 - **UI audit** — all confirmed issues fixed: the real window height now reaches
   `AppState`; the 600–678 pt page scrolls so the utility row and tall results
   stay reachable; record tiles and microphone menu rows are keyboard-focusable
@@ -113,9 +129,10 @@ final validation gate.
 
 ## Next actions
 
-1. Watch Windows run `42235634403` (`v3.2.3-rust.3`): static link with
-   `advapi32`, GUI startup, import/subsystem scan, `--selftest`, cached launch
-   and draft upload.
+1. Dispatch Windows run `v3.2.3-rust.4` with the cold/after-sherpa selftest
+   split, pinned AVX2 build and GGUF hash gate. If both whisper decodes fail,
+   treat it as a Windows whisper.cpp build defect; if only the second fails,
+   isolate ONNX Runtime interference.
 2. Fix any remaining Windows-only failure and re-run with the next tag.
 3. Verify the draft `EasyScribe.exe` and `.sha256`, then hand over for
    real-device testing (microphone, DPI, dialogs, drag/drop).

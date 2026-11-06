@@ -5,10 +5,11 @@
 //! results without writing JSON to a temporary file; the transcript shape and
 //! beam size (5) are unchanged.
 //!
-//! Stop is immediate: whisper.cpp's abort callback polls the shared cancel
-//! token during decoding, so a long file can be stopped without waiting for
-//! the decode to finish. A GPU decode failure is retried once on the CPU (see
-//! `REFERENCE_BACKEND.md` §10 and the plan's audit disposition).
+//! Stop is cooperative: whisper.cpp polls the shared cancel token at graph
+//! boundaries and while decoding, so a long file can be stopped without
+//! waiting for the whole decode to finish. A GPU decode failure is retried
+//! once on the CPU (see `REFERENCE_BACKEND.md` §10 and the plan's audit
+//! disposition).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -112,6 +113,14 @@ pub fn transcribe_file(
 
     let mut settings = crate::settings::Settings::load(paths.settings_file.clone());
     let regions = speech_regions(paths, &samples, cancel, reporter.as_ref())?;
+    if std::env::var_os("EASYSCRIBE_WHISPER_TRACE").is_some() {
+        eprintln!(
+            "[whisper.cpp] {} samples at {rate} Hz, {} region(s) {regions:?}, threads={}",
+            samples.len(),
+            regions.len(),
+            crate::config::num_threads()
+        );
+    }
     if regions.len() > 1
         || regions
             .first()
@@ -282,6 +291,35 @@ fn decode_on_fresh_thread(
         .map_err(|_| Error::WhisperCpp("whisper.cpp worker stopped unexpectedly".into()))?
 }
 
+/// State shared with whisper.cpp's C abort callback. The boxed value must
+/// outlive the `state.full` call; whisper.cpp only dereferences the pointer
+/// while that call is running.
+struct AbortProbe {
+    cancel: CancelToken,
+    calls: std::sync::atomic::AtomicU64,
+    cancelled_calls: std::sync::atomic::AtomicU64,
+}
+
+unsafe extern "C" fn abort_trampoline(user_data: *mut std::ffi::c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    // SAFETY: `decode_regions` keeps the `AbortProbe` alive for the whole
+    // `state.full` call and passes a pointer to it here. The callback only
+    // reads the token and updates atomics, so it is safe on any thread.
+    let probe = unsafe { &*(user_data as *const AbortProbe) };
+    let cancelled = probe.cancel.is_cancelled();
+    probe
+        .calls
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if cancelled {
+        probe
+            .cancelled_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    cancelled
+}
+
 fn decode_regions(
     paths: &Paths,
     samples: &[f32],
@@ -291,20 +329,28 @@ fn decode_regions(
     use_gpu: bool,
     device: Option<i32>,
 ) -> Result<Vec<Segment>> {
+    let trace = std::env::var_os("EASYSCRIBE_WHISPER_TRACE").is_some();
     let mut context_params = WhisperContextParameters::default();
     context_params.use_gpu(use_gpu);
     if let Some(device) = device {
         context_params.gpu_device(device);
     }
+    let load_started = std::time::Instant::now();
     let context = WhisperContext::new_with_params(&paths.whispercpp_model, context_params)
         .map_err(|e| Error::WhisperCpp(format!("Could not load Whisper model: {e}")))?;
     let mut state = context
         .create_state()
         .map_err(|e| Error::WhisperCpp(format!("Could not create Whisper state: {e}")))?;
+    if trace {
+        eprintln!(
+            "[whisper.cpp] model and state loaded in {:.1}s",
+            load_started.elapsed().as_secs_f64()
+        );
+    }
 
     let mut segments = Vec::new();
     let started = std::time::Instant::now();
-    for (start, end) in regions.iter().copied() {
+    for (region_index, (start, end)) in regions.iter().copied().enumerate() {
         cancel.check()?;
         let mut params = FullParams::new(SamplingStrategy::BeamSearch {
             beam_size: BEAM_SIZE,
@@ -317,8 +363,23 @@ fn decode_regions(
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_n_threads(crate::config::num_threads() as i32);
-        let cancelled = cancel.clone();
-        params.set_abort_callback_safe(move || cancelled.is_cancelled());
+        // whisper-rs' `set_abort_callback_safe` boxes the closure twice and
+        // then calls it through the wrong type, so the flag it reads is always
+        // false. Pass a plain C callback with a pointer to a live probe.
+        let probe = Box::new(AbortProbe {
+            cancel: cancel.clone(),
+            calls: 0.into(),
+            cancelled_calls: 0.into(),
+        });
+        let probe_data = (&*probe as *const AbortProbe)
+            .cast_mut()
+            .cast::<std::ffi::c_void>();
+        // SAFETY: `probe` stays alive until after `state.full` returns, and
+        // `abort_trampoline` only touches the token and atomics inside it.
+        unsafe {
+            params.set_abort_callback(Some(abort_trampoline));
+            params.set_abort_callback_user_data(probe_data);
+        }
         let progress_reporter = reporter.clone();
         let total_samples = samples.len().max(1) as f64;
         let region_start = start as f64 / total_samples;
@@ -333,7 +394,29 @@ fn decode_regions(
             }
         });
 
+        let region_started = std::time::Instant::now();
         let result = state.full(params, &samples[start..end]);
+        let calls = probe.calls.load(std::sync::atomic::Ordering::Relaxed);
+        let cancelled_calls = probe
+            .cancelled_calls
+            .load(std::sync::atomic::Ordering::Relaxed);
+        drop(probe);
+        if trace {
+            let seconds = region_started.elapsed().as_secs_f64();
+            let audio_seconds = (end - start) as f64 / 16_000.0;
+            match &result {
+                Ok(()) => eprintln!(
+                    "[whisper.cpp] region {}/{}: {audio_seconds:.1}s audio, full=ok in {seconds:.1}s, abort calls={calls} cancelled={cancelled_calls}",
+                    region_index + 1,
+                    regions.len()
+                ),
+                Err(error) => eprintln!(
+                    "[whisper.cpp] region {}/{}: {audio_seconds:.1}s audio, full=error {error:?} in {seconds:.1}s, abort calls={calls} cancelled={cancelled_calls}",
+                    region_index + 1,
+                    regions.len()
+                ),
+            }
+        }
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }

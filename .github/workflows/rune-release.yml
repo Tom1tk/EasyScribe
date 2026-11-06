@@ -34,6 +34,11 @@ jobs:
       CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded"
       CMAKE_POLICY_DEFAULT_CMP0091: "NEW"
       GGML_NATIVE: "OFF"
+      # Force the AVX2 kernels explicitly. whisper.cpp's CMake turns them on
+      # by default for a native build, but a restored build directory can hide
+      # the choice; the release needs the same fast CPU path every time.
+      GGML_AVX: "ON"
+      GGML_AVX2: "ON"
 
     steps:
       - name: Check out the Rune branch
@@ -69,7 +74,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: rune-windows-release
+          key: rune-windows-release-2
 
       # sherpa-rs-sys 0.6.8 vendors sherpa-onnx 1.12.9. The C API gained fields
       # in 1.13.x, so using those libraries with these bindings is undefined
@@ -200,14 +205,44 @@ jobs:
           New-Item -ItemType Directory -Force whispercpp | Out-Null
           Invoke-WebRequest -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin" -OutFile whispercpp\ggml-large-v3-turbo-q5_0.bin
 
+      - name: Verify the whisper.cpp GGUF model
+        shell: pwsh
+        run: |
+          $model = "whispercpp\ggml-large-v3-turbo-q5_0.bin"
+          if (-not (Test-Path $model)) { throw "The GGUF model was not downloaded" }
+          $expected = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+          $actual = (Get-FileHash $model -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "GGUF checksum mismatch: $actual" }
+          Write-Host "GGUF sha256 verified: $actual"
+
       # Build the app and packer together so both see the static sherpa
       # feature. Linux CI runs the test suite; this job validates the Windows
       # static link and packaging.
       - name: Build the app and packer
         shell: pwsh
         run: |
+          # The build script does not declare the GGML_* variables as
+          # rerun-if-env-changed, so a restored target directory could keep an
+          # older CMake configuration. Reconfigure whisper.cpp from scratch.
+          if (Test-Path target\release) {
+            foreach ($pattern in @("whisper-rs-sys-*", "whisper-rs-*")) {
+              Get-ChildItem target\release\build -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+                Remove-Item -Recurse -Force
+              Get-ChildItem target\release\.fingerprint -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+                Remove-Item -Recurse -Force
+            }
+          }
           cargo build --release -p easyscribe -p easyscribe-pack --no-default-features --features easyscribe/release-static
           if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+          $cache = Get-ChildItem target\release\build -Recurse -Filter CMakeCache.txt -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "whisper-rs-sys" } | Select-Object -First 1
+          if (-not $cache) { throw "whisper.cpp CMakeCache.txt was not produced" }
+          $lines = Get-Content $cache.FullName
+          $lines | Where-Object { $_ -match "^GGML_(NATIVE|AVX|AVX2|FMA|SSE42|OPENMP):" } |
+            ForEach-Object { Write-Host $_ }
+          foreach ($entry in @("GGML_NATIVE:BOOL=OFF", "GGML_AVX:BOOL=ON", "GGML_AVX2:BOOL=ON")) {
+            if (-not ($lines -contains $entry)) { throw "whisper.cpp was not built with $entry" }
+          }
 
       - name: Check the executable starts headlessly
         shell: pwsh
@@ -294,7 +329,13 @@ jobs:
 
       - name: Extract the payload and run the native selftest
         shell: pwsh
+        env:
+          EASYSCRIBE_WHISPER_TRACE: "1"
         run: |
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed | Format-List
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object TotalVisibleMemorySize, FreePhysicalMemory | Format-List
           $out = (Resolve-Path "dist\EasyScribe-$env:TAG.exe").Path
           $data = Join-Path $PWD "smoke-data"
           $env:EASYSCRIBE_DATA_DIR = $data

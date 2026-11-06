@@ -121,15 +121,20 @@ fn run_selftest(paths: &Paths) -> i32 {
     use std::sync::Arc;
 
     let mut failures: Vec<String> = Vec::new();
-    let mut note = |name: &str, result: easyscribe_core::Result<()>| match result {
-        Ok(()) => println!("ok: {name}"),
-        Err(error) => {
-            println!("FAILED: {name}: {error}");
-            failures.push(format!("{name}: {error}"));
-        }
-    };
+    let mut note =
+        |name: &str, started: std::time::Instant, result: easyscribe_core::Result<()>| {
+            let seconds = started.elapsed().as_secs_f64();
+            match result {
+                Ok(()) => println!("ok: {name} ({seconds:.1}s)"),
+                Err(error) => {
+                    println!("FAILED: {name} ({seconds:.1}s): {error}");
+                    failures.push(format!("{name}: {error}"));
+                }
+            }
+        };
 
     let wav = paths.temp_dir.join("selftest.wav");
+    let started = std::time::Instant::now();
     let write = (|| -> easyscribe_core::Result<()> {
         let spec = hound::WavSpec {
             channels: 1,
@@ -150,25 +155,49 @@ fn run_selftest(paths: &Paths) -> i32 {
             .finalize()
             .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))
     })();
-    note("write test audio", write);
+    note("write test audio", started, write);
 
-    note("sherpa-onnx whisper model", {
-        let engine = TranscriptionEngine::new(paths.clone());
-        engine.ensure_loaded(&SilentReporter)
-    });
-    note("silero VAD model", {
-        sherpa_engine::build_vad(paths, 5.0).map(|_| ())
-    });
-    note("whisper.cpp model and decode", {
-        let reporter: Arc<dyn easyscribe_core::Reporter> = Arc::new(SilentReporter);
-        whispercpp::transcribe_file(paths, &wav, &CancelToken::new(), &reporter).map(|_| ())
-    });
-    note("speaker diarization models", {
-        let engine = DiarizationEngine::new(paths.clone());
-        engine
-            .diarize(&wav, &CancelToken::new(), Arc::new(SilentReporter))
-            .map(|_| ())
-    });
+    let reporter: Arc<dyn easyscribe_core::Reporter> = Arc::new(SilentReporter);
+    println!(
+        "info: {} logical CPU(s), whisper.cpp uses {} thread(s)",
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0),
+        easyscribe_core::config::num_threads()
+    );
+
+    // Decode before any ONNX Runtime model is loaded. If this passes and the
+    // decode after the sherpa loads fails, the two engines interfere on
+    // Windows; if it fails too, the bundled whisper.cpp build is at fault.
+    let started = std::time::Instant::now();
+    let cancel = CancelToken::new();
+    let result = whispercpp::transcribe_file(paths, &wav, &cancel, &reporter).map(|_| ());
+    note("whisper.cpp cold decode", started, result);
+
+    let started = std::time::Instant::now();
+    let engine = TranscriptionEngine::new(paths.clone());
+    let result = engine.ensure_loaded(&SilentReporter);
+    note("sherpa-onnx whisper model", started, result);
+    // Load and drop the recognizer: the second whisper decode then tests
+    // ONNX Runtime's global/thread-local side effects without also holding
+    // the ~1 GB sherpa model in memory.
+    drop(engine);
+
+    let started = std::time::Instant::now();
+    let result = sherpa_engine::build_vad(paths, 5.0).map(|_| ());
+    note("silero VAD model", started, result);
+
+    let started = std::time::Instant::now();
+    let cancel = CancelToken::new();
+    let result = whispercpp::transcribe_file(paths, &wav, &cancel, &reporter).map(|_| ());
+    note("whisper.cpp decode after sherpa", started, result);
+
+    let started = std::time::Instant::now();
+    let engine = DiarizationEngine::new(paths.clone());
+    let result = engine
+        .diarize(&wav, &CancelToken::new(), Arc::new(SilentReporter))
+        .map(|_| ());
+    note("speaker diarization models", started, result);
 
     let _ = std::fs::remove_file(&wav);
     let report = if failures.is_empty() {
