@@ -1,6 +1,6 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-06 (session 9 — audit 3 and rust.11)
+**Updated:** 2026-11-06 (session 10 — audit 3 and rust.13)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Phase:** 7 — speed, GPU, process isolation and final release
@@ -20,7 +20,9 @@ last attempt proved espeak-ng is genuinely pulled by
 component is disclosed, and the combined-work licensing decision is a blocker
 for `Latest`. Six independent audits of the finished product are recorded in
 `docs/rewrite/AUDIT_3.md`; their confirmed data-loss, recovery, payload and
-release-gate fixes are in `d59b8f2`, and `v3.2.3-rust.13` is the validation run.
+release-gate fixes are in `d59b8f2`. `v3.2.3-rust.13` (run `42289270909`, from
+`b3c5112`) passed the full Windows pipeline and produced the draft assets
+recorded below.
 
 ## What is built
 
@@ -62,6 +64,20 @@ release-gate fixes are in `d59b8f2`, and `v3.2.3-rust.13` is the validation run.
       `whisper-cli` cold **48.2 s**, in-process cold **67.9 s**, after sherpa
       **65.7 s**, diarization in-process **10.4 s**, diarization child
       **10.6 s**, silence check **0.1 s** (zero segments, "No speech found").
+- [x] Windows CI `v3.2.3-rust.13` (run `42289270909`, `b3c5112`, 4 vCPUs, no
+      GPU): the standalone `whisper-cli` control decoded the 23.3 s fixture in
+      **40.8 s** and set an **82 s** speech budget (2×, minimum 60 s). The
+      bundled CLI child decoded it in **37.5 s** (inside budget), the
+      in-process engine **551.0 s**, the sherpa Whisper ONNX model **6.1 s**,
+      Silero VAD **0.0 s**, the post-sherpa in-process decode **538.5 s**,
+      in-process diarization **6.2 s**, child diarization **6.3 s**, and the
+      silence check **0.0 s** with zero segments. System info reported
+      AVX2/FMA/F16C/BMI2; the golden text matched on every decode; imports,
+      subsystem, extraction, cached launch and the draft assets were verified.
+      The draft is `v3.2.3-rust.13` (draft, pre-release, not `Latest`):
+      `EasyScribe-v3.2.3-rust.13.exe` is 1,921,180,779 bytes, SHA-256
+      `69ee5c49b15501833699a73518ab9c8ec216f323f9b54035a9cae48ad4d4d991`,
+      with a 97-byte `.sha256` asset.
 - [x] All 13 headless scenes render (`preparing` plus the 12 app states).
 - [x] UI click/state tests pass.
 - [x] Packed first-run smoke with a 300 MB fake payload: extraction, marker,
@@ -260,13 +276,13 @@ release-gate fixes are in `d59b8f2`, and `v3.2.3-rust.13` is the validation run.
 
 - Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
   drag/drop and a real microphone can only be proven on a real Windows PC or VM.
-  `v3.2.3-rust.11` exercises the CPU path on CI (the runner has no GPU), but not
+  `v3.2.3-rust.13` exercises the CPU path on CI (the runner has no GPU), but not
   a dedicated/integrated GPU or a crashing driver.
 - The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
-  file on v3.2.3 GPU, v3.2.3 CPU and rust.11, then record wall times in this
+  file on v3.2.3 GPU, v3.2.3 CPU and rust.13, then record wall times in this
   file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
 - The 655 s CI decode cause is unproven. The OpenMP hypothesis was not supported
-  by the local benchmark; rust.11's same-runner control measurement is the next
+  by the local benchmark; rust.13's same-runner control measurement is the next
   datapoint.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
@@ -284,19 +300,22 @@ release-gate fixes are in `d59b8f2`, and `v3.2.3-rust.13` is the validation run.
 
 ## Next actions
 
-1. Verify `v3.2.3-rust.13` from the latest HEAD: confirm
-   `rune-release.yml@refs/heads/rune-rewrite`, the whisper-cli control time,
-   system-info features, golden text, speech budget, both selftest engines, the
-   child diarization, imports/subsystem, cached launch and draft assets. Record
-   the result (pass or fail) here.
-2. Verify the draft `EasyScribe-v3.2.3-rust.13.exe` and `.sha256`; delete the
-   superseded `rust.4`–`rust.12` drafts if present.
+1. **Done.** `v3.2.3-rust.13` from `b3c5112` passed the full Windows pipeline
+   (run `42289270909`): control 40.8 s, budget 82 s, CLI child 37.5 s,
+   in-process 551.0 s, after-sherpa 538.5 s, sherpa ONNX 6.1 s, VAD 0.0 s,
+   diarization 6.2/6.3 s, silence 0.0 s; AVX2/FMA/F16C/BMI2 and the golden text
+   were verified.
+2. **Done.** `EasyScribe-v3.2.3-rust.13.exe` (1,921,180,779 bytes) and its
+   97-byte `.sha256`
+   (`69ee5c49…d4d4d991`) are present on the draft pre-release; the superseded
+   `rust.4` and `rust.5` drafts were deleted. `v3.2.3` remains the stable
+   `Latest` release.
 3. Resolve the GPL-3.0 espeak-ng static-link decision before publishing
    `Latest`: relicense the combined work under GPL-3.0 or rebuild sherpa-onnx
    with TTS disabled.
 4. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
    microphone, DPI, dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the
    real-PC speed comparison; record results here.
-5. Hand over for the decision on replacing v3.2.3. Do not publish rust.12 as
+5. Hand over for the decision on replacing v3.2.3. Do not publish rust.13 as
    Latest until the real-PC speed, clean-PC checks and the espeak licensing
    decision are complete.

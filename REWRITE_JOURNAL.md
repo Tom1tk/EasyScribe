@@ -426,3 +426,23 @@ the narrative history.
   successful import/ffmpeg checks. `dumpbin`'s own exit code is now checked.
 - The GPL-3.0 espeak-ng disclosure is also in the draft release notes.
 - `v3.2.3-rust.13` is the validation run.
+
+## 2026-11-06 — Session 13: rust.13 passes the Windows pipeline
+
+- **`v3.2.3-rust.13` (run `42289270909`, `b3c5112`) passed.** The control
+  whisper-cli CPU decode of the 23.3 s fixture took 40.8 s and set an 82 s
+  budget (2x, minimum 60 s). The bundled CLI child decoded in 37.5 s, the
+  in-process engine in 551.0 s, the post-sherpa decode in 538.5 s, sherpa
+  Whisper ONNX in 6.1 s, VAD in 0.0 s, in-process diarization in 6.2 s, child
+  diarization in 6.3 s, and silence in 0.0 s with zero segments. System info
+  showed AVX2/FMA/F16C/BMI2, the golden text matched, and the extraction,
+  cached launch, imports and subsystem checks passed.
+- **Draft assets verified.** `EasyScribe-v3.2.3-rust.13.exe` is 1,921,180,779
+  bytes; its SHA-256 is
+  `69ee5c49b15501833699a73518ab9c8ec216f323f9b54035a9cae48ad4d4d991` and the
+  `.sha256` asset is 97 bytes. The release is a draft pre-release, not
+  `Latest`. The superseded `rust.4` and `rust.5` drafts were deleted; no other
+  old drafts remained.
+- Still open before `Latest`: the real-PC speed/GPU/microphone/DPI checks in
+  `docs/rewrite/CLEAN_PC_TEST.md` and the GPL-3.0 espeak-ng combined-work
+  licensing decision.
