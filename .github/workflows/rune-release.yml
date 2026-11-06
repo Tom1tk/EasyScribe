@@ -195,7 +195,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: whispercpp\ggml-large-v3-turbo-q5_0.bin
-          key: ggml-large-v3-turbo-q5_0-v1
+          # Rune-specific key: the Python release caches the same file under
+          # models\ with a different path, and sharing its key would restore
+          # the file into the wrong directory (or miss it).
+          key: rune-ggml-large-v3-turbo-q5_0-v1
 
       - name: Download whisper.cpp GGUF model
         if: steps.ggml-cache.outputs.cache-hit != 'true'
@@ -214,6 +217,13 @@ jobs:
           $actual = (Get-FileHash $model -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $expected) { throw "GGUF checksum mismatch: $actual" }
           Write-Host "GGUF sha256 verified: $actual"
+
+      - name: Save the whisper.cpp GGUF cache
+        if: steps.ggml-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: whispercpp\ggml-large-v3-turbo-q5_0.bin
+          key: rune-ggml-large-v3-turbo-q5_0-v1
 
       # whisper-cli is the proven file-transcription engine from v3.2.3. It is
       # built with Vulkan so the GPU is used when a driver exists, and it runs
@@ -244,19 +254,19 @@ jobs:
         run: |
           git clone --branch v1.8.6 --depth 1 https://github.com/ggml-org/whisper.cpp.git
           cmake -S whisper.cpp -B whisper.cpp\build -A x64 `
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DWHISPER_SDL2=OFF
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DWHISPER_SDL2=OFF
           if ($LASTEXITCODE -ne 0) { throw "whisper.cpp configure failed" }
           cmake --build whisper.cpp\build --config Release --target whisper-cli --parallel
           if ($LASTEXITCODE -ne 0) { throw "whisper.cpp build failed" }
           $cache = Get-Content "whisper.cpp\build\CMakeCache.txt"
           # This is a multi-config Visual Studio build: CMAKE_BUILD_TYPE is
           # empty and the configuration is selected by --config Release, so the
-          # Release binary path is the build-type assertion here.
+          # Release binary path is the build-type assertion here. ggml's CMake
+          # defines FMA/F16C only for non-MSVC builds; on MSVC they are implied
+          # by AVX2, so AVX2 is the meaningful CPU assertion.
           foreach ($entry in @(
             "GGML_NATIVE:BOOL=OFF",
-            "GGML_AVX2:BOOL=ON",
-            "GGML_FMA:BOOL=ON",
-            "GGML_F16C:BOOL=ON"
+            "GGML_AVX2:BOOL=ON"
           )) {
             if (-not ($cache -contains $entry)) { throw "whisper-cli was not built with $entry" }
           }
@@ -270,11 +280,30 @@ jobs:
           if (-not (Test-Path $loader)) { throw "vulkan-1.dll was not installed by the Vulkan SDK" }
           Copy-Item $loader whisper.cpp\build\bin\Release\ -Force
 
+      - name: Ensure the Vulkan loader is beside whisper-cli
+        shell: pwsh
+        run: |
+          $dir = "whisper.cpp\build\bin\Release"
+          if (-not (Test-Path (Join-Path $dir "whisper-cli.exe"))) {
+            throw "whisper-cli.exe is missing from the build/cache"
+          }
+          $loader = Join-Path $dir "vulkan-1.dll"
+          if (-not (Test-Path $loader)) {
+            $candidates = @((Join-Path $env:SystemRoot "System32\vulkan-1.dll"))
+            if ($env:VULKAN_SDK) { $candidates += (Join-Path $env:VULKAN_SDK "Bin\vulkan-1.dll") }
+            $source = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $source) { throw "vulkan-1.dll was not found; install the Vulkan SDK or check System32" }
+            Copy-Item $source $loader -Force
+          }
+
       - name: Verify whisper-cli.exe runs
         shell: pwsh
         run: |
           $bin = "whisper.cpp\build\bin\Release\whisper-cli.exe"
           if (-not (Test-Path $bin)) { throw "whisper-cli.exe was not built" }
+          if (-not (Test-Path "whisper.cpp\build\bin\Release\vulkan-1.dll")) {
+            throw "vulkan-1.dll is not beside whisper-cli.exe"
+          }
           & $bin --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "whisper-cli.exe failed to run" }
 

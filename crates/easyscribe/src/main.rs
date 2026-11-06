@@ -115,21 +115,19 @@ fn main() {
 
 /// Hidden child-process entry points. The main window is never created.
 fn worker_mode() -> Option<i32> {
-    let mut args = std::env::args().skip(1);
+    // args_os keeps a non-Unicode recording path usable. The old args()
+    // iterator panicked before the worker could report an error.
+    let mut args = std::env::args_os().skip(1);
     let mut worker = false;
     let mut mode = None;
     let mut wav = None;
-    let mut threads = None;
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--worker" => {
+        match arg.to_str() {
+            Some("--worker") => {
                 worker = true;
                 mode = args.next();
             }
-            "--wav" => wav = args.next(),
-            "--threads" => {
-                threads = args.next().and_then(|value| value.parse::<usize>().ok());
-            }
+            Some("--wav") => wav = args.next(),
             _ => {}
         }
     }
@@ -140,20 +138,14 @@ fn worker_mode() -> Option<i32> {
         eprintln!("--worker needs a mode");
         return Some(2);
     };
-    if mode != "diarize" {
-        eprintln!("Unknown worker mode: {mode}");
+    if mode.to_str() != Some("diarize") {
+        eprintln!("Unknown worker mode: {}", mode.to_string_lossy());
         return Some(2);
     }
     let Some(wav) = wav else {
         eprintln!("--worker diarize needs --wav <path>");
         return Some(2);
     };
-    if let Some(threads) = threads
-        && threads > 0
-    {
-        // SAFETY: single-threaded startup, before any worker or UI thread exists.
-        unsafe { std::env::set_var("EASYSCRIBE_NUM_THREADS", threads.to_string()) };
-    }
     let paths = match Paths::discover() {
         Ok(paths) => paths,
         Err(error) => {
@@ -349,12 +341,17 @@ fn run_selftest(paths: &Paths) -> i32 {
     );
 
     let started = std::time::Instant::now();
+    // SAFETY: the selftest runs before the Rune window and its threads exist.
+    // The child inherits this deadline, so a hung diarization fails the gate
+    // instead of waiting for the CI job timeout.
+    unsafe { std::env::set_var("EASYSCRIBE_DIARIZE_TIMEOUT_SEC", "180") };
     let result = require_turns(easyscribe_core::diarizer::diarize_in_child(
         paths,
         &wav,
         &CancelToken::new(),
         Arc::new(SilentReporter),
     ));
+    unsafe { std::env::remove_var("EASYSCRIBE_DIARIZE_TIMEOUT_SEC") };
     report_step(
         &mut failures,
         "speaker diarization (child process)",

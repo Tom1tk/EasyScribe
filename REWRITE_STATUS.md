@@ -1,6 +1,6 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-06 (session 7 — audit 2 follow-up)
+**Updated:** 2026-11-06 (session 8 — own audit and rust.10)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Phase:** 7 — speed, GPU, process isolation and final release
@@ -10,10 +10,11 @@ isolated in a child, flash attention and the no-speech gate are in, and the
 selftest measures real speech. The audit-2 follow-up blockers (missing tracked
 speech fixture, `Win32_Security`, Linux sherpa link, `whisper-cli` job object,
 missing redistributable notices) are fixed. `rust.7` failed in the Vulkan loader
-copy and `rust.8` in a multi-config CMake assertion; both are fixed and
-`v3.2.3-rust.9` is the current validation run. The audit findings against the
-CLI engine (recursive fallback, DLL-load failures, GPU-disable semantics, probe
-failure, invalid UTF-8 stderr, temp cleanup) are also fixed.
+copy, `rust.8` in a multi-config CMake assertion and `rust.9` in a wrong
+MSVC-only FMA assertion; all three are fixed and `v3.2.3-rust.10` is the current
+validation run. The independent audit against the CLI engine, diarization
+worker, transcript clips and release pipeline is being actioned; the confirmed
+fixes are listed below.
 
 ## What is built
 
@@ -37,7 +38,7 @@ failure, invalid UTF-8 stderr, temp cleanup) are also fixed.
 
 ## Verification completed
 
-- [x] `cargo test --workspace`: **6 app + 56 core + 2 offline = 64 passed**,
+- [x] `cargo test --workspace`: **6 app + 60 core + 2 offline = 68 passed**,
       2 ignored (the model-backed long-silence and golden tests, run manually).
 - [x] `cargo clippy --workspace --all-targets`: clean.
 - [x] `cargo fmt --all -- --check`: clean.
@@ -52,8 +53,8 @@ failure, invalid UTF-8 stderr, temp cleanup) are also fixed.
       the Cargo/CMake profile, per-phase whisper timings, and loads the sherpa
       Whisper ONNX model, Silero VAD, whisper.cpp GGUF and diarization models.
 - [x] Local release selftest, 4 threads, 23.3 s speech:
-      `whisper-cli` cold **43.9 s**, in-process cold **65.5 s**, after sherpa
-      **44.3 s**, diarization in-process **10.3 s**, diarization child
+      `whisper-cli` cold **43.9 s**, in-process cold **65.7 s**, after sherpa
+      **65.9 s**, diarization in-process **10.6 s**, diarization child
       **10.5 s**, silence check **0.1 s** (zero segments, "No speech found").
 - [x] All 13 headless scenes render (`preparing` plus the 12 app states).
 - [x] UI click/state tests pass.
@@ -165,8 +166,26 @@ failure, invalid UTF-8 stderr, temp cleanup) are also fixed.
 - **`v3.2.3-rust.8` failed the same build step on a bad assertion.** The CMake
   generator is multi-config, so `CMAKE_BUILD_TYPE` is empty; asserting
   `CMAKE_BUILD_TYPE=Release` could never pass. The Release configuration is now
-  proved by the `bin\Release` output and the `--config Release` build, while the
-  cache asserts `GGML_NATIVE=OFF` and `GGML_AVX2`/`FMA`/`F16C=ON`.
+  proved by the `bin\Release` output and the `--config Release` build.
+- **`v3.2.3-rust.9` failed on an MSVC-invalid FMA assertion.** ggml's CMake
+  defines `GGML_FMA`/`GGML_F16C` only for non-MSVC builds; on MSVC they are
+  implied by AVX2. The assertion now checks `GGML_NATIVE=OFF` and
+  `GGML_AVX2=ON` only, and the CMake command passes `-DGGML_AVX2=ON`.
+- **Diarization audit fixes.** The parent now treats the first `turns` message
+  as success and stops the worker without waiting for teardown, so a destructor
+  crash cannot discard a valid result; the worker leaks its native engine after
+  computing the result for the same reason. Reader threads read bytes with
+  `from_utf8_lossy`, report I/O errors instead of silently stopping, and use
+  bounded kill/reap. `EASYSCRIBE_DIARIZE_TIMEOUT_SEC` gives the selftest a
+  deadline. `min_duration_on/off` now match the Python 0.3/0.5 defaults, the
+  unused `--threads` plumbing is gone, and the worker parses `args_os` so a
+  non-Unicode path cannot panic. Speaker clips are streamed from the WAV instead
+  of loading the whole recording once per speaker.
+- **Release-pipeline audit fixes.** The GGUF cache has a Rune-only key and is
+  explicitly saved before cleanup; the Vulkan loader is ensured beside
+  `whisper-cli.exe` on cache hits as well as cold builds; the standalone CLI
+  asserts `GGML_AVX2` (not MSVC-only FMA); `ffmpeg`/`ffprobe` are checked in the
+  payload.
 - **Whisper-cli engine audit fixes.** A spawn or DLL-load failure
   (`0xC0000135`/`0139`/`007B`/`0142`) now falls back directly to the linked
   in-process engine instead of recursing through the dispatcher; the selftest
@@ -229,13 +248,13 @@ failure, invalid UTF-8 stderr, temp cleanup) are also fixed.
 
 - Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
   drag/drop and a real microphone can only be proven on a real Windows PC or VM.
-  `v3.2.3-rust.9` exercises the CPU path on CI (the runner has no GPU), but not
+  `v3.2.3-rust.10` exercises the CPU path on CI (the runner has no GPU), but not
   a dedicated/integrated GPU or a crashing driver.
 - The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
-  file on v3.2.3 GPU, v3.2.3 CPU and rust.9, then record wall times in this
+  file on v3.2.3 GPU, v3.2.3 CPU and rust.10, then record wall times in this
   file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
 - The 655 s CI decode cause is unproven. The OpenMP hypothesis was not supported
-  by the local benchmark; rust.9's same-runner control measurement is the next
+  by the local benchmark; rust.10's same-runner control measurement is the next
   datapoint.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
@@ -249,7 +268,7 @@ failure, invalid UTF-8 stderr, temp cleanup) are also fixed.
 
 ## Next actions
 
-1. Commit and push these fixes, then dispatch `v3.2.3-rust.9` from
+1. Commit and push these fixes, then dispatch `v3.2.3-rust.10` from
    `rune-rewrite`.
 2. Confirm `rune-release.yml@refs/heads/rune-rewrite`, the whisper-cli control
    time, system-info features, golden text, speech budget, both selftest
@@ -257,10 +276,10 @@ failure, invalid UTF-8 stderr, temp cleanup) are also fixed.
    assets. Record the result (pass or fail) here.
 3. Run an independent code audit over the finished Rust/Rune product and fix
    confirmed findings.
-4. Verify the draft `EasyScribe-v3.2.3-rust.9.exe` and `.sha256`; delete the
-   superseded `rust.4`–`rust.8` drafts if present.
+4. Verify the draft `EasyScribe-v3.2.3-rust.10.exe` and `.sha256`; delete the
+   superseded `rust.4`–`rust.9` drafts if present.
 5. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
    microphone, DPI, dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the
    real-PC speed comparison; record results here.
-6. Hand over for the decision on replacing v3.2.3. Do not publish rust.9 as
+6. Hand over for the decision on replacing v3.2.3. Do not publish rust.10 as
    Latest until the real-PC speed and clean-PC checks pass.

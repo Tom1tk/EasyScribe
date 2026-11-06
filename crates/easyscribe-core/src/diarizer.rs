@@ -64,6 +64,20 @@ impl DiarizationEngine {
         cancel: &CancelToken,
         reporter: Arc<dyn Reporter>,
     ) -> Result<Vec<Turn>> {
+        self.diarize_inner(audio_path, cancel, reporter, false)
+    }
+
+    /// `keep_engine_alive` is used by the short-lived worker. Dropping the
+    /// native diarizer can be slow or crash; once the turns are computed the
+    /// worker sends them and exits, so leaking the engine is safer than losing
+    /// a valid result during teardown.
+    fn diarize_inner(
+        &self,
+        audio_path: &Path,
+        cancel: &CancelToken,
+        reporter: Arc<dyn Reporter>,
+        keep_engine_alive: bool,
+    ) -> Result<Vec<Turn>> {
         if !self.is_available() {
             return Err(Error::Diarization("The speaker models are missing.".into()));
         }
@@ -88,12 +102,11 @@ impl DiarizationEngine {
             Error::Diarization(format!("Could not load audio for diarization: {e}"))
         })?;
 
-        let started = Instant::now();
         let config = DiarizeConfig {
             num_clusters: Some(-1),
             threshold: Some(0.5),
-            min_duration_on: Some(0.0),
-            min_duration_off: Some(0.0),
+            min_duration_on: Some(0.3),
+            min_duration_off: Some(0.5),
             provider: Some("cpu".into()),
             debug: false,
         };
@@ -120,39 +133,42 @@ impl DiarizationEngine {
             0
         });
 
-        let segments = match engine.compute(samples, Some(progress)) {
-            Ok(segments) => segments,
-            Err(_) if cancel.is_cancelled() => return Err(Error::Cancelled),
-            Err(e) if e.to_string().contains("No segments") => Vec::new(),
-            Err(e) => {
-                return Err(Error::Diarization(format!(
-                    "Speaker diarization failed: {e}"
-                )));
+        let result = match engine.compute(samples, Some(progress)) {
+            Ok(segments) => {
+                let turns: Vec<Turn> = segments
+                    .into_iter()
+                    .map(|s| Turn {
+                        start: s.start as f64,
+                        end: s.end as f64,
+                        speaker: format!("SPEAKER_{:02}", s.speaker),
+                    })
+                    .collect();
+                let speakers: std::collections::BTreeSet<&str> =
+                    turns.iter().map(|t| t.speaker.as_str()).collect();
+                reporter.log(&format!(
+                    "[Diarize] Found {} speaker(s) across {} turn(s)",
+                    speakers.len(),
+                    turns.len()
+                ));
+                log::info!(
+                    "Diarization complete: {} speakers, {} turns",
+                    speakers.len(),
+                    turns.len()
+                );
+                Ok(turns)
             }
+            Err(_) if cancel.is_cancelled() => Err(Error::Cancelled),
+            Err(e) if e.to_string().contains("No segments") => Ok(Vec::new()),
+            Err(e) => Err(Error::Diarization(format!(
+                "Speaker diarization failed: {e}"
+            ))),
         };
-        let _ = started;
-
-        let turns: Vec<Turn> = segments
-            .into_iter()
-            .map(|s| Turn {
-                start: s.start as f64,
-                end: s.end as f64,
-                speaker: format!("SPEAKER_{:02}", s.speaker),
-            })
-            .collect();
-        let speakers: std::collections::BTreeSet<&str> =
-            turns.iter().map(|t| t.speaker.as_str()).collect();
-        reporter.log(&format!(
-            "[Diarize] Found {} speaker(s) across {} turn(s)",
-            speakers.len(),
-            turns.len()
-        ));
-        log::info!(
-            "Diarization complete: {} speakers, {} turns",
-            speakers.len(),
-            turns.len()
-        );
-        Ok(turns)
+        // The worker exits immediately after writing the result; skipping the
+        // native destructor avoids losing that result to a teardown crash.
+        if keep_engine_alive {
+            std::mem::forget(engine);
+        }
+        result
     }
 }
 
@@ -172,8 +188,6 @@ pub fn diarize_in_child(
         .arg("diarize")
         .arg("--wav")
         .arg(audio_path)
-        .arg("--threads")
-        .arg(crate::config::num_threads().to_string())
         .env("EASYSCRIBE_BASE_DIR", &paths.base_dir)
         .env("EASYSCRIBE_DATA_DIR", &paths.data_dir)
         .stdin(Stdio::null())
@@ -191,98 +205,69 @@ pub fn diarize_in_child(
     crate::win_job::assign(&child);
 
     let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_and_reap(&mut child);
         return Err(Error::Diarization(
             "The diarization worker has no stdout".into(),
         ));
     };
     let Some(stderr) = child.stderr.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        kill_and_reap(&mut child);
         return Err(Error::Diarization(
             "The diarization worker has no stderr".into(),
         ));
     };
     let (tx, rx) = std::sync::mpsc::channel::<WorkerMessage>();
-    let stdout_reader = {
-        let tx = tx.clone();
-        match std::thread::Builder::new()
-            .name("DiarizeStdout".into())
-            .spawn(move || {
-                for line in BufReader::new(stdout)
-                    .lines()
-                    .map_while(std::result::Result::ok)
-                {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    let message = match serde_json::from_str::<Value>(&line) {
-                        Ok(value) => WorkerMessage::parse(value),
-                        Err(error) => WorkerMessage::Malformed(format!(
-                            "The diarization worker sent invalid JSON ({error}): {line}"
-                        )),
-                    };
-                    if tx.send(message).is_err() {
-                        break;
-                    }
-                }
-            }) {
-            Ok(reader) => reader,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(Error::Diarization(format!(
-                    "Could not read the diarization worker: {error}"
-                )));
-            }
+    let stdout_reader = match spawn_stdout_reader(stdout, tx.clone()) {
+        Ok(reader) => reader,
+        Err(error) => {
+            kill_and_reap(&mut child);
+            return Err(Error::Diarization(format!(
+                "Could not read the diarization worker: {error}"
+            )));
         }
     };
-    let stderr_reader = {
-        let tx = tx.clone();
-        let reporter = reporter.clone();
-        match std::thread::Builder::new()
-            .name("DiarizeStderr".into())
-            .spawn(move || {
-                for line in BufReader::new(stderr)
-                    .lines()
-                    .map_while(std::result::Result::ok)
-                {
-                    reporter.log(&line);
-                    let _ = tx.send(WorkerMessage::Log);
-                }
-            }) {
-            Ok(reader) => reader,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                return Err(Error::Diarization(format!(
-                    "Could not read the diarization log: {error}"
-                )));
-            }
+    let stderr_reader = match spawn_stderr_reader(stderr, tx.clone(), reporter.clone()) {
+        Ok(reader) => reader,
+        Err(error) => {
+            kill_and_reap(&mut child);
+            let _ = stdout_reader.join();
+            return Err(Error::Diarization(format!(
+                "Could not read the diarization log: {error}"
+            )));
         }
     };
     drop(tx);
 
+    let deadline = std::env::var("EASYSCRIBE_DIARIZE_TIMEOUT_SEC")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| Instant::now() + Duration::from_secs(seconds));
+
     let mut turns: Option<Vec<Turn>> = None;
     let status = loop {
         if cancel.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
+            stop_worker(&mut child, stdout_reader, stderr_reader);
             return Err(Error::Cancelled);
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            stop_worker(&mut child, stdout_reader, stderr_reader);
+            return Err(Error::Diarization(
+                "The diarization worker took too long and was stopped.".into(),
+            ));
         }
         while let Ok(message) = rx.try_recv() {
             match message {
                 WorkerMessage::Progress(fraction) => reporter.progress(fraction.clamp(0.0, 1.0)),
-                WorkerMessage::Turns(value) => turns = Some(value),
+                // Turns are complete as soon as they arrive. Do not wait for
+                // the child to exit: a teardown crash after the result must not
+                // discard a valid answer.
+                WorkerMessage::Turns(value) => {
+                    stop_worker(&mut child, stdout_reader, stderr_reader);
+                    return Ok(value);
+                }
                 WorkerMessage::Error(message) | WorkerMessage::Malformed(message) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
+                    stop_worker(&mut child, stdout_reader, stderr_reader);
                     return Err(Error::Diarization(message));
                 }
                 WorkerMessage::Log => {}
@@ -292,16 +277,14 @@ pub fn diarize_in_child(
             Ok(Some(status)) => break status,
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
+                stop_worker(&mut child, stdout_reader, stderr_reader);
                 return Err(Error::Diarization(format!(
                     "Could not wait for the diarization worker: {error}"
                 )));
             }
         }
     };
+
     let _ = stdout_reader.join();
     let _ = stderr_reader.join();
     let mut error = None;
@@ -319,15 +302,115 @@ pub fn diarize_in_child(
     if let Some(message) = error {
         return Err(Error::Diarization(message));
     }
-    if !status.success() {
-        return Err(Error::Diarization(format!(
-            "The diarization worker stopped with exit code {:?}.",
-            status.code()
-        )));
+    if let Some(turns) = turns {
+        return Ok(turns);
     }
-    turns.ok_or_else(|| {
-        Error::Diarization("The diarization worker finished without a result.".into())
-    })
+    let code = status.code().map_or_else(
+        || "terminated by a signal".to_owned(),
+        |code| code.to_string(),
+    );
+    Err(Error::Diarization(format!(
+        "The diarization worker stopped with exit code {code}."
+    )))
+}
+
+fn spawn_stdout_reader(
+    stdout: std::process::ChildStdout,
+    tx: std::sync::mpsc::Sender<WorkerMessage>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("DiarizeStdout".into())
+        .spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match reader.read_until(b'\n', &mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let text = String::from_utf8_lossy(&line)
+                            .trim_end_matches(&['\r', '\n'][..])
+                            .to_owned();
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        let message = match serde_json::from_str::<Value>(&text) {
+                            Ok(value) => WorkerMessage::parse(value),
+                            Err(error) => WorkerMessage::Malformed(format!(
+                                "The diarization worker sent invalid JSON ({error}): {text}"
+                            )),
+                        };
+                        if tx.send(message).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = tx.send(WorkerMessage::Malformed(format!(
+                            "The diarization worker output could not be read: {error}"
+                        )));
+                        break;
+                    }
+                }
+            }
+        })
+}
+
+fn spawn_stderr_reader(
+    stderr: std::process::ChildStderr,
+    tx: std::sync::mpsc::Sender<WorkerMessage>,
+    reporter: Arc<dyn Reporter>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("DiarizeStderr".into())
+        .spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match reader.read_until(b'\n', &mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let text = String::from_utf8_lossy(&line)
+                            .trim_end_matches(&['\r', '\n'][..])
+                            .to_owned();
+                        if !text.is_empty() {
+                            reporter.log(&text);
+                        }
+                        let _ = tx.send(WorkerMessage::Log);
+                    }
+                    Err(error) => {
+                        reporter.log(&format!("[Diarize] Could not read worker log: {error}"));
+                        let _ = tx.send(WorkerMessage::Malformed(format!(
+                            "The diarization worker log could not be read: {error}"
+                        )));
+                        break;
+                    }
+                }
+            }
+        })
+}
+
+fn kill_and_reap(child: &mut std::process::Child) -> bool {
+    let _ = child.kill();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return true,
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    false
+}
+
+fn stop_worker(
+    child: &mut std::process::Child,
+    stdout: std::thread::JoinHandle<()>,
+    stderr: std::thread::JoinHandle<()>,
+) {
+    if kill_and_reap(child) {
+        let _ = stdout.join();
+        let _ = stderr.join();
+    }
 }
 
 enum WorkerMessage {
@@ -373,10 +456,11 @@ pub fn run_diarize_worker(paths: &Paths, wav: &Path) -> i32 {
         }
     }
 
-    let result = DiarizationEngine::new(paths.clone()).diarize(
+    let result = DiarizationEngine::new(paths.clone()).diarize_inner(
         wav,
         &CancelToken::new(),
         Arc::new(JsonReporter),
+        true,
     );
     match result {
         Ok(turns) => {

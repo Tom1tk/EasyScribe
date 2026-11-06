@@ -340,3 +340,28 @@ the narrative history.
   2 offline; 2 ignored), clippy/fmt clean, release selftest passes (cold CLI
   43.9 s, in-process 65.7 s, after-sherpa 65.9 s, diarization 10.6/10.5 s,
   silence 0.1 s). `v3.2.3-rust.9` is dispatched from `rune-rewrite`.
+
+## 2026-11-06 — Session 9: rust.9 gate and diarization audit fixes
+
+- **rust.9 failed on a wrong CMake assertion, not the build.** On MSVC ggml does
+  not define `GGML_FMA`/`GGML_F16C` options; it implies them from AVX2. The
+  standalone whisper-cli gate now asserts `GGML_NATIVE=OFF` and `GGML_AVX2=ON`
+  only, and passes `-DGGML_AVX2=ON`.
+- **Diarization terminal result.** The parent treats the first `{"turns":…}` as
+  success and stops the worker immediately, so a crash during native teardown
+  cannot discard a valid answer. The worker leaks its native engine after
+  computing the result and exits. Reader threads now read raw lines with
+  `from_utf8_lossy` and report I/O errors instead of silently stopping; cleanup
+  is bounded. `EASYSCRIBE_DIARIZE_TIMEOUT_SEC` bounds the selftest child.
+- **Diarization parity.** `min_duration_on/off` now match Python's 0.3/0.5
+  defaults, the unused `--threads` plumbing is removed, the worker parses
+  `args_os` (non-Unicode paths no longer panic), and speaker clips are streamed
+  from the WAV instead of loading the entire recording once per speaker.
+- **Release pipeline.** The GGUF cache uses a Rune-only key and is saved
+  explicitly before cleanup; the Vulkan loader is ensured beside the CLI on
+  cache hits as well as cold builds; `ffmpeg`/`ffprobe` are checked in the
+  payload.
+- Local verification: 68 tests pass (6 app, 60 core, 2 offline; 2 ignored),
+  clippy/fmt clean, release selftest passes (cold CLI 46.1 s, in-process 67.4 s,
+  after-sherpa 68.2 s, diarization 10.5/10.5 s, silence 0.1 s).
+  `v3.2.3-rust.10` is dispatched from `rune-rewrite`.

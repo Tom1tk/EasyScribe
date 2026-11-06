@@ -214,7 +214,8 @@ pub fn extract_speaker_clip(
 }
 
 /// Copy a time range of an existing WAV verbatim (keeping channels, width and
-/// rate), as Python's `_extract_speaker_clip` does.
+/// rate), as Python's `_extract_speaker_clip` does. Stream the requested
+/// frames instead of loading the whole recording into memory.
 fn write_wav_slice(input: &Path, start: f64, end: f64, output: &Path) -> Result<()> {
     let mut reader = hound::WavReader::open(input)?;
     let spec = reader.spec();
@@ -222,54 +223,28 @@ fn write_wav_slice(input: &Path, start: f64, end: f64, output: &Path) -> Result<
     let start_frame = (start.max(0.0) * sr) as u64;
     let frames = ((end - start) * sr).max(0.0) as u64;
     let channels = spec.channels as u64;
+    let offset = usize::try_from(start_frame.saturating_mul(channels)).unwrap_or(usize::MAX);
+    let count = usize::try_from(frames.saturating_mul(channels)).unwrap_or(usize::MAX);
+    let mut writer = hound::WavWriter::create(output, spec)?;
 
     match spec.sample_format {
         hound::SampleFormat::Int if spec.bits_per_sample <= 16 => {
-            let samples: Vec<i16> = reader
-                .samples::<i16>()
-                .collect::<std::result::Result<_, _>>()?;
-            let offset = (start_frame * channels) as usize;
-            let count = (frames * channels) as usize;
-            let slice = samples
-                .get(offset..(offset + count).min(samples.len()))
-                .unwrap_or(&[]);
-            let mut writer = hound::WavWriter::create(output, spec)?;
-            for s in slice {
-                writer.write_sample(*s)?;
+            for sample in reader.samples::<i16>().skip(offset).take(count) {
+                writer.write_sample(sample?)?;
             }
-            writer.finalize()?;
         }
         hound::SampleFormat::Int => {
-            let samples: Vec<i32> = reader
-                .samples::<i32>()
-                .collect::<std::result::Result<_, _>>()?;
-            let offset = (start_frame * channels) as usize;
-            let count = (frames * channels) as usize;
-            let slice = samples
-                .get(offset..(offset + count).min(samples.len()))
-                .unwrap_or(&[]);
-            let mut writer = hound::WavWriter::create(output, spec)?;
-            for s in slice {
-                writer.write_sample(*s)?;
+            for sample in reader.samples::<i32>().skip(offset).take(count) {
+                writer.write_sample(sample?)?;
             }
-            writer.finalize()?;
         }
         hound::SampleFormat::Float => {
-            let samples: Vec<f32> = reader
-                .samples::<f32>()
-                .collect::<std::result::Result<_, _>>()?;
-            let offset = (start_frame * channels) as usize;
-            let count = (frames * channels) as usize;
-            let slice = samples
-                .get(offset..(offset + count).min(samples.len()))
-                .unwrap_or(&[]);
-            let mut writer = hound::WavWriter::create(output, spec)?;
-            for s in slice {
-                writer.write_sample(*s)?;
+            for sample in reader.samples::<f32>().skip(offset).take(count) {
+                writer.write_sample(sample?)?;
             }
-            writer.finalize()?;
         }
     }
+    writer.finalize()?;
     Ok(())
 }
 
