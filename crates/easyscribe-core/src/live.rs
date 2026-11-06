@@ -29,11 +29,16 @@ pub enum LiveEvent {
 pub struct LiveTranscriber {
     vad_thread: Option<std::thread::JoinHandle<()>>,
     decode_thread: Option<std::thread::JoinHandle<()>>,
+    decode_done: Option<mpsc::Receiver<()>>,
 }
 
 impl LiveTranscriber {
     pub fn new() -> Self {
-        Self { vad_thread: None, decode_thread: None }
+        Self {
+            vad_thread: None,
+            decode_thread: None,
+            decode_done: None,
+        }
     }
 
     pub fn start(
@@ -48,6 +53,7 @@ impl LiveTranscriber {
         let vad_done = Arc::new(Mutex::new(false));
         let onnx_lock = Arc::new(Mutex::new(()));
 
+        let (decode_done_tx, decode_done_rx) = mpsc::channel();
         let decode_handle = {
             let engine = engine.clone();
             let vad_done = vad_done.clone();
@@ -56,8 +62,13 @@ impl LiveTranscriber {
             let events = events.clone();
             std::thread::Builder::new()
                 .name("LiveDecoder".into())
-                .spawn(move || decode_loop(engine, decode, vad_done, events, onnx_lock))
-                .map_err(|e| crate::Error::Transcription(format!("Could not start live decoder: {e}")))?
+                .spawn(move || {
+                    decode_loop(engine, decode, vad_done, events, onnx_lock);
+                    let _ = decode_done_tx.send(());
+                })
+                .map_err(|e| {
+                    crate::Error::Transcription(format!("Could not start live decoder: {e}"))
+                })?
         };
 
         let vad_handle = {
@@ -66,11 +77,18 @@ impl LiveTranscriber {
             let onnx_lock = onnx_lock.clone();
             std::thread::Builder::new()
                 .name("LiveVAD".into())
-                .spawn(move || vad_loop(paths, mic_queue, decode, cancel, vad_done, onnx_lock, events))
-                .map_err(|e| crate::Error::Transcription(format!("Could not start live VAD: {e}")))?
+                .spawn(move || {
+                    vad_loop(
+                        paths, mic_queue, decode, cancel, vad_done, onnx_lock, events,
+                    )
+                })
+                .map_err(|e| {
+                    crate::Error::Transcription(format!("Could not start live VAD: {e}"))
+                })?
         };
 
         self.decode_thread = Some(decode_handle);
+        self.decode_done = Some(decode_done_rx);
         self.vad_thread = Some(vad_handle);
         log::info!("LiveTranscriber started");
         Ok(())
@@ -78,13 +96,25 @@ impl LiveTranscriber {
 
     /// The caller must have cancelled the token first. Joins VAD, then decoder.
     pub fn stop(&mut self) {
-        if let Some(thread) = self.vad_thread.take() {
-            if thread.join().is_err() {
-                log::warn!("Live VAD thread panicked");
-            }
+        if let Some(thread) = self.vad_thread.take()
+            && thread.join().is_err()
+        {
+            log::warn!("Live VAD thread panicked");
         }
+        let timed_out = if let Some(done) = self.decode_done.take() {
+            done.recv_timeout(STOP_TIMEOUT).is_err()
+        } else {
+            false
+        };
         if let Some(thread) = self.decode_thread.take() {
-            if thread.join().is_err() {
+            if timed_out {
+                // The native recognizer can block past cancellation. Detach
+                // the decoder so the recording still gets saved.
+                log::warn!(
+                    "Live decoder did not stop within {} s; detaching it",
+                    STOP_TIMEOUT.as_secs()
+                );
+            } else if thread.join().is_err() {
                 log::warn!("Live decoder thread panicked");
             }
         }
@@ -129,7 +159,10 @@ impl DecodeQueue {
     fn pop_timeout(&self, timeout: Duration) -> Option<Vec<f32>> {
         let mut queue = self.inner.lock().expect("decode queue poisoned");
         if queue.is_empty() {
-            let (guard, _) = self.ready.wait_timeout(queue, timeout).expect("decode queue poisoned");
+            let (guard, _) = self
+                .ready
+                .wait_timeout(queue, timeout)
+                .expect("decode queue poisoned");
             queue = guard;
         }
         queue.pop_front()

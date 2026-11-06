@@ -26,7 +26,12 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let input = PathBuf::from(args.next().expect("input wav"));
     let output = PathBuf::from(args.next().expect("output txt"));
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf();
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let paths = Paths::at(base).expect("paths");
     let engine = TranscriptionEngine::new(paths.clone());
     let cancel = CancelToken::new();

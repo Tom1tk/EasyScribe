@@ -6,15 +6,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::time::Duration;
 
 use easyscribe_core::diarizer::{DiarizationEngine, SpeakerNaming, SpeakerPreview};
-use easyscribe_core::live::LiveEvent;
 use easyscribe_core::{
-    audio, ffmpeg, logger, mic, outputs, recovery, rename, settings::Settings, transcriber,
-    CancelToken, Error, Paths, Reporter, Segment, Status, TranscriptionEngine,
+    CancelToken, Error, Paths, Reporter, Segment, Status, TranscriptionEngine, audio, ffmpeg,
+    logger, mic, outputs, payload, recovery, rename, settings::Settings, transcriber,
 };
 use rune::{TextEdit, Waker};
 
@@ -70,7 +69,15 @@ pub struct FileEntry {
 
 impl FileEntry {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, state: FileState::Waiting, display_name: None, display_size: None }
+        // Stat once when the file is added, not on every render: progress
+        // updates rebuild the view many times per second.
+        let display_size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+        Self {
+            path,
+            state: FileState::Waiting,
+            display_name: None,
+            display_size,
+        }
     }
 }
 
@@ -163,16 +170,40 @@ impl Activity {
             Status::LoadingModel => ("Getting ready", Tone::Ink, BarMode::Busy, t.teal),
             Status::ExtractingAudio => ("Reading the audio", Tone::Ink, BarMode::Busy, t.teal),
             Status::Transcribing => ("Transcribing", Tone::Teal, BarMode::Determinate, t.teal),
-            Status::IdentifyingSpeakers => ("Finding the speakers", Tone::Amber, BarMode::Busy, t.amber),
-            Status::NamingSpeakers => ("Waiting for speaker names", Tone::Amber, BarMode::Idle, t.amber),
-            Status::WritingTranscript => ("Saving the transcript", Tone::Teal, BarMode::Determinate, t.teal),
+            Status::IdentifyingSpeakers => {
+                ("Finding the speakers", Tone::Amber, BarMode::Busy, t.amber)
+            }
+            Status::NamingSpeakers => (
+                "Waiting for speaker names",
+                Tone::Amber,
+                BarMode::Idle,
+                t.amber,
+            ),
+            Status::WritingTranscript => (
+                "Saving the transcript",
+                Tone::Teal,
+                BarMode::Determinate,
+                t.teal,
+            ),
             Status::Recording => ("Recording", Tone::Coral, BarMode::Busy, t.coral),
-            Status::Finishing => ("Finishing the last words", Tone::Coral, BarMode::Busy, t.coral),
-            Status::SavingRecording => ("Saving the recording", Tone::Coral, BarMode::Busy, t.coral),
+            Status::Finishing => (
+                "Finishing the last words",
+                Tone::Coral,
+                BarMode::Busy,
+                t.coral,
+            ),
+            Status::SavingRecording => {
+                ("Saving the recording", Tone::Coral, BarMode::Busy, t.coral)
+            }
             Status::Cancelling => ("Stopping…", Tone::Muted, BarMode::Busy, t.faint),
             Status::Done => ("Done", Tone::Green, BarMode::Idle, t.green),
             Status::Cancelled => ("Stopped", Tone::Muted, BarMode::Idle, t.faint),
-            Status::Failed => ("Something went wrong", Tone::Crimson, BarMode::Idle, t.crimson),
+            Status::Failed => (
+                "Something went wrong",
+                Tone::Crimson,
+                BarMode::Idle,
+                t.crimson,
+            ),
         };
         self.title = title.into();
         self.tone = tone;
@@ -218,7 +249,10 @@ pub struct MicChoice {
 
 impl MicChoice {
     pub fn default_device() -> Self {
-        Self { label: "Default microphone".into(), device: None }
+        Self {
+            label: "Default microphone".into(),
+            device: None,
+        }
     }
 }
 
@@ -257,11 +291,24 @@ pub enum Event {
     LiveOverflow,
     AskNames(SpeakerPreview, SyncSender<NamingReply>),
     FindDone(workers::FindDone),
+    Preparing { stage: String, progress: f32 },
+    Prepared(payload::Prepared),
+    PrepareFailed(String),
+}
+
+/// First-launch progress, shown in place of the app until the runtime cache is
+/// complete. Cached launches never see it.
+#[derive(Clone, Debug)]
+pub struct PreparingState {
+    pub stage: String,
+    pub progress: f32,
+    pub error: Option<String>,
 }
 
 pub struct AppState {
     pub paths: Paths,
     pub theme: Theme,
+    pub window_height: f32,
     pub mode: Mode,
     pub ui: UiState,
     pub files: Vec<FileEntry>,
@@ -316,11 +363,14 @@ pub struct AppState {
     pub record_stop: Option<CancelToken>,
     pub engine: Arc<TranscriptionEngine>,
     pub settings: Settings,
+    pub preparing: Option<PreparingState>,
 }
 
 pub struct Init {
     pub paths: Paths,
     pub window_height: f32,
+    /// Resolve the single-exe payload in `setup`, showing a splash meanwhile.
+    pub preparing: bool,
 }
 
 impl AppState {
@@ -334,7 +384,10 @@ impl AppState {
             if label.is_empty() || !seen.insert(label.clone()) {
                 continue;
             }
-            mic_choices.push(MicChoice { label, device: Some(device.name) });
+            mic_choices.push(MicChoice {
+                label,
+                device: Some(device.name),
+            });
         }
         let (tx, rx) = mpsc::channel();
         let engine = Arc::new(TranscriptionEngine::new(init.paths.clone()));
@@ -345,6 +398,7 @@ impl AppState {
             visible_rows: visible_rows(init.window_height),
             paths: init.paths,
             theme,
+            window_height: init.window_height,
             mode: Mode::Files,
             ui: UiState::Idle,
             files: Vec::new(),
@@ -389,11 +443,114 @@ impl AppState {
             record_stop: None,
             engine,
             settings,
+            preparing: if init.preparing {
+                Some(PreparingState {
+                    stage: "Preparing EasyScribe".into(),
+                    progress: 0.0,
+                    error: None,
+                })
+            } else {
+                None
+            },
         }
     }
 
     pub fn set_waker(&mut self, waker: Waker) {
         self.waker = Some(waker);
+    }
+
+    /// Unpack and verify the single-exe payload on a worker thread. Progress
+    /// updates wake the splash; completion swaps in the real paths.
+    pub fn begin_prepare(&mut self) {
+        if self.preparing.is_none() {
+            return;
+        }
+        if let Some(preparing) = &mut self.preparing {
+            preparing.error = None;
+            preparing.progress = 0.0;
+            preparing.stage = "Preparing EasyScribe".into();
+        }
+        let tx = self.tx.clone();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            let mut last = -1.0_f32;
+            let result = payload::prepare_with_progress(|stage, progress| {
+                if progress - last >= 0.003 || progress >= 1.0 {
+                    last = progress;
+                    let _ = tx.send(Event::Preparing {
+                        stage: stage.to_owned(),
+                        progress,
+                    });
+                    if let Some(wake) = &waker {
+                        wake();
+                    }
+                }
+            });
+            let _ = match result {
+                Ok(prepared) => tx.send(Event::Prepared(prepared)),
+                Err(error) => tx.send(Event::PrepareFailed(error.to_string())),
+            };
+            if let Some(wake) = &waker {
+                wake();
+            }
+        });
+    }
+
+    /// Swap the provisional paths for the extracted runtime, then run the
+    /// checks the Python app ran between config and the GUI.
+    fn adopt_prepared(&mut self, prepared: payload::Prepared) {
+        let paths = match Paths::for_runtime(prepared.runtime_dir, prepared.data_dir) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.fail_preparing(error.to_string());
+                return;
+            }
+        };
+
+        startup(&paths);
+        recover_before_ui(&paths);
+        if let Some(message) = startup_error(&paths) {
+            dialogs::error("EasyScribe cannot start", &message);
+            std::process::exit(1);
+        }
+        if let Some(problem) = crate::platform::processor_problem() {
+            dialogs::error("EasyScribe cannot start", &problem);
+            std::process::exit(1);
+        }
+
+        self.paths = paths;
+        self.engine = Arc::new(TranscriptionEngine::new(self.paths.clone()));
+        self.settings = Settings::load(self.paths.settings_file.clone());
+        self.recordings_dir = self.settings.load_recordings_dir();
+        self.diarization_available = self.paths.diarization_available();
+        self.selected_diarize_models = self.diarization_available;
+        self.mic_menu_open = false;
+        self.selected_mic = 0;
+        self.refresh_microphones();
+        self.preparing = None;
+    }
+
+    fn refresh_microphones(&mut self) {
+        let mut mic_choices = vec![MicChoice::default_device()];
+        let mut seen = HashSet::new();
+        for device in mic::list_input_devices() {
+            let label = outputs::shorten(device.name.trim(), 48);
+            if label.is_empty() || !seen.insert(label.clone()) {
+                continue;
+            }
+            mic_choices.push(MicChoice {
+                label,
+                device: Some(device.name),
+            });
+        }
+        self.mic_choices = mic_choices;
+    }
+
+    fn fail_preparing(&mut self, message: String) {
+        if let Some(preparing) = &mut self.preparing {
+            preparing.stage = "EasyScribe could not prepare its files".into();
+            preparing.error = Some(message);
+        }
     }
 
     pub fn idle(&self) -> bool {
@@ -407,7 +564,9 @@ impl AppState {
     }
 
     pub fn selected_mic_device(&self) -> Option<String> {
-        self.mic_choices.get(self.selected_mic).and_then(|m| m.device.clone())
+        self.mic_choices
+            .get(self.selected_mic)
+            .and_then(|m| m.device.clone())
     }
 
     pub fn poll(&mut self) -> bool {
@@ -448,6 +607,14 @@ impl AppState {
                 }
             }
             Event::BatchDone(done) => self.finish_batch(done),
+            Event::Preparing { stage, progress } => {
+                if let Some(preparing) = &mut self.preparing {
+                    preparing.stage = stage;
+                    preparing.progress = progress.clamp(0.0, 1.0);
+                }
+            }
+            Event::Prepared(prepared) => self.adopt_prepared(prepared),
+            Event::PrepareFailed(error) => self.fail_preparing(error),
             Event::RecordStarted => {
                 self.ui = UiState::Recording;
                 self.record_saving = false;
@@ -462,6 +629,7 @@ impl AppState {
             }
             Event::RecordDone(done) => self.finish_recording(done),
             Event::LiveText(text) => {
+                self.log.push(text.trim().to_owned());
                 if !self.live_has_text {
                     self.live_has_text = true;
                     self.live_text.clear();
@@ -487,7 +655,16 @@ impl AppState {
         let saved_count = done.saved.len();
         let total = done.total.max(1);
         let failed_count = done.failed.len();
-        self.last_transcript = if saved_count == 1 { done.saved.first().cloned() } else { None };
+        let recording_retry = self
+            .last_batch_was_recording
+            .then_some(self.batch_recording.as_ref())
+            .flatten()
+            .is_some_and(|audio| audio.is_file());
+        self.last_transcript = if saved_count == 1 {
+            done.saved.first().cloned()
+        } else {
+            None
+        };
         if let Some(segments) = done.recording_segments {
             self.last_segments = segments;
         }
@@ -511,7 +688,7 @@ impl AppState {
             activity.detail = "A program file is missing. Please download EasyScribe again.".into();
             activity.message = Some((fatal, MessageKind::Error));
             activity.open_transcript = saved_count == 1;
-            activity.open_folder = saved_count > 0;
+            activity.open_folder = saved_count > 0 || recording_retry;
             activity.try_again = false;
         } else if done.cancelled {
             activity.title = "Stopped".into();
@@ -526,9 +703,15 @@ impl AppState {
                 );
                 activity.open_transcript = saved_count == 1;
                 activity.open_folder = true;
-                activity.try_again = true;
             } else {
                 activity.detail = "No transcript was saved.".into();
+            }
+            if recording_retry {
+                // The recording exists: the retry action for a recording is
+                // the accurate pipeline, not "hide this card".
+                activity.best_row = true;
+                activity.open_folder = true;
+            } else {
                 activity.try_again = true;
             }
         } else if failed_count >= total {
@@ -537,7 +720,12 @@ impl AppState {
             activity.bar_color = t.crimson;
             activity.detail.clear();
             activity.message = Some((failure_message(&done.failed), MessageKind::Error));
-            activity.try_again = true;
+            if recording_retry {
+                activity.best_row = true;
+                activity.open_folder = true;
+            } else {
+                activity.try_again = true;
+            }
         } else if failed_count > 0 {
             activity.title = format!("{saved_count} of {total} transcripts ready");
             activity.tone = Tone::Amber;
@@ -557,8 +745,12 @@ impl AppState {
             );
             activity.message = Some((failure_message(&done.failed), MessageKind::Error));
             activity.open_transcript = saved_count == 1;
-            activity.open_folder = saved_count > 0;
-            activity.try_again = true;
+            activity.open_folder = saved_count > 0 || recording_retry;
+            if recording_retry {
+                activity.best_row = true;
+            } else {
+                activity.try_again = true;
+            }
         } else {
             activity.title = if saved_count == 1 {
                 "Transcript ready".into()
@@ -609,27 +801,28 @@ impl AppState {
         activity.bar = BarMode::Idle;
         activity.progress = 0.0;
 
-        if let Some(error) = &done.error {
-            if done.audio.is_none() || done.mic_error || done.model_error {
-                activity.title = "Could not record".into();
-                activity.tone = Tone::Crimson;
-                activity.message = Some((error.clone(), MessageKind::Error));
-                activity.bar_color = t.crimson;
-                self.activity = Some(activity);
-                self.rename_visible = false;
-                self.find_card = None;
-                if !self.live_has_text {
-                    self.live_text = IDLE_LIVE.into();
-                }
-                return;
+        if let Some(error) = &done.error
+            && (done.audio.is_none() || done.mic_error || done.model_error)
+        {
+            activity.title = "Could not record".into();
+            activity.tone = Tone::Crimson;
+            activity.message = Some((error.clone(), MessageKind::Error));
+            activity.bar_color = t.crimson;
+            self.activity = Some(activity);
+            self.rename_visible = false;
+            self.find_card = None;
+            if !self.live_has_text {
+                self.live_text = IDLE_LIVE.into();
             }
+            return;
         }
 
         let Some(audio_path) = done.audio.clone() else {
             activity.title = "Could not record".into();
             activity.tone = Tone::Crimson;
             activity.message = Some((
-                done.error.unwrap_or_else(|| "The recording was not saved.".into()),
+                done.error
+                    .unwrap_or_else(|| "The recording was not saved.".into()),
                 MessageKind::Error,
             ));
             self.activity = Some(activity);
@@ -662,8 +855,10 @@ impl AppState {
             .unwrap_or_default();
         activity.detail = if done.transcript.is_some() {
             format!("The audio and the live transcript are in {folder}.")
-        } else if self.live_has_text {
-            format!("No speech was heard live, so there is no live transcript. The audio is in {folder}.")
+        } else if self.record_mode == RecordMode::Live {
+            format!(
+                "No speech was heard live, so there is no live transcript. The audio is in {folder}."
+            )
         } else {
             format!("The audio is in {folder}.")
         };
@@ -704,7 +899,10 @@ impl AppState {
             activity.detail = format!(
                 "{} · took {}",
                 outputs::shorten(
-                    output.file_name().and_then(|n| n.to_str()).unwrap_or("transcript"),
+                    output
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("transcript"),
                     70
                 ),
                 outputs::fmt_took(done.took)
@@ -767,7 +965,10 @@ impl AppState {
                 }
             })
             .collect();
-        self.naming = Some(NamingState { rows, reply: Some(reply) });
+        self.naming = Some(NamingState {
+            rows,
+            reply: Some(reply),
+        });
         self.ui = UiState::Running;
         if let Some(activity) = &mut self.activity {
             activity.apply_status(Status::NamingSpeakers, &t, true);
@@ -775,13 +976,20 @@ impl AppState {
     }
 
     pub fn save_naming(&mut self) {
-        let Some(mut naming) = self.naming.take() else { return };
+        crate::platform::stop_playback();
+        let Some(mut naming) = self.naming.take() else {
+            return;
+        };
         let mut map = HashMap::new();
         for row in &naming.rows {
             let typed = row.edit.text.trim();
             map.insert(
                 row.raw.clone(),
-                if typed.is_empty() { row.default_name.clone() } else { typed.to_owned() },
+                if typed.is_empty() {
+                    row.default_name.clone()
+                } else {
+                    typed.to_owned()
+                },
             );
         }
         if let Some(reply) = naming.reply.take() {
@@ -790,18 +998,20 @@ impl AppState {
     }
 
     pub fn skip_naming(&mut self) {
-        if let Some(mut naming) = self.naming.take() {
-            if let Some(reply) = naming.reply.take() {
-                let _ = reply.send(NamingReply::Skip);
-            }
+        crate::platform::stop_playback();
+        if let Some(mut naming) = self.naming.take()
+            && let Some(reply) = naming.reply.take()
+        {
+            let _ = reply.send(NamingReply::Skip);
         }
     }
 
     pub fn cancel_naming(&mut self) {
-        if let Some(mut naming) = self.naming.take() {
-            if let Some(reply) = naming.reply.take() {
-                let _ = reply.send(NamingReply::Cancel);
-            }
+        crate::platform::stop_playback();
+        if let Some(mut naming) = self.naming.take()
+            && let Some(reply) = naming.reply.take()
+        {
+            let _ = reply.send(NamingReply::Cancel);
         }
     }
 
@@ -816,32 +1026,44 @@ impl AppState {
         } else {
             None
         };
-        if let Some((audio, targets)) = record_target {
-            if !targets.is_empty() {
-                let stem = audio.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                self.rename_old_stem = stem.clone();
-                self.rename_edit = TextEdit::new(stem);
-                self.rename_note = if targets.len() > 1 {
-                    "Renames the recording and its transcripts together.".into()
-                } else {
-                    "Renames the recording.".into()
-                };
-                self.rename_note_tone = Tone::Muted;
-                self.rename_targets = targets;
-                self.rename_visible = true;
-                return;
-            }
+        if let Some((audio, targets)) = record_target
+            && !targets.is_empty()
+        {
+            let stem = audio
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            self.rename_old_stem = stem.clone();
+            self.rename_edit = TextEdit::new(stem);
+            self.rename_note = if targets.len() > 1 {
+                "Renames the recording and its transcripts together.".into()
+            } else {
+                "Renames the recording.".into()
+            };
+            self.rename_note_tone = Tone::Muted;
+            self.rename_targets = targets;
+            self.rename_visible = true;
+            return;
         }
-        if let Some(transcript) = self.last_transcript.clone() {
-            if transcript.exists() {
-                let stem = transcript.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                self.rename_old_stem = stem.clone();
-                self.rename_edit = TextEdit::new(stem);
-                self.rename_note = "Renames the transcript. Your original file is not changed.".into();
-                self.rename_note_tone = Tone::Muted;
-                self.rename_targets = vec![transcript];
-                self.rename_visible = true;
-            }
+        if let Some(transcript) = self.last_transcript.clone()
+            && transcript.exists()
+        {
+            let stem = transcript
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            self.rename_old_stem = stem.clone();
+            self.rename_edit = TextEdit::new(stem);
+            self.rename_note = if self.mode == Mode::Record {
+                "Renames the recording.".into()
+            } else {
+                "Renames the transcript. Your original file is not changed.".into()
+            };
+            self.rename_note_tone = Tone::Muted;
+            self.rename_targets = vec![transcript];
+            self.rename_visible = true;
         }
     }
 
@@ -858,20 +1080,20 @@ impl AppState {
         }
         match rename::rename_all(&self.rename_targets, &self.rename_old_stem, &name) {
             Ok(map) => {
-                if let Some(rec) = &self.last_recording {
-                    if let Some(new) = map.get(rec) {
-                        self.last_recording = Some(new.clone());
-                    }
+                if let Some(rec) = &self.last_recording
+                    && let Some(new) = map.get(rec)
+                {
+                    self.last_recording = Some(new.clone());
                 }
-                if let Some(txt) = &self.last_transcript {
-                    if let Some(new) = map.get(txt) {
-                        self.last_transcript = Some(new.clone());
-                    }
+                if let Some(txt) = &self.last_transcript
+                    && let Some(new) = map.get(txt)
+                {
+                    self.last_transcript = Some(new.clone());
                 }
-                if let Some(rec) = &self.batch_recording {
-                    if let Some(new) = map.get(rec) {
-                        self.batch_recording = Some(new.clone());
-                    }
+                if let Some(rec) = &self.batch_recording
+                    && let Some(new) = map.get(rec)
+                {
+                    self.batch_recording = Some(new.clone());
                 }
                 self.log.push(format!(
                     "[Rename] {} -> {name} ({} files)",
@@ -880,12 +1102,14 @@ impl AppState {
                 ));
                 self.rename_note = format!("✓ Renamed to {name}");
                 self.rename_note_tone = Tone::Green;
+                self.rename_old_stem = name;
                 self.rename_targets = map.values().cloned().collect();
                 self.rename_targets.sort();
             }
             Err(rename::RenameError::Exists(file)) => {
-                self.rename_note =
-                    format!("\"{file}\" already exists in that folder. Please choose another name.");
+                self.rename_note = format!(
+                    "\"{file}\" already exists in that folder. Please choose another name."
+                );
                 self.rename_note_tone = Tone::Crimson;
             }
             Err(rename::RenameError::Invalid(_)) | Err(rename::RenameError::Io(_)) => {
@@ -896,7 +1120,10 @@ impl AppState {
     }
 
     fn transcript_exists(&self) -> bool {
-        self.last_transcript.as_ref().map(|p| p.exists()).unwrap_or(false)
+        self.last_transcript
+            .as_ref()
+            .map(|p| p.exists())
+            .unwrap_or(false)
     }
 
     pub fn offer_find_speakers(&mut self) {
@@ -978,7 +1205,10 @@ impl AppState {
     pub fn start_best_quality(&mut self, audio: PathBuf) {
         if !audio.is_file() {
             if let Some(activity) = &mut self.activity {
-                activity.message = Some(("The recording was moved or deleted.".into(), MessageKind::Error));
+                activity.message = Some((
+                    "The recording was moved or deleted.".into(),
+                    MessageKind::Error,
+                ));
             }
             return;
         }
@@ -1077,15 +1307,24 @@ impl AppState {
         if !self.idle() {
             return;
         }
-        let Some(audio) = self.last_recording.clone() else { return };
+        let Some(audio) = self.last_recording.clone() else {
+            return;
+        };
         if !audio.is_file() {
             if let Some(activity) = &mut self.activity {
-                activity.message = Some(("The recording was moved or deleted.".into(), MessageKind::Error));
+                activity.message = Some((
+                    "The recording was moved or deleted.".into(),
+                    MessageKind::Error,
+                ));
             }
             return;
         }
-        let Some(transcript) = self.last_transcript.clone() else { return };
-        let Some(output) = Some(outputs::speakers_output(&transcript)) else { return };
+        let Some(transcript) = self.last_transcript.clone() else {
+            return;
+        };
+        let Some(output) = Some(outputs::speakers_output(&transcript)) else {
+            return;
+        };
         let t = self.theme.clone();
         self.ui = UiState::Running;
         self.log.clear();
@@ -1095,7 +1334,10 @@ impl AppState {
         let mut activity = self.activity.take().unwrap_or_else(|| Activity::new(&t));
         activity.apply_status(Status::IdentifyingSpeakers, &t, true);
         activity.detail = outputs::shorten(
-            audio.file_name().and_then(|n| n.to_str()).unwrap_or("recording"),
+            audio
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("recording"),
             80,
         );
         self.activity = Some(activity);
@@ -1140,7 +1382,8 @@ impl AppState {
             for file in &mut self.files {
                 file.state = FileState::Waiting;
             }
-            let mut existing: HashSet<PathBuf> = self.files.iter().map(|f| f.path.clone()).collect();
+            let mut existing: HashSet<PathBuf> =
+                self.files.iter().map(|f| f.path.clone()).collect();
             for path in accepted {
                 if existing.insert(path.clone()) {
                     self.files.push(FileEntry::new(path));
@@ -1206,10 +1449,9 @@ impl AppState {
         let current = self.effective_recordings_dir();
         if let Some(folder) =
             dialogs::pick_folder("Choose where to save recordings", Some(current.as_path()))
+            && self.settings.save_recordings_dir(Some(&folder)).is_ok()
         {
-            if self.settings.save_recordings_dir(Some(&folder)).is_ok() {
-                self.recordings_dir = Some(folder);
-            }
+            self.recordings_dir = Some(folder);
         }
     }
 
@@ -1234,15 +1476,15 @@ impl AppState {
             .output_folder
             .as_deref()
             .or_else(|| self.files[0].path.parent());
-        if let Some(free) = free_at.and_then(outputs::free_space) {
-            if free < easyscribe_core::config::MIN_FREE_DISK_BYTES {
-                let mb = free / (1024 * 1024);
-                let text = format!(
-                    "Only {mb} MB of disk space is free.\nTranscription may fail. Continue anyway?"
-                );
-                if !dialogs::confirm("Low disk space", &text) {
-                    return;
-                }
+        if let Some(free) = free_at.and_then(outputs::free_space)
+            && free < easyscribe_core::config::MIN_FREE_DISK_BYTES
+        {
+            let mb = free / (1024 * 1024);
+            let text = format!(
+                "Only {mb} MB of disk space is free.\nTranscription may fail. Continue anyway?"
+            );
+            if !dialogs::confirm("Low disk space", &text) {
+                return;
             }
         }
         let request = workers::BatchRequest {
@@ -1266,7 +1508,10 @@ impl AppState {
             return;
         }
         if let Err(error) = crate::platform::open_path(&path) {
-            dialogs::error("Could not open", &format!("Could not open:\n{}\n\n{error}", path.display()));
+            dialogs::error(
+                "Could not open",
+                &format!("Could not open:\n{}\n\n{error}", path.display()),
+            );
         }
     }
 
@@ -1276,16 +1521,16 @@ impl AppState {
             .clone()
             .or_else(|| self.output_folder.clone())
             .or_else(|| Some(self.effective_recordings_dir()));
-        if let Some(folder) = folder {
-            if folder.exists() {
-                if let Err(error) = crate::platform::open_path(&folder) {
-                    dialogs::error(
-                        "Could not open",
-                        &format!("Could not open:\n{}\n\n{error}", folder.display()),
-                    );
-                }
-                return;
+        if let Some(folder) = folder
+            && folder.exists()
+        {
+            if let Err(error) = crate::platform::open_path(&folder) {
+                dialogs::error(
+                    "Could not open",
+                    &format!("Could not open:\n{}\n\n{error}", folder.display()),
+                );
             }
+            return;
         }
         dialogs::info("No folder yet", "There is no folder to open yet.");
     }
@@ -1318,10 +1563,21 @@ impl AppState {
     }
 
     pub fn mode_summary_files(&self) -> String {
-        let timestamps = if self.timestamps { "Timestamps on" } else { "Timestamps off" };
-        let speakers = if self.name_speakers { "speaker names on" } else { "speaker names off" };
+        let timestamps = if self.timestamps {
+            "Timestamps on"
+        } else {
+            "Timestamps off"
+        };
+        let speakers = if self.name_speakers {
+            "speaker names on"
+        } else {
+            "speaker names off"
+        };
         let saved = match &self.output_folder {
-            Some(folder) => format!("saved in {}", outputs::shorten(&folder.display().to_string(), 50)),
+            Some(folder) => format!(
+                "saved in {}",
+                outputs::shorten(&folder.display().to_string(), 50)
+            ),
             None => "saved next to each recording".into(),
         };
         format!("{timestamps}, {speakers}, {saved}.")
@@ -1342,6 +1598,15 @@ impl AppState {
 
     pub fn rename_note_color(&self) -> rune::Color {
         self.rename_note_tone.color(&self.theme)
+    }
+
+    /// Escape closes the Privacy overlay; every other key goes to the focus system.
+    pub fn handle_key(&mut self, key: &rune::KeyEvent) -> bool {
+        if key.key == rune::Key::Escape && self.privacy_open {
+            self.privacy_open = false;
+            return true;
+        }
+        false
     }
 
     pub fn wake(&self) {
@@ -1392,7 +1657,11 @@ pub struct UiNaming {
 impl SpeakerNaming for UiNaming {
     fn ask(&self, preview: &mut SpeakerPreview) -> easyscribe_core::Result<()> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        if self.tx.send(Event::AskNames(preview.clone(), reply_tx)).is_err() {
+        if self
+            .tx
+            .send(Event::AskNames(preview.clone(), reply_tx))
+            .is_err()
+        {
             return Err(Error::Cancelled);
         }
         if let Some(waker) = &self.waker {
@@ -1463,7 +1732,9 @@ pub fn recover_before_ui(paths: &Paths) {
             if !dialogs::confirm("Unfinished Recording Found", &text) {
                 continue;
             }
-            let dest = paths.default_recordings_dir.clone();
+            let dest = Settings::load(paths.settings_file.clone())
+                .load_recordings_dir()
+                .unwrap_or_else(|| paths.default_recordings_dir.clone());
             match recovery::handle_orphan(
                 &orphan.pcm_path,
                 &orphan.json_path,
@@ -1472,7 +1743,10 @@ pub fn recover_before_ui(paths: &Paths) {
                 Some(&dest),
             ) {
                 Ok(Some(wav)) => {
-                    dialogs::info("Recovery Complete", &format!("Saved to:\n{}", wav.display()));
+                    dialogs::info(
+                        "Recovery Complete",
+                        &format!("Saved to:\n{}", wav.display()),
+                    );
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -1521,11 +1795,115 @@ pub fn startup_error(paths: &Paths) -> Option<String> {
     }
 }
 
-/// Unused import guard for `Instant` (kept for future job deadlines).
-#[allow(dead_code)]
-fn _deadline() -> Instant {
-    Instant::now()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[allow(dead_code)]
-fn _live_events(_: LiveEvent) {}
+    fn test_state() -> AppState {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::at(dir.path().to_path_buf()).expect("paths");
+        // Leak the temp dir for the duration of the test process; the path must
+        // outlive the state and its workers.
+        std::mem::forget(dir);
+        AppState::new(Init {
+            paths,
+            window_height: 820.0,
+            preparing: false,
+        })
+    }
+
+    #[test]
+    fn start_without_files_sets_the_hint() {
+        let mut state = test_state();
+        state.start();
+        assert_eq!(
+            state.action_hint.as_ref().map(|h| h.0.as_str()),
+            Some("Add at least one recording first.")
+        );
+    }
+
+    #[test]
+    fn mode_switch_is_blocked_while_running() {
+        let mut state = test_state();
+        state.ui = UiState::Running;
+        state.switch_mode(Mode::Record);
+        assert_eq!(state.mode, Mode::Files);
+        state.ui = UiState::Idle;
+        state.switch_mode(Mode::Record);
+        assert_eq!(state.mode, Mode::Record);
+    }
+
+    #[test]
+    fn escape_closes_only_the_privacy_overlay() {
+        let mut state = test_state();
+        let escape = rune::KeyEvent {
+            key: rune::Key::Escape,
+            mods: rune::Mods::default(),
+        };
+        assert!(!state.handle_key(&escape));
+        state.privacy_open = true;
+        assert!(state.handle_key(&escape));
+        assert!(!state.privacy_open);
+    }
+
+    #[test]
+    fn files_result_offers_the_rename_row_for_one_transcript() {
+        let mut state = test_state();
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("Team meeting.txt");
+        std::fs::write(&transcript, "text").unwrap();
+        state.ui = UiState::Running;
+        state.activity = Some(Activity::new(&state.theme));
+        state.finish_batch(workers::BatchDone {
+            total: 1,
+            saved: vec![transcript.clone()],
+            failed: Vec::new(),
+            cancelled: false,
+            fatal: None,
+            recording_segments: None,
+            output_folder: Some(dir.path().to_path_buf()),
+        });
+        assert_eq!(state.ui, UiState::Idle);
+        let activity = state.activity.as_ref().unwrap();
+        assert_eq!(activity.title, "Transcript ready");
+        assert!(activity.open_transcript && activity.open_folder);
+        assert!(state.rename_visible);
+        assert_eq!(state.last_transcript.as_deref(), Some(transcript.as_path()));
+    }
+
+    #[test]
+    fn rename_commits_all_targets_and_reports_success() {
+        let mut state = test_state();
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("recording_1.wav");
+        let transcript = dir.path().join("recording_1.txt");
+        std::fs::write(&audio, "wav").unwrap();
+        std::fs::write(&transcript, "text").unwrap();
+        state.mode = Mode::Record;
+        state.last_recording = Some(audio.clone());
+        state.last_transcript = Some(transcript.clone());
+        state.prepare_rename();
+        assert!(state.rename_visible);
+        state.rename_edit.text = "Team meeting".into();
+        state.commit_rename();
+        assert!(dir.path().join("Team meeting.wav").exists());
+        assert!(dir.path().join("Team meeting.txt").exists());
+        assert_eq!(state.rename_note_tone, Tone::Green);
+        assert_eq!(
+            state.last_recording,
+            Some(dir.path().join("Team meeting.wav"))
+        );
+
+        // A second rename in the same panel must use the new stem, not the
+        // recording's original name.
+        state.rename_edit.text = "Team meeting final".into();
+        state.commit_rename();
+        assert_eq!(state.rename_note_tone, Tone::Green);
+        assert!(dir.path().join("Team meeting final.wav").exists());
+        assert!(dir.path().join("Team meeting final.txt").exists());
+        assert_eq!(
+            state.last_recording,
+            Some(dir.path().join("Team meeting final.wav"))
+        );
+    }
+}

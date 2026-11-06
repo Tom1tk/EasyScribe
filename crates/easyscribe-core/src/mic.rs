@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::audio::LinearResampler;
 use crate::config::VAD_SAMPLE_RATE;
-use crate::recovery::{recover_pcm_to_wav, RecordingMetadata};
+use crate::recovery::{RecordingMetadata, recover_pcm_to_wav};
 use crate::{Error, Result};
 
 pub const PCM_SAMPLE_RATE: u32 = 16_000;
@@ -33,7 +33,9 @@ pub fn list_input_devices() -> Vec<MicDevice> {
     match host.input_devices() {
         Ok(devices) => devices
             .filter_map(|device| device.description().ok())
-            .map(|description| MicDevice { name: description.name().to_owned() })
+            .map(|description| MicDevice {
+                name: description.name().to_owned(),
+            })
             .collect(),
         Err(e) => {
             log::warn!("Could not enumerate microphones: {e}");
@@ -75,7 +77,10 @@ impl AudioQueue {
     pub fn pop_timeout(&self, timeout: Duration) -> Option<Vec<f32>> {
         let mut queue = self.inner.lock().expect("audio queue poisoned");
         if queue.is_empty() {
-            let (guard, _) = self.ready.wait_timeout(queue, timeout).expect("audio queue poisoned");
+            let (guard, _) = self
+                .ready
+                .wait_timeout(queue, timeout)
+                .expect("audio queue poisoned");
             queue = guard;
         }
         queue.pop_front()
@@ -100,6 +105,7 @@ pub struct MicRecorder {
     vad_queue: Option<Arc<AudioQueue>>,
     pcm_tx: Option<Sender<Vec<i16>>>,
     writer: Option<std::thread::JoinHandle<()>>,
+    writer_error: Arc<std::sync::Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     samples_written: Arc<AtomicU64>,
     peak: Arc<AtomicU32>,
@@ -122,6 +128,7 @@ impl MicRecorder {
             vad_queue: None,
             pcm_tx: None,
             writer: None,
+            writer_error: Arc::new(std::sync::Mutex::new(None)),
             stop: Arc::new(AtomicBool::new(false)),
             samples_written: Arc::new(AtomicU64::new(0)),
             peak: Arc::new(AtomicU32::new(0)),
@@ -158,7 +165,9 @@ impl MicRecorder {
         feed_vad: bool,
     ) -> Result<()> {
         if self.stream.is_some() {
-            return Err(Error::Transcription("a recording is already running".into()));
+            return Err(Error::Transcription(
+                "a recording is already running".into(),
+            ));
         }
         std::fs::create_dir_all(output_dir)?;
         let host = cpal::default_host();
@@ -166,7 +175,11 @@ impl MicRecorder {
             Some(name) => host
                 .input_devices()
                 .map_err(|e| Error::Transcription(format!("Could not list microphones: {e}")))?
-                .find(|d| d.description().map(|desc| desc.name() == name).unwrap_or(false))
+                .find(|d| {
+                    d.description()
+                        .map(|desc| desc.name() == name)
+                        .unwrap_or(false)
+                })
                 .ok_or_else(|| Error::Transcription(format!("Microphone not found: {name}")))?,
             None => host
                 .default_input_device()
@@ -184,6 +197,9 @@ impl MicRecorder {
         self.stop = Arc::new(AtomicBool::new(false));
         self.samples_written = Arc::new(AtomicU64::new(0));
         self.peak = Arc::new(AtomicU32::new(0));
+        // A previous failed start can leave an error behind; it must not be
+        // reported against this recording.
+        *self.writer_error.lock().expect("writer error poisoned") = None;
         self.pcm_path = Some(pcm_path.clone());
         self.json_path = Some(json_path.clone());
         self.session_stem = Some(format!("recording_{timestamp}"));
@@ -194,9 +210,19 @@ impl MicRecorder {
         let stop = self.stop.clone();
         let writer_json = json_path.clone();
         let pcm_for_writer = pcm_path.clone();
+        let writer_error = self.writer_error.clone();
         let writer = std::thread::Builder::new()
             .name("PCMWriter".into())
-            .spawn(move || writer_loop(pcm_rx, pcm_for_writer, writer_json, samples_written, stop))
+            .spawn(move || {
+                writer_loop(
+                    pcm_rx,
+                    pcm_for_writer,
+                    writer_json,
+                    samples_written,
+                    stop,
+                    writer_error,
+                )
+            })
             .map_err(|e| Error::Transcription(format!("Could not start PCM writer: {e}")))?;
 
         let vad_queue = if feed_vad {
@@ -208,7 +234,8 @@ impl MicRecorder {
         let pcm_tx_for_callback = pcm_tx.clone();
         let vad_for_callback = vad_queue.clone();
 
-        let mut resampler = (sample_rate != VAD_SAMPLE_RATE).then(|| LinearResampler::new(sample_rate, VAD_SAMPLE_RATE));
+        let mut resampler = (sample_rate != VAD_SAMPLE_RATE)
+            .then(|| LinearResampler::new(sample_rate, VAD_SAMPLE_RATE));
         let stream = build_stream(&device, &config, move |data| {
             let mut mono = Vec::with_capacity(data.len() / channels.max(1));
             for frame in data.chunks(channels.max(1)) {
@@ -243,16 +270,27 @@ impl MicRecorder {
         let stream = match stream {
             Ok(stream) => stream,
             Err(e) => {
-                let _ = std::fs::remove_file(&pcm_path);
-                let _ = std::fs::remove_file(&json_path);
+                // The callback (and its sender) is gone, but the local sender
+                // is still alive: without dropping it, `join` waits forever.
+                drop(pcm_tx);
                 self.stop.store(true, Ordering::SeqCst);
                 let _ = writer.join();
+                let _ = std::fs::remove_file(&pcm_path);
+                let _ = std::fs::remove_file(&json_path);
                 return Err(e);
             }
         };
-        stream
-            .play()
-            .map_err(|e| Error::Transcription(format!("Could not start the microphone: {e}")))?;
+        if let Err(e) = stream.play() {
+            drop(stream);
+            drop(pcm_tx);
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = writer.join();
+            let _ = std::fs::remove_file(&pcm_path);
+            let _ = std::fs::remove_file(&json_path);
+            return Err(Error::Transcription(format!(
+                "Could not start the microphone: {e}"
+            )));
+        }
 
         self.stream = Some(stream);
         self.vad_queue = vad_queue;
@@ -264,7 +302,11 @@ impl MicRecorder {
 
     /// Stop capture and convert the PCM to WAV. `dest_dir` is tried first;
     /// on failure the WAV is written next to the raw file.
-    pub fn stop(&mut self, convert_to_wav: bool, dest_dir: Option<&Path>) -> Result<Option<PathBuf>> {
+    pub fn stop(
+        &mut self,
+        convert_to_wav: bool,
+        dest_dir: Option<&Path>,
+    ) -> Result<Option<PathBuf>> {
         if let Some(stream) = self.stream.take() {
             let _ = stream.pause();
             drop(stream);
@@ -274,23 +316,41 @@ impl MicRecorder {
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
         }
+        if let Some(error) = self
+            .writer_error
+            .lock()
+            .expect("writer error poisoned")
+            .take()
+        {
+            return Err(Error::Transcription(format!(
+                "The raw audio could not be written: {error}"
+            )));
+        }
         if !convert_to_wav {
             return Ok(None);
         }
-        let Some(pcm_path) = self.pcm_path.clone() else { return Ok(None) };
-        let Some(json_path) = self.json_path.clone() else { return Ok(None) };
+        let Some(pcm_path) = self.pcm_path.clone() else {
+            return Ok(None);
+        };
+        let Some(json_path) = self.json_path.clone() else {
+            return Ok(None);
+        };
         let metadata = RecordingMetadata {
             sample_rate: PCM_SAMPLE_RATE,
             channels: 1,
             bit_depth: 16,
             samples_written: self.samples_written.load(Ordering::SeqCst),
         };
-        let wav_name = pcm_path.with_extension("wav").file_name().unwrap_or_default().to_owned();
+        let wav_name = pcm_path
+            .with_extension("wav")
+            .file_name()
+            .unwrap_or_default()
+            .to_owned();
         let mut folders: Vec<PathBuf> = Vec::new();
-        if let Some(dest) = dest_dir {
-            if dest != pcm_path.parent().unwrap_or(Path::new(".")) {
-                folders.push(dest.to_path_buf());
-            }
+        if let Some(dest) = dest_dir
+            && dest != pcm_path.parent().unwrap_or(Path::new("."))
+        {
+            folders.push(dest.to_path_buf());
         }
         folders.push(pcm_path.parent().unwrap_or(Path::new(".")).to_path_buf());
         for folder in folders {
@@ -321,7 +381,9 @@ fn choose_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig> {
             if range.channels() < 1 {
                 continue;
             }
-            if range.min_sample_rate() <= VAD_SAMPLE_RATE && range.max_sample_rate() >= VAD_SAMPLE_RATE {
+            if range.min_sample_rate() <= VAD_SAMPLE_RATE
+                && range.max_sample_rate() >= VAD_SAMPLE_RATE
+            {
                 if let Some(config) = range.try_with_sample_rate(VAD_SAMPLE_RATE) {
                     if config.channels() == 1 {
                         return Ok(config);
@@ -368,7 +430,10 @@ fn build_stream(
         SampleFormat::U16 => device.build_input_stream(
             config,
             move |data: &[u16], _| {
-                let converted: Vec<f32> = data.iter().map(|v| (*v as f32 - 32768.0) / 32768.0).collect();
+                let converted: Vec<f32> = data
+                    .iter()
+                    .map(|v| (*v as f32 - 32768.0) / 32768.0)
+                    .collect();
                 on_samples(&converted)
             },
             err_fn,
@@ -377,7 +442,8 @@ fn build_stream(
         SampleFormat::I32 => device.build_input_stream(
             config,
             move |data: &[i32], _| {
-                let converted: Vec<f32> = data.iter().map(|v| *v as f32 / 2_147_483_648.0).collect();
+                let converted: Vec<f32> =
+                    data.iter().map(|v| *v as f32 / 2_147_483_648.0).collect();
                 on_samples(&converted)
             },
             err_fn,
@@ -395,7 +461,7 @@ fn build_stream(
         other => {
             return Err(Error::Transcription(format!(
                 "unsupported microphone sample format: {other:?}"
-            )))
+            )));
         }
     };
     stream.map_err(|e| Error::Transcription(format!("Could not open the microphone: {e}")))
@@ -407,13 +473,20 @@ fn writer_loop(
     json_path: PathBuf,
     samples_written: Arc<AtomicU64>,
     _stop: Arc<AtomicBool>,
+    error_slot: Arc<std::sync::Mutex<Option<String>>>,
 ) {
     use std::io::Write;
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(&pcm_path);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&pcm_path);
     let mut file = match file {
         Ok(file) => file,
         Err(e) => {
             log::error!("PCM writer error: {e}");
+            if let Ok(mut slot) = error_slot.lock() {
+                *slot = Some(e.to_string());
+            }
             return;
         }
     };
@@ -425,11 +498,15 @@ fn writer_loop(
         }
         if let Err(e) = file.write_all(&bytes) {
             log::error!("PCM writer error: {e}");
+            if let Ok(mut slot) = error_slot.lock() {
+                *slot = Some(e.to_string());
+            }
             return;
         }
-        let total = samples_written.fetch_add(chunk.len() as u64, Ordering::SeqCst) + chunk.len() as u64;
+        let total =
+            samples_written.fetch_add(chunk.len() as u64, Ordering::SeqCst) + chunk.len() as u64;
         chunks += 1;
-        if chunks % FSYNC_EVERY == 0 {
+        if chunks.is_multiple_of(FSYNC_EVERY) {
             let _ = file.flush();
             let _ = file.sync_data();
             write_sidecar(&json_path, total);
@@ -448,10 +525,10 @@ fn write_sidecar(json_path: &Path, samples_written: u64) {
         bit_depth: 16,
         samples_written,
     };
-    if let Ok(text) = serde_json::to_string(&sidecar) {
-        if let Err(e) = std::fs::write(json_path, text) {
-            log::warn!("JSON sidecar write failed: {e}");
-        }
+    if let Ok(text) = serde_json::to_string(&sidecar)
+        && let Err(e) = std::fs::write(json_path, text)
+    {
+        log::warn!("JSON sidecar write failed: {e}");
     }
 }
 

@@ -48,34 +48,3 @@ pub trait Reporter: Send + Sync {
 pub struct SilentReporter;
 
 impl Reporter for SilentReporter {}
-
-/// A reporter that records every call, for unit tests.
-#[derive(Default)]
-pub struct RecordingReporter {
-    inner: std::sync::Mutex<Recorded>,
-}
-
-#[derive(Default, Debug, Clone)]
-pub struct Recorded {
-    pub statuses: Vec<Status>,
-    pub progress: Vec<f64>,
-    pub lines: Vec<String>,
-}
-
-impl RecordingReporter {
-    pub fn snapshot(&self) -> Recorded {
-        self.inner.lock().expect("recording reporter poisoned").clone()
-    }
-}
-
-impl Reporter for RecordingReporter {
-    fn status(&self, status: Status) {
-        self.inner.lock().expect("recording reporter poisoned").statuses.push(status);
-    }
-    fn progress(&self, fraction: f64) {
-        self.inner.lock().expect("recording reporter poisoned").progress.push(fraction);
-    }
-    fn log(&self, line: &str) {
-        self.inner.lock().expect("recording reporter poisoned").lines.push(line.to_owned());
-    }
-}

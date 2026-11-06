@@ -62,3 +62,62 @@ the narrative history.
   workers, headless scenes for every key screen, and the exact copy deck from
   `REFERENCE_UI.md`.
 
+
+## 2026-11-06 — Session 3: complete UI, audits, release hardening
+
+- **Rune UI finished.** Files, Record, activity/results, naming, Find speakers,
+  rename, Privacy, details, splash, native dialogs and drag/drop. All 12
+  original headless scenes plus `preparing` render; click/state tests pass.
+- **First-run packaging proven.** Built a 300 MB fake payload under Xvfb:
+  first launch verified the hash, extracted to a staging folder, wrote
+  `.complete`, renamed into the cache and adopted the runtime. A second launch
+  reused the cache without touching the marker. Real payload was not packed
+  locally because only ~5 GB disk remained.
+- **Real-payload ZIP bug found and fixed.** `zip` rejected a compression level
+  on `Stored` entries, so payloads with models over 8 MB failed. Stored entries
+  now omit the level; a 9 MB regression test covers it.
+- **Payload hardening.** OS-level cache lock (`fs2`), stale staging cleanup,
+  incomplete-runtime replacement, signed-exe footer scan (certificate after the
+  footer), container/footer field validation, relative manifest offset, and
+  full asset/licence checks in `cache_complete`.
+- **Functional audit fixes.** Microphone-open deadlock (sender kept alive before
+  `join`), disabled Play-sample, stale second-rename stem, recovery folder,
+  settings lost-update merge, bundled-ffmpeg validation, case-only Windows
+  rename, ffprobe timeout, live transcript fallback when WAV conversion fails,
+  half-even rounding, missing details-log lines, speech-gate cancellation,
+  recovery sidecar ordering, silent-live message, offline guard install.
+- **Long-silence gate test.** Added a pure region-merge test plus an ignored
+  real-engine test with 40 s of silence before and after the speech fixture.
+  The padded transcript still contains the expected `quarterly results` text.
+- **Thread-local engine bug found by the native selftest.** After sherpa loads
+  its ONNX Whisper model on a thread, a later whisper.cpp encode on that same
+  thread fails with error -6 (`failed to encode`); a fresh thread works. File
+  transcription now runs every whisper.cpp decode on a dedicated fresh thread
+  and shares the sample buffer via `Arc`, so the isolation costs no extra audio
+  memory. Golden output is unchanged.
+- **Code-quality audit fixes.** Close now cancels batch/find workers; spawn
+  failures send terminal events; live stop has a 60 s decoder deadline; PCM
+  writer errors propagate; settings writes are atomic and merge on disk; cached
+  file sizes; 8/24-bit WAV scaling; `ShellExecuteW`; GUI subsystem; `rodio`
+  WAV decoder.
+- **Packaging audit changes.** The earlier plan to use sherpa-onnx 1.13.2
+  static libraries was wrong: `sherpa-rs` 0.6.8 generates bindings for 1.12.9,
+  and 1.13.x added fields to the Whisper config struct. Switched to the
+  hash-pinned 1.12.9 static archive. Removed the `vulkan` feature from
+  `release-static`: a load-time `vulkan-1.dll` import would stop the app before
+  `main` on machines without a Vulkan driver, making CPU fallback unreachable.
+  This preview is CPU-only; GPU acceleration needs a dynamically loaded path.
+- **Static CRT.** The 1.12.9 libraries are `/MT`; the workflow and local script
+  now set `+crt-static`, `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`,
+  `CMAKE_POLICY_DEFAULT_CMP0091=NEW` and `GGML_NATIVE=OFF`, and `dumpbin`
+  rejects `VCRUNTIME`, `MSVCP`, `VULKAN`, `sherpa` and `onnxruntime` imports.
+- **Release selftest.** Added `--selftest`: extraction, Silero VAD,
+  sherpa Whisper ONNX, whisper.cpp GGUF decode and diarization model load.
+  It returns an exit code and writes `logs/selftest.txt`, so CI proves the
+  packed exe actually loads every native engine. CI also checks a cached second
+  launch does not re-extract and uploads a `.sha256`.
+- **Verification.** 58 tests pass (5 app, 51 core, 2 offline; 1 ignored golden),
+  clippy clean, fmt clean. A fresh packed-payload smoke (9 MB fixture with the
+  full required file list) extracted on first launch and reused the cache on the
+  second. Next: commit/push, put the release workflow on `main`, dispatch the
+  Windows draft build.

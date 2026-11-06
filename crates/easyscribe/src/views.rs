@@ -4,22 +4,23 @@
 //! Layout follows `docs/rewrite/REFERENCE_UI.md`: 24 px gutter, 12 px card gap,
 //! white 14-radius cards, 18 px inner padding, feature colours per task.
 
-use rune::{
-    Color, Cursor, El, ScrollSpec, Shape, col, el, row, text, text_input,
-};
+use rune::{Color, Cursor, El, ScrollSpec, Shape, col, el, row, text, text_input};
 
 use crate::app::{
-    Activity, AppState, BarMode, FileState, FindCard, MessageKind, Mode, NamingState, RecordMode,
-    Tone, UiState,
+    Activity, AppState, BarMode, FileState, FindCard, MessageKind, Mode, NamingState,
+    PreparingState, RecordMode, UiState,
 };
 use crate::theme::{Theme, metric, type_};
 use crate::widgets::{
-    Bar, ButtonKind, button, card, checkbox, empty_spacer, info_pill, label, link_text, message_banner,
-    muted, progress_bar, radio, read_text, small_ink, small_muted, status_pill, step_badge,
-    step_header, strong,
+    Bar, ButtonKind, button, card, checkbox, empty_spacer, info_pill, label, link_text,
+    message_banner, muted, progress_bar, radio, read_text, small_ink, small_muted, status_pill,
+    step_badge, step_header, strong,
 };
 
 pub fn view(s: &AppState) -> El {
+    if let Some(preparing) = &s.preparing {
+        return preparing_view(s, preparing);
+    }
     let t = &s.theme;
     let mut main = col()
         .key("window")
@@ -34,7 +35,14 @@ pub fn view(s: &AppState) -> El {
         Mode::Files => files_view(s),
         Mode::Record => record_view(s),
     };
-    main = main.child(content);
+    // On a short window the files/options cards would push the naming panel's
+    // Save button below the glass. Naming is the only action that can be taken
+    // at that moment, so give it the screen. Python clips this panel on short
+    // windows; this is an intentional usability improvement.
+    let focus_names = s.naming.is_some() && s.window_height < 820.0;
+    if !focus_names {
+        main = main.child(content);
+    }
 
     if let Some(activity) = &s.activity {
         main = main.child(activity_card(s, activity));
@@ -51,6 +59,132 @@ pub fn view(s: &AppState) -> El {
         root = root.child(privacy_overlay(s));
     }
     root
+}
+
+/// First launch: the single executable is unpacking its runtime. This is a
+/// standalone screen rather than a dialog so it can show real progress and can
+/// never be buried behind another window.
+fn preparing_view(s: &AppState, preparing: &PreparingState) -> El {
+    let t = &s.theme;
+    let percent = (preparing.progress * 100.0).round() as i32;
+
+    let mut card = col()
+        .key("preparing-card")
+        .w(560.0)
+        .radius(metric::RADIUS_LG)
+        .fill(t.surface)
+        .border(1.0, t.border)
+        .shadow(14.0, 40.0, t.shadow)
+        .padding(26.0)
+        .gap(12.0)
+        .child(
+            row()
+                .w_full()
+                .center_y()
+                .gap(12.0)
+                .child(crate::widgets::logo(38.0))
+                .child(text("Preparing EasyScribe").font(type_::NAMING_TITLE).color(t.ink).grow(1.0)),
+        )
+        .child(
+            text(if preparing.error.is_some() {
+                "EasyScribe could not unpack its program files."
+            } else {
+                "Unpacking the speech engine. This happens once; later launches start straight away."
+            })
+            .font(type_::BODY)
+            .color(t.muted)
+            .wrap(),
+        );
+
+    if let Some(error) = &preparing.error {
+        card = card.child(message_banner(t, error, true)).child(
+            row()
+                .w_full()
+                .justify_end()
+                .gap(8.0)
+                .pt(4.0)
+                .child(
+                    button(
+                        t,
+                        "Quit",
+                        ButtonKind::Secondary,
+                        100.0,
+                        36.0,
+                        type_::SMALL,
+                        true,
+                        |_s: &mut AppState| std::process::exit(1),
+                    )
+                    .key("prepare-quit"),
+                )
+                .child(
+                    button(
+                        t,
+                        "Try again",
+                        ButtonKind::Teal,
+                        120.0,
+                        36.0,
+                        type_::SMALL,
+                        true,
+                        |s: &mut AppState| s.begin_prepare(),
+                    )
+                    .key("prepare-retry"),
+                ),
+        );
+    } else {
+        card = card
+            .child(
+                row()
+                    .w_full()
+                    .gap(12.0)
+                    .center_y()
+                    .child(
+                        text(preparing.stage.clone())
+                            .font(type_::STRONG)
+                            .color(t.ink)
+                            .grow(1.0),
+                    )
+                    .child(
+                        text(format!("{percent}%"))
+                            .font(type_::STRONG)
+                            .color(t.muted),
+                    ),
+            )
+            .child(progress_bar(
+                t,
+                Bar::Determinate(preparing.progress),
+                t.teal,
+            ))
+            .child(
+                text("Your recordings stay on this computer. EasyScribe never connects to the internet.")
+                    .font(type_::SMALL)
+                    .color(t.faint)
+                    .wrap(),
+            );
+    }
+
+    col()
+        .key("preparing")
+        .w_full()
+        .h_full()
+        .fill(t.bg)
+        .px(metric::GUTTER)
+        .child(header(s))
+        .child(
+            col()
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .center()
+                .justify_center()
+                .child(card),
+        )
+        .child(
+            text("Works fully offline. No accounts, no telemetry, no update checks.")
+                .font(type_::SMALL)
+                .color(t.faint)
+                .pb(18.0)
+                .self_center(),
+        )
 }
 
 fn header(s: &AppState) -> El {
@@ -86,6 +220,11 @@ fn mode_switch(s: &AppState) -> El {
             Mode::Record => (t.coral, t.coral_hover),
         };
         let mut segment = row()
+            .key(if mode == Mode::Files {
+                "mode-files"
+            } else {
+                "mode-record"
+            })
             .role("button")
             .label(label)
             .h(30.0)
@@ -109,7 +248,12 @@ fn mode_switch(s: &AppState) -> El {
             t.faint
         };
         container = container.child(
-            segment.child(text(label.to_owned()).font(type_::STRONG).color(text_color).max_lines(1)),
+            segment.child(
+                text(label.to_owned())
+                    .font(type_::STRONG)
+                    .color(text_color)
+                    .max_lines(1),
+            ),
         );
     }
     col().w_full().pb(12.0).items_start().child(container)
@@ -120,7 +264,7 @@ fn mode_switch(s: &AppState) -> El {
 // ---------------------------------------------------------------------------
 
 fn files_view(s: &AppState) -> El {
-    let t = &s.theme;
+    let _t = &s.theme;
     let busy = !s.idle();
     let mut files = col().key("files-view").w_full().child(files_add_card(s));
 
@@ -136,7 +280,7 @@ fn files_view(s: &AppState) -> El {
     }
 
     files = files
-        .accepts_files(|p| easyscribe_core::outputs::is_supported_media(p))
+        .accepts_files(easyscribe_core::outputs::is_supported_media)
         .on_drop_files(|s: &mut AppState, paths: &[std::path::PathBuf], _tx| {
             s.add_files(paths.to_vec());
         })
@@ -158,17 +302,23 @@ fn files_add_card(s: &AppState) -> El {
     let mut header_right = row().gap(10.0).center_y();
     if count > 0 {
         header_right = header_right
-            .child(small_ink(t, easyscribe_core::outputs::plural(count, "file")))
-            .child(button(
+            .child(small_ink(
                 t,
-                "Clear all",
-                ButtonKind::Link,
-                80.0,
-                28.0,
-                type_::SMALL,
-                !busy,
-                |s: &mut AppState| s.clear_files(),
-            ));
+                easyscribe_core::outputs::plural(count, "file"),
+            ))
+            .child(
+                button(
+                    t,
+                    "Clear all",
+                    ButtonKind::Link,
+                    80.0,
+                    28.0,
+                    type_::SMALL,
+                    !busy,
+                    |s: &mut AppState| s.clear_files(),
+                )
+                .key("clear-all"),
+            );
     }
 
     let mut card = card(t)
@@ -209,16 +359,29 @@ fn drop_zone(s: &AppState) -> El {
     let busy = !s.idle();
     let populated = !s.files.is_empty();
     let over = s.files_over && !busy;
-    let title = if populated { "Drag more files here" } else { "Drag audio or video files here" };
+    let title = if populated {
+        "Drag more files here"
+    } else {
+        "Drag audio or video files here"
+    };
     let subtitle = if populated {
         "Or add more from your computer."
     } else {
         "Or choose them from your computer. MP3, WAV, M4A, MP4 and more."
     };
     let mut line = col().grow(1.0).gap(2.0);
-    line = line.child(text(title.to_owned()).font(type_::STRONG).color(if over { t.teal_ink } else { t.ink }));
+    line = line.child(text(title.to_owned()).font(type_::STRONG).color(if over {
+        t.teal_ink
+    } else {
+        t.ink
+    }));
     if !populated {
-        line = line.child(text(subtitle.to_owned()).font(type_::SMALL).color(t.muted).wrap());
+        line = line.child(
+            text(subtitle.to_owned())
+                .font(type_::SMALL)
+                .color(t.muted)
+                .wrap(),
+        );
     }
 
     let fill = if over { t.teal_soft } else { t.surface_alt };
@@ -235,16 +398,27 @@ fn drop_zone(s: &AppState) -> El {
         .center_y()
         .gap(12.0)
         .child(line)
-        .child(button(
-            t,
-            if populated { "Add files" } else { "Choose files" },
-            ButtonKind::Teal,
-            130.0,
-            36.0,
-            type_::STRONG,
-            !busy,
-            |s: &mut AppState| s.choose_files(),
-        ));
+        .child(
+            button(
+                t,
+                if populated {
+                    "Add files"
+                } else {
+                    "Choose files"
+                },
+                ButtonKind::Teal,
+                130.0,
+                36.0,
+                type_::STRONG,
+                !busy,
+                |s: &mut AppState| s.choose_files(),
+            )
+            .key(if populated {
+                "add-files"
+            } else {
+                "choose-files"
+            }),
+        );
     zone = zone.on_drop_files(|s: &mut AppState, paths: &[std::path::PathBuf], _tx| {
         s.add_files(paths.to_vec());
     });
@@ -258,10 +432,12 @@ fn file_list(s: &AppState) -> El {
     let show_pills = s.activity.is_some() || !busy;
     for (index, file) in s.files.iter().enumerate() {
         let path = &file.path;
-        let name = file
-            .display_name
-            .clone()
-            .unwrap_or_else(|| path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_owned());
+        let name = file.display_name.clone().unwrap_or_else(|| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_owned()
+        });
         let name = easyscribe_core::outputs::shorten(&name, 60);
         let size = file
             .display_size
@@ -315,8 +491,17 @@ fn file_list(s: &AppState) -> El {
         ));
         list = list.child(r);
     }
-    let visible = s.visible_rows.max(1) * 46;
-    list.max_h(visible as f32).scroll(ScrollSpec { stick_bottom: false })
+    // While the naming panel waits, keep the list shorter so its actions stay
+    // reachable at the 820 pt window height (the extra row still scrolls).
+    let rows = if s.naming.is_some() {
+        s.visible_rows.clamp(1, 2)
+    } else {
+        s.visible_rows.max(1)
+    };
+    let visible = rows * 46;
+    list.max_h(visible as f32).scroll(ScrollSpec {
+        stick_bottom: false,
+    })
 }
 
 fn files_options_card(s: &AppState, busy: bool) -> El {
@@ -332,7 +517,14 @@ fn files_options_card(s: &AppState, busy: bool) -> El {
         .pt(16.0)
         .pb(16.0)
         .gap(10.0)
-        .child(step_header(t, "2", "Choose options", t.teal_soft, t.teal_ink, None));
+        .child(step_header(
+            t,
+            "2",
+            "Choose options",
+            t.teal_soft,
+            t.teal_ink,
+            None,
+        ));
 
     inner = inner.child(field_label(t, "Save transcripts to"));
     inner = inner.child(files_output_row(s, busy));
@@ -399,7 +591,12 @@ fn files_output_row(s: &AppState, busy: bool) -> El {
     };
     path_text = path_text.grow(1.0).max_lines(1).truncate_middle();
 
-    let mut r = row().w_full().min_h(32.0).center_y().gap(8.0).child(path_text);
+    let mut r = row()
+        .w_full()
+        .min_h(32.0)
+        .center_y()
+        .gap(8.0)
+        .child(path_text);
     if custom {
         r = r.child(button(
             t,
@@ -438,20 +635,28 @@ fn options_tiles(s: &AppState, busy: bool) -> El {
         .gap(4.0);
     timestamp_tile = timestamp_tile.child(
         row()
+            .key("timestamps-checkbox")
             .gap(12.0)
             .center_y()
-            .child(checkbox(
-                t,
-                s.timestamps,
-                timestamp_enabled,
-                t.sky,
-                t.sky_hover,
-                |s: &mut AppState| s.timestamps = !s.timestamps,
-            ))
+            .child(
+                checkbox(
+                    t,
+                    s.timestamps,
+                    timestamp_enabled,
+                    t.sky,
+                    t.sky_hover,
+                    |s: &mut AppState| s.timestamps = !s.timestamps,
+                )
+                .key("timestamp-toggle"),
+            )
             .child(
                 text("Add timestamps")
                     .font(type_::STRONG)
-                    .color(if timestamp_enabled { t.sky_ink } else { t.muted }),
+                    .color(if timestamp_enabled {
+                        t.sky_ink
+                    } else {
+                        t.muted
+                    }),
             ),
     );
     timestamp_tile = timestamp_tile.child(
@@ -461,42 +666,61 @@ fn options_tiles(s: &AppState, busy: bool) -> El {
             .wrap(),
     );
 
-    let speaker_accent = if s.diarization_available { t.amber } else { t.border_strong };
+    let speaker_accent = if s.diarization_available {
+        t.amber
+    } else {
+        t.border_strong
+    };
     let mut speaker_tile = col()
         .grow(1.0)
         .radius(metric::RADIUS_MD)
-        .fill(if s.diarization_available { t.amber_soft } else { t.surface_alt })
+        .fill(if s.diarization_available {
+            t.amber_soft
+        } else {
+            t.surface_alt
+        })
         .padding(18.0)
         .py(6.0)
         .gap(4.0);
     speaker_tile = speaker_tile.child(
         row()
+            .key("speakers-checkbox")
             .gap(12.0)
             .center_y()
-            .child(checkbox(
-                t,
-                s.name_speakers && s.diarization_available,
-                speakers_enabled,
-                speaker_accent,
-                t.amber_hover,
-                |s: &mut AppState| {
-                    if s.diarization_available {
-                        s.name_speakers = !s.name_speakers;
-                    }
-                },
-            ))
             .child(
-                text("Name the speakers")
-                    .font(type_::STRONG)
-                    .color(if s.diarization_available { t.amber_ink } else { t.muted }),
-            ),
+                checkbox(
+                    t,
+                    s.name_speakers && s.diarization_available,
+                    speakers_enabled,
+                    speaker_accent,
+                    t.amber_hover,
+                    |s: &mut AppState| {
+                        if s.diarization_available {
+                            s.name_speakers = !s.name_speakers;
+                        }
+                    },
+                )
+                .key("speaker-toggle"),
+            )
+            .child(text("Name the speakers").font(type_::STRONG).color(
+                if s.diarization_available {
+                    t.amber_ink
+                } else {
+                    t.muted
+                },
+            )),
     );
     let body = if s.diarization_available {
         "Finds who is talking. You hear a short sample of each voice and type their name. Takes longer."
     } else {
         "Not available: the speaker files are missing from this copy of EasyScribe."
     };
-    speaker_tile = speaker_tile.child(text(body.to_owned()).font(type_::SMALL).color(t.muted).wrap());
+    speaker_tile = speaker_tile.child(
+        text(body.to_owned())
+            .font(type_::SMALL)
+            .color(t.muted)
+            .wrap(),
+    );
 
     row()
         .key("options")
@@ -516,7 +740,10 @@ fn start_row(s: &AppState) -> El {
     } else if count == 0 {
         "Transcribe".to_owned()
     } else {
-        format!("Transcribe {}", easyscribe_core::outputs::plural(count, "file"))
+        format!(
+            "Transcribe {}",
+            easyscribe_core::outputs::plural(count, "file")
+        )
     };
     let enabled = s.idle() && count > 0;
     let mut r = row()
@@ -525,24 +752,27 @@ fn start_row(s: &AppState) -> El {
         .pt(12.0)
         .gap(12.0)
         .center_y()
-        .child(button(
-            t,
-            label,
-            ButtonKind::Teal,
-            metric::CTA_W,
-            metric::CTA_H,
-            type_::PRIMARY,
-            enabled,
-            |s: &mut AppState| s.start(),
-        ));
+        .child(
+            button(
+                t,
+                label,
+                ButtonKind::Teal,
+                metric::CTA_W,
+                metric::CTA_H,
+                type_::PRIMARY,
+                enabled,
+                |s: &mut AppState| s.start(),
+            )
+            .key("start-transcribe"),
+        );
     if count == 0 {
         r = r.child(muted(t, "Add a recording to start."));
     } else if let Some((hint, error)) = &s.action_hint {
-        r = r.child(
-            text(hint.clone())
-                .font(type_::BODY)
-                .color(if *error { t.crimson } else { t.muted }),
-        );
+        r = r.child(text(hint.clone()).font(type_::BODY).color(if *error {
+            t.crimson
+        } else {
+            t.muted
+        }));
     }
     r
 }
@@ -576,7 +806,6 @@ fn record_view(s: &AppState) -> El {
                     .w_full()
                     .center_y()
                     .gap(10.0)
-                    .child(step_badge(t, "2", t.coral_soft, t.coral_ink))
                     .child(
                         text(s.record_summary())
                             .font(type_::BODY)
@@ -596,29 +825,43 @@ fn record_view(s: &AppState) -> El {
             );
     } else {
         record_card = record_card
-            .child(step_header(t, "1", "Choose a microphone", t.coral_soft, t.coral_ink, None))
+            .child(step_header(
+                t,
+                "1",
+                "Choose a microphone",
+                t.coral_soft,
+                t.coral_ink,
+                None,
+            ))
             .child(mic_selector(s))
-            .child(
-                row()
-                    .w_full()
-                    .pt(6.0)
-                    .gap(0.0)
-                    .child(step_header(t, "2", "What do you want?", t.coral_soft, t.coral_ink, None)),
-            )
+            .child(row().w_full().pt(6.0).gap(0.0).child(step_header(
+                t,
+                "2",
+                "What do you want?",
+                t.coral_soft,
+                t.coral_ink,
+                None,
+            )))
             .child(record_tiles(s, busy))
             .child(field_label(t, "Save recordings to"))
             .child(record_folder_row(s, busy))
-            .child(
-                row()
-                    .w_full()
-                    .pt(6.0)
-                    .gap(0.0)
-                    .child(step_header(t, "3", "Record", t.coral_soft, t.coral_ink, None)),
-            )
+            .child(row().w_full().pt(6.0).gap(0.0).child(step_header(
+                t,
+                "3",
+                "Record",
+                t.coral_soft,
+                t.coral_ink,
+                None,
+            )))
             .child(record_controls(s));
     }
 
-    let mut column = col().key("record-view").w_full().grow(1.0).min_h(0.0).child(record_card);
+    let mut column = col()
+        .key("record-view")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(record_card);
 
     if live_mode {
         column = column.child(live_card(s));
@@ -684,11 +927,16 @@ fn mic_selector(s: &AppState) -> El {
         let selected = index == s.selected_mic;
         menu = menu.child(
             row()
+                .key(format!("mic-{index}"))
                 .h(32.0)
                 .px(10.0)
                 .radius(metric::RADIUS_SM)
                 .center_y()
-                .fill(if selected { t.coral_soft } else { Color::TRANSPARENT })
+                .fill(if selected {
+                    t.coral_soft
+                } else {
+                    Color::TRANSPARENT
+                })
                 .hover(t.coral_soft)
                 .cursor(Cursor::Pointer)
                 .on_press(move |s: &mut AppState| {
@@ -708,9 +956,11 @@ fn mic_selector(s: &AppState) -> El {
 }
 
 fn chevron(_t: &Theme, color: Color) -> El {
-    el().size(12.0, 12.0).shape(
-        Shape::new().stroke(vec![[2.0, 4.0], [6.0, 8.0], [10.0, 4.0]], 1.8, color),
-    )
+    el().size(12.0, 12.0).shape(Shape::new().stroke(
+        vec![[2.0, 4.0], [6.0, 8.0], [10.0, 4.0]],
+        1.8,
+        color,
+    ))
 }
 
 fn record_tiles(s: &AppState, busy: bool) -> El {
@@ -720,9 +970,14 @@ fn record_tiles(s: &AppState, busy: bool) -> El {
 
     let best_selected = s.record_mode == RecordMode::Best;
     let mut best = col()
+        .key("record-best")
         .grow(1.0)
         .radius(metric::RADIUS_MD)
-        .fill(if best_selected { t.coral_soft } else { t.surface_alt })
+        .fill(if best_selected {
+            t.coral_soft
+        } else {
+            t.surface_alt
+        })
         .border(2.0, if best_selected { t.coral } else { t.border })
         .padding(18.0)
         .py(10.0)
@@ -739,21 +994,33 @@ fn record_tiles(s: &AppState, busy: bool) -> El {
                 .gap(12.0)
                 .center_y()
                 .child(radio(t, best_selected, enabled, t.coral))
-                .child(text("Best quality transcript after recording").font(type_::STRONG).color(if enabled { t.ink } else { t.muted })),
+                .child(
+                    text("Best quality transcript after recording")
+                        .font(type_::STRONG)
+                        .color(if enabled { t.ink } else { t.muted }),
+                ),
         )
         .child(
             col()
                 .pl(32.0)
                 .gap(1.0)
                 .child(small_muted(t, "Saves the recording."))
-                .child(small_muted(t, "Adds times. Most accurate. Find speakers after.")),
+                .child(small_muted(
+                    t,
+                    "Adds times. Most accurate. Find speakers after.",
+                )),
         );
 
     let live_selected = s.record_mode == RecordMode::Live;
     let mut live = col()
+        .key("record-live")
         .grow(1.0)
         .radius(metric::RADIUS_MD)
-        .fill(if live_selected { t.coral_soft } else { t.surface_alt })
+        .fill(if live_selected {
+            t.coral_soft
+        } else {
+            t.surface_alt
+        })
         .border(2.0, if live_selected { t.coral } else { t.border })
         .padding(18.0)
         .py(10.0)
@@ -770,7 +1037,11 @@ fn record_tiles(s: &AppState, busy: bool) -> El {
                 .gap(12.0)
                 .center_y()
                 .child(radio(t, live_selected, enabled, t.coral))
-                .child(text("Show words as I speak").font(type_::STRONG).color(if enabled { t.ink } else { t.muted })),
+                .child(
+                    text("Show words as I speak")
+                        .font(type_::STRONG)
+                        .color(if enabled { t.ink } else { t.muted }),
+                ),
         )
         .child(
             col()
@@ -789,19 +1060,14 @@ fn record_folder_row(s: &AppState, busy: bool) -> El {
     let custom = s.recordings_dir.is_some();
     let folder = s.effective_recordings_dir();
     let shown = easyscribe_core::outputs::shorten(&folder.display().to_string(), 70);
-    let mut r = row()
-        .w_full()
-        .min_h(32.0)
-        .center_y()
-        .gap(8.0)
-        .child(
-            text(shown)
-                .font(type_::BODY)
-                .color(if custom { t.ink } else { t.muted })
-                .grow(1.0)
-                .max_lines(1)
-                .truncate_middle(),
-        );
+    let mut r = row().w_full().min_h(32.0).center_y().gap(8.0).child(
+        text(shown)
+            .font(type_::BODY)
+            .color(if custom { t.ink } else { t.muted })
+            .grow(1.0)
+            .max_lines(1)
+            .truncate_middle(),
+    );
     if custom {
         r = r.child(button(
             t,
@@ -837,8 +1103,16 @@ fn record_controls(s: &AppState) -> El {
     } else {
         "Start recording".to_owned()
     };
-    let timer_color = if recording && !s.record_saving { t.coral_ink } else { t.faint };
-    let level = if recording { s.level.clamp(0.0, 1.0) } else { 0.0 };
+    let timer_color = if recording && !s.record_saving {
+        t.coral_ink
+    } else {
+        t.faint
+    };
+    let level = if recording {
+        s.level.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
 
     let mut meter = row()
         .w(120.0)
@@ -848,8 +1122,7 @@ fn record_controls(s: &AppState) -> El {
         .clip_rounded(4.0);
     if recording {
         meter = meter.child(
-            el()
-                .w((120.0 * level).max(1.0))
+            el().w((120.0 * level).max(1.0))
                 .h_full()
                 .radius(4.0)
                 .fill(t.coral),
@@ -860,16 +1133,19 @@ fn record_controls(s: &AppState) -> El {
         .w_full()
         .gap(16.0)
         .center_y()
-        .child(button(
-            t,
-            label,
-            ButtonKind::Coral,
-            metric::CTA_W,
-            metric::CTA_H,
-            type_::PRIMARY,
-            enabled,
-            |s: &mut AppState| s.toggle_recording(),
-        ))
+        .child(
+            button(
+                t,
+                label,
+                ButtonKind::Coral,
+                metric::CTA_W,
+                metric::CTA_H,
+                type_::PRIMARY,
+                enabled,
+                |s: &mut AppState| s.toggle_recording(),
+            )
+            .key("record-button"),
+        )
         .child(
             text(easyscribe_core::outputs::fmt_timer(s.timer_seconds))
                 .font(type_::TIMER)
@@ -927,23 +1203,22 @@ fn activity_card(s: &AppState, activity: &Activity) -> El {
         .pb(14.0)
         .gap(8.0);
 
-    let mut top = row()
-        .w_full()
-        .center_y()
-        .gap(12.0)
-        .child(
-            text(activity.title.clone())
-                .font(type_::STATUS)
-                .color(activity.tone.color(t))
-                .grow(1.0)
-                .wrap(),
-        );
+    let mut top = row().w_full().center_y().gap(12.0).child(
+        text(activity.title.clone())
+            .font(type_::STATUS)
+            .color(activity.tone.color(t))
+            .grow(1.0)
+            .wrap(),
+    );
 
     if s.ui == UiState::Running && activity.bar == BarMode::Determinate {
         top = top.child(
-            text(format!("{}%", (activity.progress * 100.0).round() as i32))
-                .font(type_::STRONG)
-                .color(t.muted),
+            text(format!(
+                "{}%",
+                (activity.progress * 100.0).round_ties_even() as i32
+            ))
+            .font(type_::STRONG)
+            .color(t.muted),
         );
     }
     if activity.stop_visible {
@@ -977,7 +1252,12 @@ fn activity_card(s: &AppState, activity: &Activity) -> El {
     inner = inner.child(progress_bar(t, bar, activity.bar_color));
 
     if let Some((message, kind)) = &activity.message {
-        inner = inner.child(message_banner(t, message, *kind == MessageKind::Error));
+        // While naming speakers on a short window, the panel repeats this
+        // instruction and every pixel keeps another row reachable.
+        let duplicate = s.naming.is_some() && s.window_height < 900.0;
+        if !duplicate {
+            inner = inner.child(message_banner(t, message, *kind == MessageKind::Error));
+        }
     }
 
     let has_results = activity.open_transcript || activity.open_folder || activity.try_again;
@@ -1067,8 +1347,13 @@ fn rename_row(s: &AppState) -> El {
                         .child(
                             text_input(&s.rename_edit, type_::BODY)
                                 .key("rename-input")
+                                .w_full()
+                                .single_line()
                                 .color(t.ink)
-                                .placeholder("Type a new name, for example Team meeting 21 Oct", t.faint)
+                                .placeholder(
+                                    "Type a new name, for example Team meeting 21 Oct",
+                                    t.faint,
+                                )
                                 .on_edit(|s: &mut AppState| &mut s.rename_edit)
                                 .on_submit(|s: &mut AppState, _tx| s.commit_rename()),
                         ),
@@ -1122,7 +1407,13 @@ fn best_row(s: &AppState) -> El {
                 }
             },
         ))
-        .child(text(note.to_owned()).font(type_::SMALL).color(t.muted).grow(1.0).wrap())
+        .child(
+            text(note.to_owned())
+                .font(type_::SMALL)
+                .color(t.muted)
+                .grow(1.0)
+                .wrap(),
+        )
 }
 
 fn find_card(s: &AppState, find: &FindCard) -> El {
@@ -1157,10 +1448,19 @@ fn find_card(s: &AppState, find: &FindCard) -> El {
                     row()
                         .gap(8.0)
                         .center_y()
-                        .child(text(find.estimate.clone()).font(type_::STRONG).color(t.amber_ink))
+                        .child(
+                            text(find.estimate.clone())
+                                .font(type_::STRONG)
+                                .color(t.amber_ink),
+                        )
                         .child(info_pill(t, "rough estimate", t.amber_ink, t.amber_soft)),
                 )
-                .child(text(find.basis.clone()).font(type_::SMALL).color(t.muted).wrap()),
+                .child(
+                    text(find.basis.clone())
+                        .font(type_::SMALL)
+                        .color(t.muted)
+                        .wrap(),
+                ),
         )
         .child(button(
             t,
@@ -1179,8 +1479,13 @@ fn find_card(s: &AppState, find: &FindCard) -> El {
 
 fn naming_panel(s: &AppState, naming: &NamingState) -> El {
     let t = &s.theme;
+    let short_window = s.window_height < 900.0;
+    let row_height = if short_window { 50.0 } else { 62.0 };
     let count = naming.rows.len();
-    let title = format!("We found {count} speaker{}", if count == 1 { "" } else { "s" });
+    let title = format!(
+        "We found {count} speaker{}",
+        if count == 1 { "" } else { "s" }
+    );
     let mut panel = col()
         .key("naming-panel")
         .w_full()
@@ -1191,17 +1496,14 @@ fn naming_panel(s: &AppState, naming: &NamingState) -> El {
         .padding(18.0)
         .pt(16.0)
         .pb(18.0)
-        .gap(8.0)
+        .gap(7.0)
+        .pb(12.0)
         .child(text(title).font(type_::NAMING_TITLE).color(t.ink))
         .child(
-            text("Play a short sample of each voice, then type the person's name.")
+            text("Play a short sample of each voice, then type the person's name.\nLeave a box empty to keep \"Speaker 1\", \"Speaker 2\" and so on.")
                 .font(type_::BODY)
-                .color(t.muted),
-        )
-        .child(
-            text("Leave a box empty to keep \"Speaker 1\", \"Speaker 2\" and so on.")
-                .font(type_::BODY)
-                .color(t.muted),
+                .color(t.muted)
+                .wrap(),
         );
 
     let mut rows = col().w_full().gap(4.0);
@@ -1210,12 +1512,17 @@ fn naming_panel(s: &AppState, naming: &NamingState) -> El {
         let has_clip = clip.is_some();
         let share = naming_row
             .share
-            .map(|share| format!("{}% of the talking", (share * 100.0).round() as i32))
+            .map(|share| {
+                format!(
+                    "{}% of the talking",
+                    (share * 100.0).round_ties_even() as i32
+                )
+            })
             .unwrap_or_default();
         let mut r = row()
             .key(format!("speaker-{index}"))
             .w_full()
-            .h(62.0)
+            .h(row_height)
             .px(8.0)
             .gap(10.0)
             .center_y()
@@ -1242,7 +1549,7 @@ fn naming_panel(s: &AppState, naming: &NamingState) -> El {
                 110.0,
                 32.0,
                 type_::SMALL,
-                has_clip && s.idle(),
+                has_clip,
                 move |s: &mut AppState| s.play_clip(clip.as_ref()),
             ))
             .child(
@@ -1257,6 +1564,8 @@ fn naming_panel(s: &AppState, naming: &NamingState) -> El {
                     .child(
                         text_input(&naming_row.edit, type_::BODY)
                             .key(format!("speaker-name-{index}"))
+                            .w_full()
+                            .single_line()
                             .color(t.ink)
                             .placeholder("Type a name", t.faint)
                             .on_edit(move |s: &mut AppState| {
@@ -1276,8 +1585,20 @@ fn naming_panel(s: &AppState, naming: &NamingState) -> El {
         }
         rows = rows.child(r);
     }
-    if naming.rows.len() > 4 {
-        rows = rows.max_h(248.0).scroll(ScrollSpec { stick_bottom: false });
+    if short_window {
+        // On an 820 pt window the full panel would put Save/Skip off-screen.
+        // Three compact rows fit, so a typical conversation shows every voice;
+        // a larger cast scrolls inside the same panel.
+        rows = rows
+            .max_h(row_height * 3.0 + 8.0)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(14.0);
+    } else if naming.rows.len() > 4 {
+        rows = rows.max_h(248.0).scroll(ScrollSpec {
+            stick_bottom: false,
+        });
     }
     panel = panel.child(rows);
     panel.child(
@@ -1286,26 +1607,32 @@ fn naming_panel(s: &AppState, naming: &NamingState) -> El {
             .justify_end()
             .gap(8.0)
             .pt(4.0)
-            .child(button(
-                t,
-                "Skip names",
-                ButtonKind::Subtle,
-                110.0,
-                36.0,
-                type_::SMALL,
-                true,
-                |s: &mut AppState| s.skip_naming(),
-            ))
-            .child(button(
-                t,
-                "Save transcript with names",
-                ButtonKind::Amber,
-                230.0,
-                36.0,
-                type_::STRONG,
-                true,
-                |s: &mut AppState| s.save_naming(),
-            )),
+            .child(
+                button(
+                    t,
+                    "Skip names",
+                    ButtonKind::Subtle,
+                    110.0,
+                    36.0,
+                    type_::SMALL,
+                    true,
+                    |s: &mut AppState| s.skip_naming(),
+                )
+                .key("skip-names"),
+            )
+            .child(
+                button(
+                    t,
+                    "Save transcript with names",
+                    ButtonKind::Amber,
+                    230.0,
+                    36.0,
+                    type_::STRONG,
+                    true,
+                    |s: &mut AppState| s.save_naming(),
+                )
+                .key("save-names"),
+            ),
     )
 }
 
@@ -1321,26 +1648,36 @@ fn utility_row(s: &AppState) -> El {
         .py(12.0)
         .center_y()
         .justify_between()
-        .child(button(
-            t,
-            if s.details_open { "Hide details" } else { "Show details" },
-            ButtonKind::Subtle,
-            110.0,
-            30.0,
-            type_::SMALL,
-            true,
-            |s: &mut AppState| s.details_open = !s.details_open,
-        ))
-        .child(button(
-            t,
-            "Privacy",
-            ButtonKind::Subtle,
-            80.0,
-            30.0,
-            type_::SMALL,
-            true,
-            |s: &mut AppState| s.privacy_open = true,
-        ))
+        .child(
+            button(
+                t,
+                if s.details_open {
+                    "Hide details"
+                } else {
+                    "Show details"
+                },
+                ButtonKind::Subtle,
+                110.0,
+                30.0,
+                type_::SMALL,
+                true,
+                |s: &mut AppState| s.details_open = !s.details_open,
+            )
+            .key("toggle-details"),
+        )
+        .child(
+            button(
+                t,
+                "Privacy",
+                ButtonKind::Subtle,
+                80.0,
+                30.0,
+                type_::SMALL,
+                true,
+                |s: &mut AppState| s.privacy_open = true,
+            )
+            .key("open-privacy"),
+        )
 }
 
 fn details_card(s: &AppState) -> El {
@@ -1380,12 +1717,23 @@ fn privacy_overlay(s: &AppState) -> El {
 
     let mut rows = col().w_full().gap(10.0);
     for (title, body) in [
-        ("Transcripts", "Next to each recording, or in the folder you choose.".to_owned()),
-        ("Recordings", format!("{recordings}, or the folder you choose.")),
-        ("Temporary audio", "Deleted after each file, and again when EasyScribe closes.".to_owned()),
+        (
+            "Transcripts",
+            "Next to each recording, or in the folder you choose.".to_owned(),
+        ),
+        (
+            "Recordings",
+            format!("{recordings}, or the folder you choose."),
+        ),
+        (
+            "Temporary audio",
+            "Deleted after each file, and again when EasyScribe closes.".to_owned(),
+        ),
         (
             "Technical logs",
-            format!("{logs}\nFile names and progress only, never the transcript text. Only the last 10 are kept."),
+            format!(
+                "{logs}\nFile names and progress only, never the transcript text. Only the last 10 are kept."
+            ),
         ),
     ] {
         rows = rows.child(
@@ -1393,7 +1741,12 @@ fn privacy_overlay(s: &AppState) -> El {
                 .w_full()
                 .gap(16.0)
                 .items_start()
-                .child(text(title.to_owned()).font(type_::STRONG).color(t.ink).w(150.0))
+                .child(
+                    text(title.to_owned())
+                        .font(type_::STRONG)
+                        .color(t.ink)
+                        .w(150.0),
+                )
                 .child(text(body).font(type_::BODY).color(t.muted).grow(1.0).wrap()),
         );
     }
@@ -1465,20 +1818,15 @@ fn privacy_overlay(s: &AppState) -> El {
                     type_::SMALL,
                     true,
                     |s: &mut AppState| s.privacy_open = false,
-                )),
+                ).key("close-privacy")),
         );
 
-    el()
-        .key("privacy-scrim")
+    el().key("privacy-scrim")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .fill(t.scrim)
         .center()
         .on_press(|s: &mut AppState| s.privacy_open = false)
-        .child(
-            col()
-                .on_press(|_: &mut AppState| {})
-                .child(card_body),
-        )
+        .child(col().on_press(|_: &mut AppState| {}).child(card_body))
 }
 
 #[allow(dead_code)]

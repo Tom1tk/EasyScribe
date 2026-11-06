@@ -8,9 +8,11 @@ use sherpa_rs::silero_vad::{SileroVad, SileroVadConfig};
 use sherpa_rs::whisper::{WhisperConfig, WhisperRecognizer};
 
 use crate::config::VAD_SAMPLE_RATE;
-use crate::{Error, Paths, Reporter, Result};
 use crate::report::CancelToken;
-use crate::vad::{VAD_MAX_SPEECH_SEC, VAD_MIN_SILENCE_SEC, VAD_MIN_SPEECH_SEC, VAD_PAD_SEC, VAD_THRESHOLD};
+use crate::vad::{
+    VAD_MAX_SPEECH_SEC, VAD_MIN_SILENCE_SEC, VAD_MIN_SPEECH_SEC, VAD_PAD_SEC, VAD_THRESHOLD,
+};
+use crate::{Error, Paths, Reporter, Result};
 
 /// Lazy-loading Whisper ONNX recognizer (sherpa-onnx fallback and live mode).
 pub struct TranscriptionEngine {
@@ -20,7 +22,10 @@ pub struct TranscriptionEngine {
 
 impl TranscriptionEngine {
     pub fn new(paths: Paths) -> Self {
-        Self { paths, recognizer: Mutex::new(None) }
+        Self {
+            paths,
+            recognizer: Mutex::new(None),
+        }
     }
 
     pub fn paths(&self) -> &Paths {
@@ -78,15 +83,29 @@ impl TranscriptionEngine {
 
 /// Build a Silero VAD detector with the shared tuning.
 pub fn build_vad(paths: &Paths, buffer_seconds: f32) -> Result<SileroVad> {
+    build_vad_with(paths, buffer_seconds, VAD_THRESHOLD, VAD_MIN_SPEECH_SEC)
+}
+
+/// Build a VAD detector with explicit tuning. The pre-whisper speech gate uses
+/// a slightly more sensitive threshold so quiet leading words are not trimmed.
+pub fn build_vad_with(
+    paths: &Paths,
+    buffer_seconds: f32,
+    threshold: f32,
+    min_speech_duration: f32,
+) -> Result<SileroVad> {
     if !paths.vad_model.is_file() {
-        return Err(Error::ModelNotFound(format!("Missing: {}", paths.vad_model.display())));
+        return Err(Error::ModelNotFound(format!(
+            "Missing: {}",
+            paths.vad_model.display()
+        )));
     }
     let config = SileroVadConfig {
         model: paths.vad_model.to_string_lossy().into_owned(),
         min_silence_duration: VAD_MIN_SILENCE_SEC,
-        min_speech_duration: VAD_MIN_SPEECH_SEC,
+        min_speech_duration,
         max_speech_duration: VAD_MAX_SPEECH_SEC,
-        threshold: VAD_THRESHOLD,
+        threshold,
         sample_rate: VAD_SAMPLE_RATE,
         window_size: 512,
         provider: Some("cpu".into()),

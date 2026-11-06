@@ -27,7 +27,11 @@ pub fn build_plain_transcript(segments: &[Segment], add_timestamps: bool) -> Str
         return String::new();
     }
     if !add_timestamps {
-        return segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+        return segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
     }
 
     let mut blocks: Vec<(f64, Vec<&str>)> = Vec::new();
@@ -64,7 +68,12 @@ pub fn build_diarized_transcript(
     if assigned.is_empty() {
         return String::new();
     }
-    let label = |raw: &str| speaker_map.get(raw).cloned().unwrap_or_else(|| raw.to_owned());
+    let label = |raw: &str| {
+        speaker_map
+            .get(raw)
+            .cloned()
+            .unwrap_or_else(|| raw.to_owned())
+    };
     let mut parts: Vec<String> = Vec::new();
 
     if !add_timestamps {
@@ -169,7 +178,10 @@ pub fn write_transcript(output_path: &Path, text: &str) -> Result<()> {
                 output_path.display()
             ))
         } else {
-            Error::WriteTranscript(format!("Failed to write transcript: {}\n\n{e}", output_path.display()))
+            Error::WriteTranscript(format!(
+                "Failed to write transcript: {}\n\n{e}",
+                output_path.display()
+            ))
         }
     })
 }
@@ -213,10 +225,14 @@ fn write_wav_slice(input: &Path, start: f64, end: f64, output: &Path) -> Result<
 
     match spec.sample_format {
         hound::SampleFormat::Int if spec.bits_per_sample <= 16 => {
-            let samples: Vec<i16> = reader.samples::<i16>().collect::<std::result::Result<_, _>>()?;
+            let samples: Vec<i16> = reader
+                .samples::<i16>()
+                .collect::<std::result::Result<_, _>>()?;
             let offset = (start_frame * channels) as usize;
             let count = (frames * channels) as usize;
-            let slice = samples.get(offset..(offset + count).min(samples.len())).unwrap_or(&[]);
+            let slice = samples
+                .get(offset..(offset + count).min(samples.len()))
+                .unwrap_or(&[]);
             let mut writer = hound::WavWriter::create(output, spec)?;
             for s in slice {
                 writer.write_sample(*s)?;
@@ -224,10 +240,14 @@ fn write_wav_slice(input: &Path, start: f64, end: f64, output: &Path) -> Result<
             writer.finalize()?;
         }
         hound::SampleFormat::Int => {
-            let samples: Vec<i32> = reader.samples::<i32>().collect::<std::result::Result<_, _>>()?;
+            let samples: Vec<i32> = reader
+                .samples::<i32>()
+                .collect::<std::result::Result<_, _>>()?;
             let offset = (start_frame * channels) as usize;
             let count = (frames * channels) as usize;
-            let slice = samples.get(offset..(offset + count).min(samples.len())).unwrap_or(&[]);
+            let slice = samples
+                .get(offset..(offset + count).min(samples.len()))
+                .unwrap_or(&[]);
             let mut writer = hound::WavWriter::create(output, spec)?;
             for s in slice {
                 writer.write_sample(*s)?;
@@ -235,10 +255,14 @@ fn write_wav_slice(input: &Path, start: f64, end: f64, output: &Path) -> Result<
             writer.finalize()?;
         }
         hound::SampleFormat::Float => {
-            let samples: Vec<f32> = reader.samples::<f32>().collect::<std::result::Result<_, _>>()?;
+            let samples: Vec<f32> = reader
+                .samples::<f32>()
+                .collect::<std::result::Result<_, _>>()?;
             let offset = (start_frame * channels) as usize;
             let count = (frames * channels) as usize;
-            let slice = samples.get(offset..(offset + count).min(samples.len())).unwrap_or(&[]);
+            let slice = samples
+                .get(offset..(offset + count).min(samples.len()))
+                .unwrap_or(&[]);
             let mut writer = hound::WavWriter::create(output, spec)?;
             for s in slice {
                 writer.write_sample(*s)?;
@@ -272,7 +296,10 @@ mod tests {
     #[test]
     fn plain_timestamps_single_block() {
         let segs = [seg(0.0, 1.0, "Hello"), seg(1.5, 2.5, "world.")];
-        assert_eq!(build_plain_transcript(&segs, true), "[00:00:00]\nHello world.");
+        assert_eq!(
+            build_plain_transcript(&segs, true),
+            "[00:00:00]\nHello world."
+        );
     }
 
     #[test]
@@ -287,9 +314,24 @@ mod tests {
     #[test]
     fn diarized_groups_consecutive_speakers() {
         let assigned = vec![
-            AssignedSegment { speaker: "SPEAKER_00".into(), text: "Hello,".into(), start: 0.0, end: 1.0 },
-            AssignedSegment { speaker: "SPEAKER_00".into(), text: "how are you?".into(), start: 1.0, end: 2.0 },
-            AssignedSegment { speaker: "SPEAKER_01".into(), text: "Fine, thanks.".into(), start: 2.0, end: 3.0 },
+            AssignedSegment {
+                speaker: "SPEAKER_00".into(),
+                text: "Hello,".into(),
+                start: 0.0,
+                end: 1.0,
+            },
+            AssignedSegment {
+                speaker: "SPEAKER_00".into(),
+                text: "how are you?".into(),
+                start: 1.0,
+                end: 2.0,
+            },
+            AssignedSegment {
+                speaker: "SPEAKER_01".into(),
+                text: "Fine, thanks.".into(),
+                start: 2.0,
+                end: 3.0,
+            },
         ];
         let map = HashMap::from([
             ("SPEAKER_00".to_string(), "Speaker 1".to_string()),
@@ -304,10 +346,30 @@ mod tests {
     #[test]
     fn diarized_timestamps_split_on_speaker_and_gap() {
         let assigned = vec![
-            AssignedSegment { speaker: "SPEAKER_00".into(), text: "Hello.".into(), start: 0.0, end: 1.0 },
-            AssignedSegment { speaker: "SPEAKER_00".into(), text: "Still talking.".into(), start: 1.2, end: 2.0 },
-            AssignedSegment { speaker: "SPEAKER_01".into(), text: "Reply.".into(), start: 2.0, end: 3.0 },
-            AssignedSegment { speaker: "SPEAKER_01".into(), text: "More.".into(), start: 10.0, end: 11.0 },
+            AssignedSegment {
+                speaker: "SPEAKER_00".into(),
+                text: "Hello.".into(),
+                start: 0.0,
+                end: 1.0,
+            },
+            AssignedSegment {
+                speaker: "SPEAKER_00".into(),
+                text: "Still talking.".into(),
+                start: 1.2,
+                end: 2.0,
+            },
+            AssignedSegment {
+                speaker: "SPEAKER_01".into(),
+                text: "Reply.".into(),
+                start: 2.0,
+                end: 3.0,
+            },
+            AssignedSegment {
+                speaker: "SPEAKER_01".into(),
+                text: "More.".into(),
+                start: 10.0,
+                end: 11.0,
+            },
         ];
         let map = HashMap::from([
             ("SPEAKER_00".to_string(), "Speaker 1".to_string()),
@@ -350,7 +412,10 @@ mod tests {
 
     #[test]
     fn assign_without_overlap_defaults_to_first_speaker() {
-        let assigned = assign_speakers(&[seg(100.0, 101.0, "lonely")], &[Turn::new(0.0, 1.0, "SPEAKER_03")]);
+        let assigned = assign_speakers(
+            &[seg(100.0, 101.0, "lonely")],
+            &[Turn::new(0.0, 1.0, "SPEAKER_03")],
+        );
         assert_eq!(assigned[0].speaker, "SPEAKER_00");
     }
 

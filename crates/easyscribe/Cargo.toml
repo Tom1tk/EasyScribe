@@ -5,15 +5,24 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-easyscribe-core = { path = "../easyscribe-core" }
+easyscribe-core = { path = "../easyscribe-core", default-features = false }
 rune = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50", features = ["native-file-dialog"] }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+hound = { workspace = true }
 log = { workspace = true }
 rfd = "0.17"
 rodio = { workspace = true }
 dirs = "6"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+[features]
+default = ["easyscribe-core/sherpa-download"]
+vulkan = ["easyscribe-core/vulkan"]
+release-static = ["easyscribe-core/sherpa-static"]
 
 [dev-dependencies]
 tempfile = "3"

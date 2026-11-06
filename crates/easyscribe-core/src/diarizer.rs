@@ -9,10 +9,10 @@ use sherpa_rs::diarize::{Diarize, DiarizeConfig};
 use crate::audio::{load_wav_float32, wav_duration};
 use crate::ffmpeg::fmt_duration;
 use crate::model::{Segment, Turn};
-use crate::settings::Settings;
-use crate::{Error, Paths, Reporter, Result};
 use crate::report::CancelToken;
+use crate::settings::Settings;
 use crate::transcript::speech_seconds;
+use crate::{Error, Paths, Reporter, Result};
 
 pub const SEC_PER_AUDIO_SEC: f64 = 0.045;
 pub const SEC_PER_SPEECH_SEC: f64 = 0.165;
@@ -40,7 +40,9 @@ impl DiarizationEngine {
 
     /// Learn this PC's speed from a finished run (moving average).
     pub fn save_measured_speed(&self, audio_path: &Path, segments: &[Segment], took_sec: f64) {
-        let Ok(duration) = wav_duration(audio_path) else { return };
+        let Ok(duration) = wav_duration(audio_path) else {
+            return;
+        };
         let expected = model_seconds(duration, Some(speech_seconds(segments)));
         if expected <= 0.0 {
             return;
@@ -62,21 +64,26 @@ impl DiarizationEngine {
         if !self.is_available() {
             return Err(Error::Diarization("The speaker models are missing.".into()));
         }
-        let duration = wav_duration(audio_path)
-            .map_err(|e| Error::Diarization(format!("Could not load audio for diarization: {e}")))?;
+        let duration = wav_duration(audio_path).map_err(|e| {
+            Error::Diarization(format!("Could not load audio for diarization: {e}"))
+        })?;
         let estimate = fmt_estimate(self.estimate_seconds(duration, None));
         reporter.log(&format!(
             "[Diarize] Estimated wait: {estimate} for {} of audio (rough estimate). Please wait…",
             fmt_duration(duration)
         ));
-        log::info!("Running diarization on: {} (estimate {estimate})", audio_path.display());
+        log::info!(
+            "Running diarization on: {} (estimate {estimate})",
+            audio_path.display()
+        );
         reporter.log("[Diarize] Finding the parts with speech…");
 
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let (samples, _) = load_wav_float32(audio_path)
-            .map_err(|e| Error::Diarization(format!("Could not load audio for diarization: {e}")))?;
+        let (samples, _) = load_wav_float32(audio_path).map_err(|e| {
+            Error::Diarization(format!("Could not load audio for diarization: {e}"))
+        })?;
 
         let started = Instant::now();
         let config = DiarizeConfig {
@@ -87,8 +94,12 @@ impl DiarizationEngine {
             provider: Some("cpu".into()),
             debug: false,
         };
-        let mut engine = Diarize::new(&self.paths.separator_model, &self.paths.embedding_model, config)
-            .map_err(|e| Error::Diarization(format!("Speaker diarization failed: {e}")))?;
+        let mut engine = Diarize::new(
+            &self.paths.separator_model,
+            &self.paths.embedding_model,
+            config,
+        )
+        .map_err(|e| Error::Diarization(format!("Speaker diarization failed: {e}")))?;
 
         let progress_reporter = reporter.clone();
         let progress_cancel = cancel.clone();
@@ -110,7 +121,11 @@ impl DiarizationEngine {
             Ok(segments) => segments,
             Err(_) if cancel.is_cancelled() => return Err(Error::Cancelled),
             Err(e) if e.to_string().contains("No segments") => Vec::new(),
-            Err(e) => return Err(Error::Diarization(format!("Speaker diarization failed: {e}"))),
+            Err(e) => {
+                return Err(Error::Diarization(format!(
+                    "Speaker diarization failed: {e}"
+                )));
+            }
         };
         let _ = started;
 
@@ -122,13 +137,18 @@ impl DiarizationEngine {
                 speaker: format!("SPEAKER_{:02}", s.speaker),
             })
             .collect();
-        let speakers: std::collections::BTreeSet<&str> = turns.iter().map(|t| t.speaker.as_str()).collect();
+        let speakers: std::collections::BTreeSet<&str> =
+            turns.iter().map(|t| t.speaker.as_str()).collect();
         reporter.log(&format!(
             "[Diarize] Found {} speaker(s) across {} turn(s)",
             speakers.len(),
             turns.len()
         ));
-        log::info!("Diarization complete: {} speakers, {} turns", speakers.len(), turns.len());
+        log::info!(
+            "Diarization complete: {} speakers, {} turns",
+            speakers.len(),
+            turns.len()
+        );
         Ok(turns)
     }
 }
@@ -143,7 +163,7 @@ pub fn fmt_estimate(seconds: f64) -> String {
     if seconds < 50.0 {
         return "less than a minute".into();
     }
-    let minutes = (seconds / 60.0).round() as i64;
+    let minutes = (seconds / 60.0).round_ties_even() as i64;
     if minutes <= 1 {
         return "about 1 minute".into();
     }
@@ -152,12 +172,16 @@ pub fn fmt_estimate(seconds: f64) -> String {
     }
     let mut hours = minutes / 60;
     let mut rest = minutes % 60;
-    rest = 5 * ((rest as f64 / 5.0).round() as i64);
+    rest = 5 * ((rest as f64 / 5.0).round_ties_even() as i64);
     if rest == 60 {
         hours += 1;
         rest = 0;
     }
-    let hours_text = if hours == 1 { "1 hour".to_string() } else { format!("{hours} hours") };
+    let hours_text = if hours == 1 {
+        "1 hour".to_string()
+    } else {
+        format!("{hours} hours")
+    };
     if rest == 0 {
         format!("about {hours_text}")
     } else {

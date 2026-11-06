@@ -17,15 +17,15 @@ pub mod recovery;
 pub mod rename;
 pub mod settings;
 pub mod sherpa_engine;
-pub mod transcript;
 pub mod transcriber;
+pub mod transcript;
 pub mod vad;
 pub mod whispercpp;
 
 pub use config::{APP_NAME, APP_VERSION, Paths};
 pub use error::{Error, Result};
 pub use model::{AssignedSegment, Segment, SpeakerShare, Status, Turn};
-pub use report::{CancelToken, Reporter};
+pub use report::{CancelToken, Reporter, SilentReporter};
 pub use sherpa_engine::TranscriptionEngine;
 
 mod model;

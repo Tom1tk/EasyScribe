@@ -12,12 +12,11 @@ use easyscribe_core::{Error, Paths, Result};
 /// Places a v3 install may live, nearest first.
 pub fn candidates(paths: &Paths) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            out.push(dir.to_path_buf());
-            out.push(dir.join("EasyScribe"));
-            out.push(dir.join("EasyScribe"));
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        out.push(dir.to_path_buf());
+        out.push(dir.join("EasyScribe"));
     }
     if let Some(local) = dirs::data_local_dir() {
         out.push(local.join("Programs").join("EasyScribe"));
@@ -33,7 +32,9 @@ pub fn candidates(paths: &Paths) -> Vec<PathBuf> {
 }
 
 fn looks_like_v3(dir: &Path) -> bool {
-    dir.join("recordings").is_dir() || dir.join("logs").is_dir() || dir.join("EasyScribe.exe").is_file()
+    dir.join("recordings").is_dir()
+        || dir.join("logs").is_dir()
+        || dir.join("EasyScribe.exe").is_file()
 }
 
 /// Copy a legacy `recordings/settings.json` into the new data root when the

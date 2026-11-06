@@ -21,21 +21,32 @@ pub fn load_wav_float32(path: &Path) -> Result<(Vec<f32>, u32)> {
     let spec = reader.spec();
     let channels = spec.channels.max(1) as usize;
     let mut samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int if spec.bits_per_sample <= 16 => {
-            reader.samples::<i16>().map(|s| s.map(|v| v as f32 / 32768.0)).collect::<std::result::Result<_, _>>()?
-        }
-        hound::SampleFormat::Int if spec.bits_per_sample <= 32 => {
-            reader.samples::<i32>().map(|s| s.map(|v| v as f32 / 2_147_483_648.0)).collect::<std::result::Result<_, _>>()?
-        }
-        hound::SampleFormat::Float => {
-            reader.samples::<f32>().collect::<std::result::Result<_, _>>()?
-        }
-        _ => {
-            return Err(Error::Transcription(format!(
-                "unsupported WAV sample width: {} bits",
-                spec.bits_per_sample
-            )))
-        }
+        hound::SampleFormat::Int => match spec.bits_per_sample {
+            8 => reader
+                .samples::<i8>()
+                .map(|s| s.map(|v| v as f32 / 128.0))
+                .collect::<std::result::Result<_, _>>()?,
+            9..=16 => reader
+                .samples::<i16>()
+                .map(|s| s.map(|v| v as f32 / 32768.0))
+                .collect::<std::result::Result<_, _>>()?,
+            17..=24 => reader
+                .samples::<i32>()
+                .map(|s| s.map(|v| v as f32 / 8_388_608.0))
+                .collect::<std::result::Result<_, _>>()?,
+            25..=32 => reader
+                .samples::<i32>()
+                .map(|s| s.map(|v| v as f32 / 2_147_483_648.0))
+                .collect::<std::result::Result<_, _>>()?,
+            bits => {
+                return Err(Error::Transcription(format!(
+                    "unsupported WAV sample width: {bits} bits"
+                )));
+            }
+        },
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .collect::<std::result::Result<_, _>>()?,
     };
     if channels > 1 {
         let mono: Vec<f32> = samples
@@ -96,7 +107,11 @@ impl LinearResampler {
             let index = pos.floor() as usize;
             let frac = pos - index as f64;
             let a = if index == 0 {
-                if self.has_previous { self.previous } else { input[0] }
+                if self.has_previous {
+                    self.previous
+                } else {
+                    input[0]
+                }
             } else {
                 input[index - 1]
             };
@@ -128,6 +143,50 @@ mod tests {
         assert_eq!(rate, 16_000);
         assert_eq!(loaded.len(), samples.len());
         assert!((loaded[50] - 50.0 / 32768.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eight_bit_and_24_bit_wavs_are_scaled_correctly() {
+        let dir = tempfile::tempdir().unwrap();
+        let eight = dir.path().join("eight.wav");
+        let mut writer = hound::WavWriter::create(
+            &eight,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 8,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        writer.write_sample(-128_i8).unwrap();
+        writer.write_sample(0_i8).unwrap();
+        writer.write_sample(127_i8).unwrap();
+        writer.finalize().unwrap();
+        let (loaded, _) = load_wav_float32(&eight).unwrap();
+        assert!((loaded[0] + 1.0).abs() < 1e-6);
+        assert_eq!(loaded[1], 0.0);
+        assert!((loaded[2] - 127.0 / 128.0).abs() < 1e-6);
+
+        let twenty_four = dir.path().join("24.wav");
+        let mut writer = hound::WavWriter::create(
+            &twenty_four,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 24,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        writer.write_sample(-8_388_608_i32).unwrap();
+        writer.write_sample(0_i32).unwrap();
+        writer.write_sample(4_194_304_i32).unwrap();
+        writer.finalize().unwrap();
+        let (loaded, _) = load_wav_float32(&twenty_four).unwrap();
+        assert!((loaded[0] + 1.0).abs() < 1e-6);
+        assert_eq!(loaded[1], 0.0);
+        assert!((loaded[2] - 0.5).abs() < 1e-6);
     }
 
     #[test]

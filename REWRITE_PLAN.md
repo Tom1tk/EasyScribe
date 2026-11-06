@@ -38,8 +38,11 @@ Two product goals carried over from the existing planning documents:
   >= 2.0 s gaps, blank line between blocks; one trailing newline on disk).
 - Speaker transcript format exactly (`[Speaker]` / `[HH:MM:SS] [Speaker]`,
   speaker turn + >= 2.0 s gap block rules, overlap-based assignment).
-- whisper.cpp file engine when bundled (beam size 5, Vulkan on Windows, device
-  log line from its own stderr), sherpa-onnx VAD+greedy fallback otherwise.
+- whisper.cpp file engine when bundled (beam size 5, in-process via
+  `whisper-rs`), sherpa-onnx VAD+greedy fallback otherwise. The shipped preview
+  is CPU-only; the Vulkan feature remains available but is deliberately not in
+  `release-static` because its load-time `vulkan-1.dll` import would break CPU
+  fallback on machines without a Vulkan driver.
 - Live mode: microphone capture, Silero VAD chunking, words appear as spoken,
   timer + input level meter, stop/flush last words, "Finishing".
 - Record mode choice: best-quality-after-recording (record only, then file
@@ -65,6 +68,16 @@ Two product goals carried over from the existing planning documents:
 - Windows taskbar AppUserModelID, no black-flash issues (n/a in Rune),
   high-DPI, 1366x768 and larger screens.
 
+## Implementation snapshot (session 3)
+
+The workspace has three crates: `easyscribe-core`, `easyscribe` (Rune UI) and
+`easyscribe-pack`. The UI, workers, payload, splash, recovery/rename/settings,
+Windows resources and CI are implemented. Verification: 57 tests pass, clippy
+and fmt are clean, the real speech fixture matches the Python transcript, the
+long-silence gate test passes, all scenes render, and a 300 MB packed payload
+passed first-run/cached-launch smoke. Remaining work is Windows CI validation
+and the draft release; see `REWRITE_STATUS.md`.
+
 ## External plan audit (2026-11-06) — dispositions
 
 An independent audit (`/home/user/EasyScribe-rewrite-audit.md`, @Tom) reviewed
@@ -72,10 +85,10 @@ the plan and the first core scaffold. Dispositions, so none of it is lost:
 
 | Audit finding | Decision |
 |---|---|
-| 1. whisper.cpp runs CPU-only | **Accepted.** Add an `easyscribe-core/vulkan` feature for Windows release builds. Use `whisper_rs::vulkan::list_devices()` (ggml already lists discrete GPUs before integrated ones), pass `gpu_device`, and log the chosen device. Keep a CPU-only build for tests and CI. |
+| 1. whisper.cpp runs CPU-only | **Partially accepted, release reversed.** The Vulkan feature exists (`whisper_rs::vulkan::list_devices()`, `gpu_device`, CPU retry), but it is not enabled in `release-static`: `whisper-rs` links `vulkan-1.dll` at load time, so a no-driver machine cannot start at all. The preview ships CPU-only. A future GPU path must load Vulkan dynamically or use a separate process. |
 | 2. Engines moved in-process lose Stop/crash isolation | **Partially accepted.** Stop is restored in-process with `FullParams::set_abort_callback_safe` (whisper) and by making the diarization progress callback return non-zero when cancelled. Crash isolation is an optional hardening step: a self-spawned `--worker whisper`/`--worker diarize` child can be added behind the same IPC later. Parity requires Stop, not process isolation; tests must prove Stop interrupts a long decode, not just between chunks. |
-| 3. GPU choice dropped | **Accepted.** Enumerate Vulkan devices, prefer the first discrete device, honour a `gpu_device` setting, and log which device was selected. CPU retry uses device-independent path. |
-| 4. sherpa-onnx version drift (1.12.9 vs tested 1.13.2) | **Accepted as a release blocker.** Development may keep `sherpa-rs` 0.6.8, but the Windows payload must vendor a hash-pinned 1.13.2 C API DLL, or the app must move to the official `sherpa-onnx` crate at a tested version. Add a parity smoke test that runs the vendored DLL. |
+| 3. GPU choice dropped | **Implemented behind `vulkan`, not shipped.** Device enumeration/choice and CPU retry are in `whispercpp.rs`; the release feature is CPU-only for the reason above. |
+| 4. sherpa-onnx version drift (1.12.9 vs tested 1.13.2) | **Resolved by matching the binding, not forcing 1.13.2.** `sherpa-rs` 0.6.8 generates bindings from the vendored 1.12.9 header; 1.13.x changed struct layouts. The Windows build uses the hash-pinned 1.12.9 static archive. `--selftest` loads the recognizer/VAD/diarizer on the packed exe. |
 | 5. Build downloads binaries | **Accepted.** Release builds must not use `download-binaries`. Vendor the sherpa DLLs/headers (or build from a vendored source tarball) and change the offline test to inspect normal runtime dependencies (`cargo tree -e normal`) instead of build dependencies. |
 | 6. Existing users' data not found | **Accepted.** Add a one-time legacy import: look beside the exe, in `%LOCALAPPDATA%\Programs\EasyScribe`, and for a v3 marker; copy (never move) `recordings/settings.json`, keep the old logs, and scan legacy `recordings/` for orphan PCM/JSON for the recovery prompt. Declining recovery keeps the old files. |
 | 7. No commits yet | **Accepted.** Committed the core scaffold before continuing (assets restored, models ignored). |
@@ -131,13 +144,15 @@ tests/ (in crates)             unit + integration + Rune headless UI tests
 
 ### Inference
 
-- **sherpa-onnx C API** (`libsherpa-onnx-c-api`) for: offline Whisper
+- **sherpa-onnx 1.12.9** through `sherpa-rs` 0.6.8 for: offline Whisper
   transcription fallback, Silero VAD, live recognizer, speaker diarization.
-  Bind the small required surface with `bindgen` at build time; ship the DLL
-  beside/inside the payload. (Exact choice pending TECH_RESEARCH.md.)
-- **whisper.cpp** via `whisper-rs` for the primary file engine when the GGUF
-  model is present; Vulkan feature on Windows release, CPU fallback. Preserve
-  beam size 5 and device stderr logging where possible.
+  The Windows build links the official 1.12.9 static libraries with the static
+  MSVC runtime.
+- **whisper.cpp 1.8.3** through `whisper-rs` 0.16 for the primary file engine
+  when the GGUF model is present. CPU-only in the release preview; preserve
+  beam size 5 and report the engine/thread count in Show details. Whisper
+  decode runs on a fresh thread because ONNX Runtime leaves thread-local state
+  that makes a later encode on the same thread fail.
 - **ffmpeg/ffprobe**: keep the proven subprocess approach and exact arguments,
   including `-protocol_whitelist file`. Locate via payload dir.
 - **Audio**: `cpal` capture (device enumeration by name, 16 kHz mono),

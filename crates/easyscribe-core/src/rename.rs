@@ -18,7 +18,9 @@ fn bad_chars() -> &'static Regex {
 
 fn reserved() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])$").expect("valid reserved regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])$").expect("valid reserved regex")
+    })
 }
 
 /// `""` if `name` can be a Windows file name, else what is wrong with it.
@@ -40,15 +42,24 @@ pub fn check_name(name: &str) -> &'static str {
 
 /// The recording and the transcripts made from it, in its folder, sorted.
 pub fn recording_set(audio: &Path) -> Vec<PathBuf> {
-    let Some(parent) = audio.parent() else { return Vec::new() };
-    let Some(stem) = audio.file_stem().and_then(|s| s.to_str()) else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(parent) else { return Vec::new() };
+    let Some(parent) = audio.parent() else {
+        return Vec::new();
+    };
+    let Some(stem) = audio.file_stem().and_then(|s| s.to_str()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
     let mut set: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.is_file())
         .filter(|p| {
-            let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase);
             let matches_ext = matches!(ext.as_deref(), Some("wav" | "txt"));
             let file_stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             matches_ext && (file_stem == stem || file_stem.starts_with(&format!("{stem} (")))
@@ -58,17 +69,37 @@ pub fn recording_set(audio: &Path) -> Vec<PathBuf> {
     set
 }
 
+/// Windows paths are case-insensitive, so `Meeting.wav` -> `meeting.wav` is a
+/// rename of the same file, not a collision with an existing one.
+fn same_file_name(a: &Path, b: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        a.as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
+}
+
 /// Rename each path's leading `old_stem` to `new_stem`.
 ///
 /// Returns the old→new map. A taken new name changes nothing and returns
 /// `FileExistsError`. Any failure undoes the renames already done and returns
 /// the OS error.
-pub fn rename_all(paths: &[PathBuf], old_stem: &str, new_stem: &str) -> Result<BTreeMap<PathBuf, PathBuf>, RenameError> {
+pub fn rename_all(
+    paths: &[PathBuf],
+    old_stem: &str,
+    new_stem: &str,
+) -> Result<BTreeMap<PathBuf, PathBuf>, RenameError> {
     let mut plan: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(paths.len());
     for path in paths {
-        let name = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
-            RenameError::Invalid(path.display().to_string())
-        })?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| RenameError::Invalid(path.display().to_string()))?;
         if !name.starts_with(old_stem) {
             return Err(RenameError::Invalid(name.to_owned()));
         }
@@ -77,23 +108,30 @@ pub fn rename_all(paths: &[PathBuf], old_stem: &str, new_stem: &str) -> Result<B
         plan.push((path.clone(), new_path));
     }
 
-    if let Some((_, taken)) = plan.iter().find(|(old, new)| new != old && new.exists()) {
+    if let Some((_, taken)) = plan
+        .iter()
+        .find(|(old, new)| new != old && new.exists() && !same_file_name(old, new))
+    {
         return Err(RenameError::Exists(
-            taken.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned(),
+            taken
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_owned(),
         ));
     }
 
     let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
     for (old, new) in &plan {
-        if new != old {
-            if let Err(e) = std::fs::rename(old, new) {
-                for (done_old, done_new) in done.iter().rev() {
-                    if done_new != done_old {
-                        let _ = std::fs::rename(done_new, done_old);
-                    }
+        if new != old
+            && let Err(e) = std::fs::rename(old, new)
+        {
+            for (done_old, done_new) in done.iter().rev() {
+                if done_new != done_old {
+                    let _ = std::fs::rename(done_new, done_old);
                 }
-                return Err(RenameError::Io(e));
             }
+            return Err(RenameError::Io(e));
         }
         done.push((old.clone(), new.clone()));
     }
@@ -143,7 +181,16 @@ mod tests {
 
     #[test]
     fn rejects_windows_problems() {
-        for bad in ["", "a/b", "a:b", "say \"hi\"", "what?", "CON", "lpt1", "name."] {
+        for bad in [
+            "",
+            "a/b",
+            "a:b",
+            "say \"hi\"",
+            "what?",
+            "CON",
+            "lpt1",
+            "name.",
+        ] {
             assert!(!check_name(bad).is_empty(), "{bad:?} should be rejected");
         }
         assert!(!check_name(&"x".repeat(200)).is_empty());
@@ -153,7 +200,10 @@ mod tests {
     fn finds_the_whole_recording_set() {
         let dir = folder();
         let files = recording_set(&dir.path().join(format!("{STEM}.wav")));
-        let names: Vec<_> = files.iter().map(|p| p.file_name().unwrap().to_str().unwrap()).collect();
+        let names: Vec<_> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
         let mut expected = SET.to_vec();
         expected.sort();
         assert_eq!(names, expected);
@@ -190,7 +240,10 @@ mod tests {
         for old in SET {
             assert!(dir.path().join(old).exists());
         }
-        assert_eq!(std::fs::read_to_string(dir.path().join("Team meeting.txt")).unwrap(), "other");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Team meeting.txt")).unwrap(),
+            "other"
+        );
     }
 
     #[test]

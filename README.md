@@ -98,24 +98,15 @@ Select **Privacy** at the bottom of the window to see what EasyScribe stores and
 ## Get started
 
 1. Download `EasyScribe-<version>.exe` from the [Releases](../../releases) page.
-2. Put it in a folder of your choice. A local folder or a USB stick are both good.
-3. Double-click it. A small **Getting ready** window shows while the `.exe` unpacks itself. The first time, Windows also checks the large downloaded file before it starts, so the window can take up to a minute to show. To make this fast, unblock the file first (see the note below).
-4. Choose where to put EasyScribe (or keep the default) and select **Install**. This takes about 30 seconds and adds Desktop and Start Menu shortcuts.
-5. Next time, open EasyScribe from the shortcut. It starts in about one second.
+2. Put it in any folder you like. A local folder or a USB stick are both fine.
+3. Double-click it. The first launch shows **Preparing EasyScribe** while it verifies and unpacks the speech models and ffmpeg once, into `%LOCALAPPDATA%\EasyScribe\runtime\<hash>`. Later launches reuse that cache and start in about a second.
+4. Drag recordings onto the window and select **Transcribe**.
 
-> **Windows SmartScreen:** EasyScribe is not code-signed yet, so Windows may show a warning the first time. Select **More info → Run anyway**.
->
-> **Tip:** Before the first start, right-click the `.exe`, select **Properties**, select **Unblock**, then **OK**. Or in PowerShell: `Unblock-File .\EasyScribe-<version>.exe`. Then Windows does not show the warning, and **Getting ready** shows at once. Only do this for a file that you downloaded from this project's Releases page.
+There is no install-location picker, no shortcut step and no admin rights. The executable is the whole application. Updates are full-size downloads: close EasyScribe, replace the `.exe`, and start it again. The new version extracts its own runtime once and removes the old cache after a successful launch.
 
-### Update to a new version
+> **Windows SmartScreen:** EasyScribe is not code-signed, so Windows may warn the first time. Select **More info → Run anyway**. You can also right-click the `.exe`, select **Properties → Unblock**, then **OK** before the first start.
 
-Close EasyScribe, then double-click the new `.exe`. It finds your older version and asks first. Select **Update and open** to update it in place, or **Browse** to install in a different folder. Your recordings and logs are kept. If something goes wrong during the update, the previous version is restored.
-
-If EasyScribe 3.1.0 or later is installed, you can download the much smaller `EasyScribe-update-vX.exe` instead. It keeps the speech models already on your computer, after checking that they are unchanged. It finds your install from its shortcut, or you select **Browse** and choose your `EasyScribe` folder. If it says it needs the full download, nothing was changed: use the full `.exe`.
-
-### Take it with you
-
-EasyScribe is portable. It does not use the registry and does not need admin rights. To move it, copy the `.exe` and the `EasyScribe` folder next to it.
+> **Portable mode:** create an empty file named `EasyScribe.portable` next to the `.exe`. Settings, logs, temporary audio and the extracted runtime are then kept in `EasyScribe-data` beside the executable instead of `%LOCALAPPDATA%`.
 
 ---
 
@@ -146,14 +137,13 @@ After a pause, the next block starts here.
 | Problem | What to do |
 |---|---|
 | SmartScreen blocks the `.exe` | Select **More info → Run anyway**, or unblock the file first (**Properties → Unblock**). The app is not signed yet. |
-| Nothing shows for up to a minute after the first double-click | Windows checks the large downloaded file first. Wait, or unblock the file first (**Properties → Unblock**). |
-| The update `.exe` says it needs the full download | A model or ffmpeg file in your install is missing or different, or the release changed one. Download the full `.exe`. |
-| "Close EasyScribe" message during an update | EasyScribe is still open. Close it, then select **Update and open** again. |
-| "Model files missing" when it starts | Run the `.exe` again. The first install may have been stopped. |
-| **Name the speakers** is grey | The speaker models are missing. Run the `.exe` again. |
+| The first launch takes a while | That launch verifies and unpacks the bundled models once. Later launches reuse the cache and start quickly. |
+| **Preparing EasyScribe** stops with an error | Download the `.exe` again. If it still fails, delete `%LOCALAPPDATA%\EasyScribe\runtime` and start once more. |
+| "Name the speakers" is grey | The speaker models are missing from the runtime cache. Download the `.exe` again. |
 | No microphones in the list | Check your microphone in the Windows sound settings. |
-| Antivirus flags the `.exe` | Some antivirus tools flag PyInstaller apps by mistake. Add an exclusion. |
-| Transcription is slow | Without a supported graphics card, EasyScribe uses the processor. Long files take longer. **Show details** shows which graphics card or processor is used. |
+| Antivirus flags the `.exe` | Unsigned single-file apps are sometimes flagged by mistake. Add an exclusion only for a file downloaded from this project's Releases page. |
+| Transcription is slow | This preview runs whisper.cpp on the processor. Close other large apps, or use a shorter recording. **Show details** shows the engine and thread count. |
+| An unfinished recording is found at startup | Choose **Yes** to rebuild it as a `.wav`; the raw audio is kept if you choose **No**. |
 
 ---
 ---
@@ -166,128 +156,93 @@ The sections below are for developers and IT staff.
 
 | Task | Engine | Device |
 |---|---|---|
-| File transcription | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli`, large-v3-turbo q5_0, beam size 5 | Vulkan GPU (any vendor), else CPU |
+| File transcription | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) through `whisper-rs`, large-v3-turbo q5_0, beam size 5 | CPU |
 | File transcription (fallback) | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) Whisper large-v3-turbo int8, VAD + greedy | CPU |
 | Live transcription | sherpa-onnx, Silero VAD chunks | CPU |
 | Speaker diarization | sherpa-onnx: pyannote segmentation-3.0 + WeSpeaker ResNet34-LM | CPU |
 
-The device that whisper.cpp actually used is read from its own stderr and shown in the log: the engine (Vulkan or CPU), the GPU's name, and the CPU's name with the threads used. It is never assumed from build flags. sherpa-onnx 1.13.2 has no Vulkan provider, so the sherpa-onnx tasks stay on CPU (see `CLAUDE.md`, Rule 7).
+Everything runs in-process. This preview intentionally uses the CPU-only whisper.cpp build: a Vulkan-linked `whisper-rs` imports `vulkan-1.dll` at load time, so machines without a Vulkan driver could not start or fall back to the CPU. **Show details** reports the engine and thread count. GPU acceleration can return later as a separate, dynamically loaded path.
 
-Audio is decoded with the bundled ffmpeg to 16 kHz mono. Live recordings write raw PCM plus a JSON sidecar, so `recovery.py` can rebuild a WAV after a crash.
+Audio is decoded with the bundled ffmpeg to 16 kHz mono. Recordings write raw PCM plus a JSON sidecar, so an interrupted recording can be rebuilt as a WAV on the next start.
 
 ## Offline guarantee and privacy (GDPR)
 
 EasyScribe never sends data off the computer. How this is enforced:
 
-- **All models are local.** They load from absolute paths in the install folder. There are no HuggingFace Hub downloads.
-- **Network access is blocked in the process.** `src/offline_guard.py` runs first in `main.py`, before any other import. It refuses every socket connection and DNS lookup that is not to loopback, disables proxies (`NO_PROXY=*`) and sets the usual opt-out variables (`HF_HUB_OFFLINE`, `DO_NOT_TRACK`, ...). A blocked attempt is logged.
+- **All models are local.** They are extracted from the executable into the runtime cache. There are no model downloads at runtime.
+- **No network code.** The Rust workspace has no HTTP, DNS or socket client. `crates/easyscribe-core/tests/offline.rs` fails if a network-capable crate becomes a runtime dependency.
 - **ffmpeg and ffprobe read local files only.** They run with `-protocol_whitelist file`, so a playlist or concat file cannot make them fetch a URL.
-- **No network code.** `tests/test_offline_guard.py` fails if a module in `src/` or `launcher/` imports a network library (`urllib`, `http`, `requests`, `webbrowser`, ...).
-- **Temporary audio is deleted.** Converted WAV files and whisper.cpp output are removed after each file, at startup and at exit.
+- **Temporary audio is deleted.** Converted WAV files, speaker samples and decoder output are removed after each file, at startup and at exit.
+- **No accounts, telemetry or update checks.**
 
 | Data | Location | Kept until |
 |---|---|---|
 | Transcripts | Next to each recording, or the folder you choose | You delete them |
 | Recordings | `Documents\EasyScribe`, or the folder you choose | You delete them |
-| Technical logs | `logs/` in the install folder. File names and progress only, never transcript text | The last 10 are kept |
+| Settings, crash-recovery audio | `%LOCALAPPDATA%\EasyScribe` (or `EasyScribe-data` in portable mode) | You delete them |
+| Technical logs | the same EasyScribe data folder. File names and progress only, never transcript text | The last 10 are kept |
+| Runtime cache | `%LOCALAPPDATA%\EasyScribe\runtime\<hash>` | Replaced on update |
 
-To remove all data, delete your transcripts and the `EasyScribe` folder.
+To remove everything, delete your transcripts and the `%LOCALAPPDATA%\EasyScribe` folder (or `EasyScribe-data` in portable mode).
 
-## Distribution and install layout
-
-```
-EasyScribe-<version>.exe   (launcher.exe, PyInstaller one-file)
-  └── app.bundle           (zip: EasyScribe.exe + _internal/ + models/ + whispercpp/ + ffmpeg/ + licenses/)
-```
-
-The launcher extracts `app.bundle` once, into an `EasyScribe\` folder:
+## Distribution layout
 
 ```
-EasyScribe\
-  EasyScribe.exe
-  .easyscribe-install.json   <- install marker (version, shortcuts)
-  _internal\                 <- PyInstaller runtime (DLLs, .pyd files, assets)
-  models\
-    whisper\                 <- sherpa-onnx Whisper large-v3-turbo int8
-    diarization\             <- segmentation.onnx, embedding.onnx
-    silero_vad.onnx
-  whispercpp\                <- whisper-cli.exe, ggml-large-v3-turbo-q5_0.bin, *.dll
-  ffmpeg\                    <- ffmpeg.exe, ffprobe.exe
-  LICENSE.txt                <- EasyScribe license (MIT)
-  THIRD-PARTY-NOTICES.txt    <- included components, their licenses and source
-  licenses\                  <- license texts (assets/collect_licenses.py)
-  recordings\                <- recordings in progress (crash recovery) and settings.json (user data)
-  logs\                      <- rotating log files (user data)
-  temp\                      <- temporary WAV files (auto-cleaned)
+EasyScribe-<version>.exe
+  ├── Windows executable (Rust, whisper.cpp + sherpa-onnx linked in)
+  ├── ZIP payload (models, ffmpeg, whisper.cpp GGUF, assets, licenses)
+  └── 128-byte footer (version, offsets, SHA-256 of the payload)
 ```
 
-**Updates.** The launcher compares the version in the install marker with its own version:
+The executable is a normal Windows program with an appended archive; Windows ignores the overlay. On first launch the app verifies the payload hash, extracts it into `%LOCALAPPDATA%\EasyScribe\runtime\v1-<hash>`, writes a `.complete` marker, and removes runtimes left by older payloads. Re-launches open the cache directly. Nothing is unpacked to `%TEMP%`.
 
-- Same or newer install: it opens the installed `EasyScribe.exe` directly. It never downgrades.
-- Older install: it shows the installer window and waits. Only when the user selects **Update and open** does it move the app files to `.easyscribe-old\`, extract the new files, then delete the backup. On any failure, the backup is moved back. `recordings\` and `logs\` are never moved. If a file is locked (the app is open), the update stops and the user is told to close EasyScribe.
-- If an update is interrupted (power loss), the next start restores the backup first.
-- The update `.exe` has a bundle without `models\`, `ffmpeg\` and the whisper.cpp model (`assets/make_update_bundle.py`). It lists their SHA-256 in `.easyscribe-update.json`. The launcher checks the installed copies before it changes anything, then keeps them (a kept file inside a replaced folder is hard-linked from the backup). It cannot do a new install.
+**Updates.** Each release is a full executable. The payload hash is the cache key, so a new version extracts once and later starts reuse the new cache. There is no separate update bundle or download-time model check.
 
-**Start-up splash.** The PyInstaller one-file bootloader unpacks `app.bundle` (about 1.5 GB) to `%TEMP%` before any Python code runs. This can take a minute. A PyInstaller `Splash` (`assets/splash.png`) shows at once during that time; the launcher closes it when its own window opens.
-
-**Why not a "no-extract" single exe?** whisper-cli, ffmpeg and the models (about 1.5 GB) must be real files on disk. A one-file app that unpacks to `%TEMP%` at each start would copy 1.5 GB every time. Extract-once keeps start-up at about one second and still needs no installer, registry or admin rights.
+**Why extract at all?** whisper.cpp, ffmpeg and the models must exist as real files on disk. Extracting once keeps launches fast without an installer, registry entries or admin rights.
 
 ## Project layout
 
 ```
-src/
-  main.py                Entry point: offline guard, logging, orphan recovery, GUI
-  offline_guard.py       Blocks all non-loopback network access (imported first)
-  config.py              Paths, constants and APP_VERSION
-  common.py              Shared helpers (CancelledError, ...)
-  logger.py              Rotating log file setup
-  ffmpeg_wrapper.py      Subprocess ffmpeg/ffprobe with cancellation polling
-  transcriber.py         File transcription (whisper.cpp if bundled, else sherpa-onnx)
-  whispercpp_wrapper.py  Subprocess whisper-cli: beam search, Vulkan/CPU device log
-  diarizer.py            sherpa-onnx speaker diarization
-  mic_recorder.py        sounddevice capture + crash-safe PCM writer
-  live_transcriber.py    Silero VAD loop + OfflineRecognizer for live mode
-  recovery.py            Orphaned .pcm scanner and WAV recovery
-  gui.py                 CustomTkinter UI with threaded workers
-  rename.py              Renames a recording and its transcripts together (the Name box)
-  transitions.py         Windows only: fade out and in when the screen changes
-  win_paint.py           Windows only: paints window backgrounds at once (no black blocks)
-
-launcher/
-  launcher.py            Extract-once installer and version-aware updater
-  launcher.spec          PyInstaller one-file spec for the launcher
-
-assets/
-  EasyScribe.ico/.png    App icon (both .exe files, all windows, shortcuts)
-  make_icon.py           Regenerates the icon from the logo design (needs Pillow)
-  splash.png             "Getting ready" window shown while the .exe unpacks
-  make_splash.py         Regenerates splash.png (needs Pillow and customtkinter)
-  version_resource.py    Windows file-version info for both specs, from APP_VERSION
-  make_update_bundle.py  Builds the bundle for the small EasyScribe-update-vX.exe
-
-tests/                   Fast offline checks; run all with `python tests/run_all.py`
+Cargo.toml                     Workspace: core, app, packer
+crates/easyscribe-core/        Domain logic: config, ffmpeg, VAD, sherpa,
+                               whisper.cpp, transcription, mic, recovery,
+                               rename, settings, outputs, single-exe payload
+crates/easyscribe/             Rune UI: views, app state, workers, dialogs
+crates/easyscribe-pack/        Appends the payload and writes the footer
+scripts/build-windows.ps1      Local single-exe build
+.github/workflows/rune.yml     Linux tests and Windows check
+.github/workflows/rune-release.yml
+                               Windows draft pre-release build
+docs/rewrite/                  Behaviour, UI and packaging reference specs
+models/ whispercpp/            Development model folders (ignored by git)
 ```
+
+The Python v3.2.3 tree remains the behavioural oracle; it is not part of the Rust build.
 
 ## Building
 
-Releases are built by GitHub Actions: **Actions → Build and Publish Release**, with the tag `v` + `APP_VERSION`. The workflow:
+Requirements for a Windows build:
 
-1. Installs the pinned Python dependencies from `requirements.txt` and runs the unit tests.
-2. Downloads the models and ffmpeg.
-3. Builds `whisper-cli` with `-DGGML_VULKAN=ON` and checks that it starts.
-4. Runs PyInstaller for the app and validates the result (`tests/validate_build.py`).
-5. Assembles the app folder, validates it again and checks that the bundled `whisper-cli` starts.
-6. Packs `app.bundle` into the launcher and publishes the release.
+- Windows 10/11 x64 and Rust stable with the MSVC toolchain.
+- Static sherpa-onnx **1.12.9** MSVC libraries (`sherpa-onnx-v1.12.9-win-x64-static`) with `SHERPA_LIB_PATH` pointing at the extracted folder that contains `lib`. The 1.12.9 version matches the C API that `sherpa-rs` 0.6.8 binds; 1.13.x changed that struct layout.
+- `models/`, `ffmpeg/` (or `tools/ffmpeg/`) and `whispercpp/ggml-large-v3-turbo-q5_0.bin` populated.
 
-The version is set in one place: `APP_VERSION` in `src/config.py`. Keep `VERSION` in `launcher/launcher.py` the same; `tests/test_version.py` checks this.
+```powershell
+pwsh -File scripts/build-windows.ps1
+# -> dist\EasyScribe.exe
+```
 
-| Requirement (build machine) | Notes |
-|---|---|
-| Windows 10/11 64-bit | Build and target platform |
-| Python 3.11 | Used by CI |
-| Internet access | Only during the build, to get models and tools |
+The script builds the app and packer together with the `release-static` feature (static sherpa libraries, static MSVC runtime, CPU-only whisper.cpp), then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**; it publishes a draft pre-release tagged with a hyphenated version such as `v3.2.3-rust.1`.
 
-Before you change packaging, read `CLAUDE.md`. It lists the rules learned from earlier build failures.
+Local checks:
+
+```bash
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets
+```
+
+The app version is the workspace version (`3.2.3`).
 
 ---
 
@@ -298,8 +253,9 @@ This project is released under the MIT License.
 The app includes third-party programs and models. Each one keeps its own license:
 
 - FFmpeg (GPL v3). The source and a written offer are in `licenses/THIRD-PARTY-NOTICES.txt`.
-- whisper.cpp, ONNX Runtime, PortAudio, the Whisper weights, Silero VAD and pyannote segmentation (MIT).
+- whisper.cpp, ONNX Runtime, the Whisper weights, Silero VAD and pyannote segmentation (MIT).
 - sherpa-onnx (Apache 2.0).
+- Rune and the Rust runtime dependencies (MIT / Apache 2.0).
 - The WeSpeaker ResNet34-LM speaker model (CC BY 4.0, trained on VoxCeleb).
 
-See [`licenses/THIRD-PARTY-NOTICES.txt`](licenses/THIRD-PARTY-NOTICES.txt) and the texts in [`licenses/`](licenses/). The build copies them, with the Python and Python package licenses, into the app folder (`assets/collect_licenses.py`).
+See [`licenses/THIRD-PARTY-NOTICES.txt`](licenses/THIRD-PARTY-NOTICES.txt) and the texts in [`licenses/`](licenses/). The build copies them into the payload inside the executable.

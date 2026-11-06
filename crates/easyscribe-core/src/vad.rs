@@ -22,9 +22,15 @@ pub fn pad_and_clamp(bounds: &[(usize, usize)], total_samples: usize) -> Vec<(us
     let mut padded = Vec::with_capacity(bounds.len());
     for (i, (b_start, b_end)) in bounds.iter().copied().enumerate() {
         let prev_end = if i > 0 { bounds[i - 1].1 } else { 0 };
-        let next_start = if i + 1 < bounds.len() { bounds[i + 1].0 } else { total_samples };
+        let next_start = if i + 1 < bounds.len() {
+            bounds[i + 1].0
+        } else {
+            total_samples
+        };
         let c_start = prev_end.max(b_start.saturating_sub(PAD_SAMPLES));
-        let c_end = next_start.min(b_end.saturating_add(PAD_SAMPLES)).min(total_samples);
+        let c_end = next_start
+            .min(b_end.saturating_add(PAD_SAMPLES))
+            .min(total_samples);
         padded.push((c_start, c_end));
     }
     padded
@@ -39,7 +45,9 @@ pub fn pad_live_segment(
     seg_start: usize,
     seg_samples: &[f32],
 ) -> Vec<f32> {
-    let pad_start = prev_segment_end.max(seg_start.saturating_sub(PAD_SAMPLES)).max(history_start);
+    let pad_start = prev_segment_end
+        .max(seg_start.saturating_sub(PAD_SAMPLES))
+        .max(history_start);
     if pad_start >= seg_start {
         return seg_samples.to_vec();
     }

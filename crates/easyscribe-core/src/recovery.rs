@@ -22,9 +22,15 @@ pub struct RecordingMetadata {
     pub samples_written: u64,
 }
 
-fn default_sample_rate() -> u32 { 16_000 }
-fn default_channels() -> u16 { 1 }
-fn default_bit_depth() -> u16 { 16 }
+fn default_sample_rate() -> u32 {
+    16_000
+}
+fn default_channels() -> u16 {
+    1
+}
+fn default_bit_depth() -> u16 {
+    16
+}
 
 impl Default for RecordingMetadata {
     fn default() -> Self {
@@ -47,7 +53,11 @@ pub struct Orphan {
 impl Orphan {
     pub fn duration_seconds(&self) -> f64 {
         let sr = self.metadata.sample_rate;
-        if sr == 0 { 0.0 } else { self.metadata.samples_written as f64 / sr as f64 }
+        if sr == 0 {
+            0.0
+        } else {
+            self.metadata.samples_written as f64 / sr as f64
+        }
     }
 }
 
@@ -56,13 +66,18 @@ pub fn scan_for_orphans(output_dir: &Path) -> Vec<Orphan> {
     if !output_dir.exists() {
         return Vec::new();
     }
-    let Ok(entries) = std::fs::read_dir(output_dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(output_dir) else {
+        return Vec::new();
+    };
     let mut pcm_paths: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
             p.is_file()
-                && p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("pcm")).unwrap_or(false)
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("pcm"))
+                    .unwrap_or(false)
                 && p.file_name()
                     .and_then(|n| n.to_str())
                     .map(|n| n.starts_with("recording_"))
@@ -81,7 +96,11 @@ pub fn scan_for_orphans(output_dir: &Path) -> Vec<Orphan> {
             .map_err(Error::from)
             .and_then(|text| serde_json::from_str::<RecordingMetadata>(&text).map_err(Error::from))
         {
-            Ok(metadata) => orphans.push(Orphan { pcm_path, json_path, metadata }),
+            Ok(metadata) => orphans.push(Orphan {
+                pcm_path,
+                json_path,
+                metadata,
+            }),
             Err(e) => log::warn!("Could not read {}: {e}", json_path.display()),
         }
     }
@@ -89,7 +108,11 @@ pub fn scan_for_orphans(output_dir: &Path) -> Vec<Orphan> {
 }
 
 /// Convert raw int16 PCM to WAV, keeping only `samples_written` frames.
-pub fn recover_pcm_to_wav(pcm_path: &Path, metadata: &RecordingMetadata, wav_path: &Path) -> Result<()> {
+pub fn recover_pcm_to_wav(
+    pcm_path: &Path,
+    metadata: &RecordingMetadata,
+    wav_path: &Path,
+) -> Result<()> {
     let byte_count = (metadata.samples_written as usize).saturating_mul(2);
     let raw = std::fs::read(pcm_path)?;
     let raw = &raw[..byte_count.min(raw.len())];
@@ -128,14 +151,20 @@ pub fn handle_orphan(
     let mut wav_path = pcm_path.with_extension("wav");
     if let Some(dest) = dest_dir {
         if let Err(e) = std::fs::create_dir_all(dest) {
-            log::error!("Could not create {}; recovering next to the raw file: {e}", dest.display());
+            log::error!(
+                "Could not create {}; recovering next to the raw file: {e}",
+                dest.display()
+            );
             recover_pcm_to_wav(pcm_path, metadata, &wav_path)?;
         } else {
             let candidate = dest.join(wav_path.file_name().unwrap_or_default());
             match recover_pcm_to_wav(pcm_path, metadata, &candidate) {
                 Ok(()) => wav_path = candidate,
                 Err(e) => {
-                    log::error!("Could not recover into {}, keeping it next to the raw file: {e}", dest.display());
+                    log::error!(
+                        "Could not recover into {}, keeping it next to the raw file: {e}",
+                        dest.display()
+                    );
                     recover_pcm_to_wav(pcm_path, metadata, &wav_path)?;
                 }
             }
@@ -143,7 +172,9 @@ pub fn handle_orphan(
     } else {
         recover_pcm_to_wav(pcm_path, metadata, &wav_path)?;
     }
-    let _ = std::fs::remove_file(pcm_path);
+    // Delete the audio first: if that fails, the sidecar still describes the
+    // pair so the next start can try again.
+    std::fs::remove_file(pcm_path)?;
     let _ = std::fs::remove_file(json_path);
     Ok(Some(wav_path))
 }
@@ -180,7 +211,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (pcm, _) = write_orphan(dir.path(), 1000, 200);
         let wav = dir.path().join("recording_20260101_000000.wav");
-        let metadata = RecordingMetadata { samples_written: 1000, ..Default::default() };
+        let metadata = RecordingMetadata {
+            samples_written: 1000,
+            ..Default::default()
+        };
         recover_pcm_to_wav(&pcm, &metadata, &wav).unwrap();
         let reader = hound::WavReader::open(&wav).unwrap();
         assert_eq!(reader.spec().channels, 1);
@@ -193,8 +227,14 @@ mod tests {
     fn declining_keeps_both_files() {
         let dir = tempfile::tempdir().unwrap();
         let (pcm, json) = write_orphan(dir.path(), 100, 0);
-        let meta = RecordingMetadata { samples_written: 100, ..Default::default() };
-        assert_eq!(handle_orphan(&pcm, &json, &meta, false, None).unwrap(), None);
+        let meta = RecordingMetadata {
+            samples_written: 100,
+            ..Default::default()
+        };
+        assert_eq!(
+            handle_orphan(&pcm, &json, &meta, false, None).unwrap(),
+            None
+        );
         assert!(pcm.exists());
         assert!(json.exists());
     }
@@ -203,8 +243,13 @@ mod tests {
     fn accepting_recovers_and_cleans_up() {
         let dir = tempfile::tempdir().unwrap();
         let (pcm, json) = write_orphan(dir.path(), 100, 0);
-        let meta = RecordingMetadata { samples_written: 100, ..Default::default() };
-        let wav = handle_orphan(&pcm, &json, &meta, true, None).unwrap().unwrap();
+        let meta = RecordingMetadata {
+            samples_written: 100,
+            ..Default::default()
+        };
+        let wav = handle_orphan(&pcm, &json, &meta, true, None)
+            .unwrap()
+            .unwrap();
         assert!(wav.exists());
         assert!(!pcm.exists());
         assert!(!json.exists());

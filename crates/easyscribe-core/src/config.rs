@@ -24,7 +24,9 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
 
 /// One thread per physical core, clamped to 4..=8, as the Python app does.
 pub fn num_threads() -> usize {
-    let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let logical = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     (logical / 2).clamp(4, 8)
 }
 
@@ -80,17 +82,35 @@ impl Paths {
         let whisper_model_dir = models_dir.join("whisper");
         let diarization_dir = models_dir.join("diarization");
         let ffmpeg_dir = base.join("ffmpeg");
-        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-        let probe = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+        let exe = if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        };
+        let probe = if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        };
         let bundled_ffmpeg = ffmpeg_dir.join(exe);
         let bundled_probe = ffmpeg_dir.join(probe);
+        // Development builds may use a system ffmpeg. An installed runtime
+        // must use the bundled copy: a missing bundled tool is a startup error,
+        // never a silent PATH fallback.
+        let development = base == data_dir;
         let (ffmpeg_bin, ffprobe_bin) = if bundled_ffmpeg.is_file() {
             (bundled_ffmpeg, bundled_probe)
-        } else {
+        } else if development {
             (PathBuf::from("ffmpeg"), PathBuf::from("ffprobe"))
+        } else {
+            (bundled_ffmpeg, bundled_probe)
         };
         let whispercpp_dir = base.join("whispercpp");
-        let whispercpp_bin = whispercpp_dir.join(if cfg!(windows) { "whisper-cli.exe" } else { "whisper-cli" });
+        let whispercpp_bin = whispercpp_dir.join(if cfg!(windows) {
+            "whisper-cli.exe"
+        } else {
+            "whisper-cli"
+        });
         let logs_dir = data_dir.join("logs");
         let temp_dir = data_dir.join("temp");
         let recordings_work_dir = data_dir.join("recordings");
@@ -129,7 +149,9 @@ impl Paths {
 
     /// The three Whisper ONNX files are present.
     pub fn whisper_model_available(&self) -> bool {
-        self.whisper_encoder.is_file() && self.whisper_decoder.is_file() && self.whisper_tokens.is_file()
+        self.whisper_encoder.is_file()
+            && self.whisper_decoder.is_file()
+            && self.whisper_tokens.is_file()
     }
 
     /// Speaker models are present, so the Name the speakers option is enabled.
@@ -149,7 +171,11 @@ impl Paths {
         if !self.vad_model.is_file() {
             errors.push(format!("Missing: {}", self.vad_model.display()));
         }
-        for path in [&self.whisper_encoder, &self.whisper_decoder, &self.whisper_tokens] {
+        for path in [
+            &self.whisper_encoder,
+            &self.whisper_decoder,
+            &self.whisper_tokens,
+        ] {
             if !path.is_file() {
                 errors.push(format!("Missing: {}", path.display()));
             }
@@ -159,23 +185,25 @@ impl Paths {
 
     /// A unique temporary WAV path.
     pub fn temp_wav(&self) -> PathBuf {
-        self.temp_dir.join(format!("{}.wav", uuid::Uuid::new_v4().simple()))
+        self.temp_dir
+            .join(format!("{}.wav", uuid::Uuid::new_v4().simple()))
     }
 }
 
 /// Where the app reads models and tools from.
-pub fn dev_base_dir() -> PathBuf { discover_base_dir() }
+pub fn dev_base_dir() -> PathBuf {
+    discover_base_dir()
+}
 
 fn discover_base_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("EASYSCRIBE_BASE_DIR") {
         return PathBuf::from(dir);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            if dir.join("models").is_dir() || dir.join("assets").is_dir() {
-                return dir.to_path_buf();
-            }
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+        && (dir.join("models").is_dir() || dir.join("assets").is_dir())
+    {
+        return dir.to_path_buf();
     }
     // `crates/easyscribe-core` → repository root.
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -198,6 +226,10 @@ pub fn default_recordings_dir() -> PathBuf {
 pub fn is_supported_media(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| SUPPORTED_EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+        .map(|e| {
+            SUPPORTED_EXTENSIONS
+                .iter()
+                .any(|x| e.eq_ignore_ascii_case(x))
+        })
         .unwrap_or(false)
 }

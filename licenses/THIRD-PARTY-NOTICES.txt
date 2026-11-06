@@ -1,7 +1,7 @@
 EasyScribe - Third-party notices
 ================================
 
-EasyScribe is released under the MIT License (see LICENSE.txt).
+EasyScribe is released under the MIT License (see LICENSE).
 EasyScribe includes the third-party software and models below. Each one keeps
 its own license. The license texts are in the "licenses" folder.
 
@@ -25,34 +25,28 @@ FFmpeg 7.1.1 (ffmpeg.exe, ffprobe.exe in the "ffmpeg" folder)
   EasyScribe runs ffmpeg as a separate program. EasyScribe's own code is not
   a derivative work of FFmpeg.
 
-whisper.cpp v1.8.6 and ggml (the "whispercpp" folder)
+whisper.cpp 1.8.3 and ggml (compiled into EasyScribe.exe through whisper-rs)
   License:  MIT - licenses/whisper.cpp-MIT.txt
-  Source:   https://github.com/ggml-org/whisper.cpp/tree/v1.8.6
+  Source:   https://github.com/ggml-org/whisper.cpp
 
-sherpa-onnx 1.13.8
+sherpa-onnx 1.12.9 (compiled into EasyScribe.exe)
   License:  Apache License 2.0 - licenses/sherpa-onnx-Apache-2.0.txt
   Source:   https://github.com/k2-fsa/sherpa-onnx
 
-ONNX Runtime (included in sherpa-onnx)
+ONNX Runtime (compiled into sherpa-onnx)
   License:  MIT - licenses/onnxruntime-MIT.txt
   Source:   https://github.com/microsoft/onnxruntime
 
-PortAudio (included in sounddevice)
-  License:  MIT - licenses/PortAudio-MIT.txt
-  Source:   https://github.com/PortAudio/portaudio
+Rune UI framework (compiled into EasyScribe.exe)
+  License:  MIT - licenses/rune-MIT.txt
+  Source:   https://github.com/anomalyco/rune
 
-Python 3.11, Tcl/Tk and the libraries in the Python Windows build
-  License:  PSF License Agreement and others - licenses/Python-LICENSE.txt
-
-Python packages: numpy, sounddevice, cffi, pycparser, customtkinter,
-darkdetect, packaging, tkinterdnd2 (with tkdnd)
-  Licenses: the license files of each package are in
-            licenses/python-packages/<package>/
-
-PyInstaller bootloader
-  License:  GPL v2 or later with the PyInstaller bootloader exception, which
-            permits distribution of programs built with it under any license.
-  Source:   https://github.com/pyinstaller/pyinstaller
+Rust dependencies (compiled into EasyScribe.exe)
+  The app is built from the crates listed in Cargo.lock. Their licenses are
+  predominantly MIT and Apache-2.0; each crate's license text is available
+  from its crates.io package and source repository. The main runtime
+  dependencies are whisper-rs, sherpa-rs, cpal, rodio, hound, zip, serde,
+  chrono, regex, sha2, rfd, dirs, fs2 and log.
 
 
 Models

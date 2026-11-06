@@ -45,13 +45,13 @@ pub fn fmt_minutes(seconds: f64) -> String {
     if seconds < 60.0 {
         "under 1 min".into()
     } else {
-        format!("{} min", (seconds / 60.0).round() as i64)
+        format!("{} min", (seconds / 60.0).round_ties_even() as i64)
     }
 }
 
 /// `_fmt_took`: `6 min 12 s` or `12 s`.
 pub fn fmt_took(seconds: f64) -> String {
-    let total = seconds.max(0.0).round() as i64;
+    let total = seconds.max(0.0).round_ties_even() as i64;
     let minutes = total / 60;
     let secs = total % 60;
     if minutes > 0 {
@@ -96,13 +96,20 @@ pub fn capitalize_first(text: &str) -> String {
 pub fn is_supported_media(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| SUPPORTED_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+        .map(|e| {
+            SUPPORTED_EXTENSIONS
+                .iter()
+                .any(|x| x.eq_ignore_ascii_case(e))
+        })
         .unwrap_or(false)
 }
 
 /// The uppercase extension list used in the skipped-files note.
 pub fn supported_extensions_display() -> String {
-    let mut list: Vec<String> = SUPPORTED_EXTENSIONS.iter().map(|e| e.to_ascii_uppercase()).collect();
+    let mut list: Vec<String> = SUPPORTED_EXTENSIONS
+        .iter()
+        .map(|e| e.to_ascii_uppercase())
+        .collect();
     list.sort();
     list.join(", ")
 }
@@ -140,7 +147,10 @@ pub fn names_summary(paths: &[&Path]) -> String {
         .iter()
         .take(3)
         .map(|p| {
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_else(|| p.to_str().unwrap_or("?"));
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_else(|| p.to_str().unwrap_or("?"));
             shorten(name, 40)
         })
         .collect();
@@ -198,7 +208,10 @@ mod tests {
     #[test]
     fn output_names_follow_the_rules() {
         let base = Path::new("/tmp/Team meeting.m4a");
-        assert_eq!(transcript_output(base, None), Path::new("/tmp/Team meeting.txt"));
+        assert_eq!(
+            transcript_output(base, None),
+            Path::new("/tmp/Team meeting.txt")
+        );
         assert_eq!(
             transcript_output(base, Some(Path::new("/out"))),
             Path::new("/out/Team meeting.txt")
@@ -219,8 +232,13 @@ mod tests {
 
     #[test]
     fn failure_names_limit_to_three() {
-        let paths: Vec<PathBuf> = (0..5).map(|i| PathBuf::from(format!("file{i}.wav"))).collect();
+        let paths: Vec<PathBuf> = (0..5)
+            .map(|i| PathBuf::from(format!("file{i}.wav")))
+            .collect();
         let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-        assert_eq!(names_summary(&refs), "file0.wav, file1.wav, file2.wav and 2 more");
+        assert_eq!(
+            names_summary(&refs),
+            "file0.wav, file1.wav, file2.wav and 2 more"
+        );
     }
 }

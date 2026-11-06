@@ -31,7 +31,7 @@ pub enum Error {
     #[error("{0}")]
     Payload(String),
 
-    #[error("could not write transcript: {0}")]
+    #[error("{0}")]
     WriteTranscript(String),
 
     #[error(transparent)]

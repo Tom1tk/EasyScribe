@@ -16,7 +16,7 @@ use crate::transcript::{
     speech_seconds, write_transcript,
 };
 use crate::vad::pad_and_clamp;
-use crate::{whispercpp, Error, Paths, Reporter, Result};
+use crate::{Error, Paths, Reporter, Result, whispercpp};
 
 #[derive(Debug, Clone)]
 pub struct TranscribeRequest<'a> {
@@ -48,7 +48,10 @@ pub fn transcribe(
     ));
     let duration = wav_duration(request.audio_path)
         .map_err(|e| Error::Transcription(format!("Could not load audio: {e}")))?;
-    reporter.log(&format!("[Transcribe] Audio duration: {}", fmt_duration(duration)));
+    reporter.log(&format!(
+        "[Transcribe] Audio duration: {}",
+        fmt_duration(duration)
+    ));
 
     let started = Instant::now();
     let (raw_segments, engine_name) = if whispercpp::is_available(paths) {
@@ -58,7 +61,7 @@ pub fn transcribe(
             on_off(request.add_timestamps),
             on_off(request.diarize)
         ));
-        let segments = whispercpp::transcribe_file(paths, request.audio_path, cancel, reporter.as_ref())
+        let segments = whispercpp::transcribe_file(paths, request.audio_path, cancel, reporter)
             .map_err(|e| match e {
                 Error::Cancelled => Error::Cancelled,
                 other => Error::Transcription(other.to_string()),
@@ -98,7 +101,11 @@ pub fn transcribe(
             }
             reporter.progress((index + 1) as f64 / num_chunks as f64);
             let elapsed = started.elapsed().as_secs_f64();
-            let speed = if elapsed > 0.0 { seg_end / elapsed } else { 0.0 };
+            let speed = if elapsed > 0.0 {
+                seg_end / elapsed
+            } else {
+                0.0
+            };
             reporter.log(&format!(
                 "[Progress] segment {}/{} — {} / {} — {speed:.1}x realtime",
                 index + 1,
@@ -110,7 +117,10 @@ pub fn transcribe(
         (segments, "sherpa-onnx")
     };
 
-    let word_count: usize = raw_segments.iter().map(|s| s.text.split_whitespace().count()).sum();
+    let word_count: usize = raw_segments
+        .iter()
+        .map(|s| s.text.split_whitespace().count())
+        .sum();
     reporter.log(&format!(
         "[Transcribe] Complete — {} segments, {} words in {}",
         raw_segments.len(),
@@ -144,8 +154,14 @@ pub fn transcribe(
     };
 
     reporter.status(Status::WritingTranscript);
+    reporter.log(&format!(
+        "[Output] Writing transcript to: {}",
+        request.output_path.display()
+    ));
     write_transcript(request.output_path, &transcript_text)?;
-    let size_kb = std::fs::metadata(request.output_path).map(|m| m.len() / 1024).unwrap_or(0);
+    let size_kb = std::fs::metadata(request.output_path)
+        .map(|m| m.len() / 1024)
+        .unwrap_or(0);
     reporter.progress(1.0);
     reporter.log(&format!(
         "[Done] Saved: {}  ({} KB)",
@@ -173,46 +189,59 @@ pub fn speaker_transcript(
     engine.save_measured_speed(audio_path, raw_segments, started.elapsed().as_secs_f64());
     let assigned = assign_speakers(raw_segments, &turns);
 
-    let mut speaker_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut speaker_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut talk: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for turn in &turns {
         if !speaker_map.contains_key(&turn.speaker) {
-            speaker_map.insert(turn.speaker.clone(), format!("Speaker {}", speaker_map.len() + 1));
+            speaker_map.insert(
+                turn.speaker.clone(),
+                format!("Speaker {}", speaker_map.len() + 1),
+            );
         }
         *talk.entry(turn.speaker.clone()).or_insert(0.0) += (turn.end - turn.start).max(0.0);
     }
 
-    if let Some(naming) = naming {
-        if !speaker_map.is_empty() {
-            reporter.status(Status::NamingSpeakers);
-            let total: f64 = talk.values().sum::<f64>().max(f64::MIN_POSITIVE);
-            let shares = speaker_map
-                .keys()
-                .map(|speaker| (speaker.clone(), talk.get(speaker).copied().unwrap_or(0.0) / total))
-                .collect::<std::collections::HashMap<_, _>>();
-            let mut clips = std::collections::HashMap::new();
-            for speaker in speaker_map.keys() {
-                let clip = paths.temp_dir.join(format!("spk_clip_{speaker}.wav"));
-                if extract_speaker_clip(audio_path, &turns, speaker, &clip, 5.0) {
-                    clips.insert(speaker.clone(), clip);
-                }
+    if let Some(naming) = naming
+        && !speaker_map.is_empty()
+    {
+        reporter.status(Status::NamingSpeakers);
+        let total: f64 = talk.values().sum::<f64>().max(f64::MIN_POSITIVE);
+        let shares = speaker_map
+            .keys()
+            .map(|speaker| {
+                (
+                    speaker.clone(),
+                    talk.get(speaker).copied().unwrap_or(0.0) / total,
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut clips = std::collections::HashMap::new();
+        for speaker in speaker_map.keys() {
+            let clip = paths.temp_dir.join(format!("spk_clip_{speaker}.wav"));
+            if extract_speaker_clip(audio_path, &turns, speaker, &clip, 5.0) {
+                clips.insert(speaker.clone(), clip);
             }
-            let mut preview = SpeakerPreview {
-                speaker_map: speaker_map.clone(),
-                clips: clips.clone(),
-                shares,
-            };
-            let result = naming.ask(&mut preview);
-            speaker_map = preview.speaker_map;
-            for clip in clips.values() {
-                let _ = std::fs::remove_file(clip);
-            }
-            cancel.check()?;
-            result?;
         }
+        let mut preview = SpeakerPreview {
+            speaker_map: speaker_map.clone(),
+            clips: clips.clone(),
+            shares,
+        };
+        let result = naming.ask(&mut preview);
+        speaker_map = preview.speaker_map;
+        for clip in clips.values() {
+            let _ = std::fs::remove_file(clip);
+        }
+        cancel.check()?;
+        result?;
     }
 
-    Ok(build_diarized_transcript(&assigned, &speaker_map, add_timestamps))
+    Ok(build_diarized_transcript(
+        &assigned,
+        &speaker_map,
+        add_timestamps,
+    ))
 }
 
 /// Add speakers to an existing transcript and write it to `output_path`.
@@ -230,8 +259,20 @@ pub fn add_speakers_to_file(
             "The transcript has no text to add speakers to.".into(),
         ));
     }
-    let text = speaker_transcript(paths, audio_path, raw_segments, true, cancel, reporter, naming)?;
+    let text = speaker_transcript(
+        paths,
+        audio_path,
+        raw_segments,
+        true,
+        cancel,
+        reporter,
+        naming,
+    )?;
     reporter.status(Status::WritingTranscript);
+    reporter.log(&format!(
+        "[Output] Writing transcript to: {}",
+        output_path.display()
+    ));
     write_transcript(output_path, &text)?;
     reporter.progress(1.0);
     reporter.log(&format!("[Done] Saved: {}", output_path.display()));
@@ -248,5 +289,8 @@ fn on_off(value: bool) -> &'static str {
 }
 
 fn file_name(path: &Path) -> String {
-    path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_owned()
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?")
+        .to_owned()
 }

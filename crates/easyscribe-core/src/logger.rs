@@ -57,7 +57,10 @@ pub fn setup(logs_dir: &Path) -> Result<()> {
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S");
     let log_file = logs_dir.join(format!("{}_{}.log", crate::APP_NAME, timestamp));
-    let file = OpenOptions::new().create(true).append(true).open(&log_file)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)?;
 
     let logger = FileLogger {
         file: Mutex::new(file),
@@ -77,7 +80,9 @@ pub fn setup(logs_dir: &Path) -> Result<()> {
 /// Keep at most `MAX_LOG_FILES - 1` old logs before creating this run's file.
 fn rotate(logs_dir: &Path) {
     let prefix = format!("{}_", crate::APP_NAME);
-    let Ok(entries) = std::fs::read_dir(logs_dir) else { return };
+    let Ok(entries) = std::fs::read_dir(logs_dir) else {
+        return;
+    };
     let mut logs: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
         .filter_map(|e| e.ok())
         .filter(|e| {
@@ -91,10 +96,10 @@ fn rotate(logs_dir: &Path) {
         .collect();
     logs.sort_by_key(|(time, _)| *time);
     while logs.len() >= crate::config::MAX_LOG_FILES {
-        if let Some((_, oldest)) = logs.first() {
-            if std::fs::remove_file(oldest).is_err() {
-                break;
-            }
+        if let Some((_, oldest)) = logs.first()
+            && std::fs::remove_file(oldest).is_err()
+        {
+            break;
         }
         logs.remove(0);
     }
@@ -111,10 +116,15 @@ pub fn newest_log(logs_dir: &Path) -> Option<std::path::PathBuf> {
 
 /// Remove temporary WAV and JSON files, at startup and at exit.
 pub fn clean_temp_files(temp_dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(temp_dir) else { return };
+    let Ok(entries) = std::fs::read_dir(temp_dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
         if matches!(ext.as_deref(), Some("wav" | "json")) {
             let _ = std::fs::remove_file(path);
         }

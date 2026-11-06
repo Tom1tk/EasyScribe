@@ -3,8 +3,8 @@
 //! Every value here comes from `REFERENCE_UI.md` §3. The light theme is fixed:
 //! the product has no dark mode, so no OS appearance is consulted.
 
-use rune::tok::{Family, TextStyle};
 use rune::Color;
+use rune::tok::{Family, TextStyle};
 
 pub fn hx(value: &str) -> Color {
     rune::color::hex(value).expect("valid theme hex")
@@ -89,7 +89,12 @@ impl Default for Theme {
             crimson: hx("#A61F35"),
             crimson_soft: hx("#FCE8EB"),
             shadow: hx("#131A2B").alpha(0.055),
-            scrim: Color { r: 0.0, g: 0.0, b: 0.0, a: 0.24 },
+            scrim: Color {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.24,
+            },
         }
     }
 }
@@ -103,25 +108,24 @@ pub mod type_ {
     pub const BODY: TextStyle = TextStyle::new(13.0, 400.0).lh(19.5);
     pub const STRONG: TextStyle = TextStyle::new(13.0, 700.0).lh(19.5);
     pub const SMALL: TextStyle = TextStyle::new(12.0, 400.0).lh(17.0);
-    pub const SMALL_STRONG: TextStyle = TextStyle::new(12.0, 700.0).lh(17.0);
     pub const PRIMARY: TextStyle = TextStyle::new(14.0, 700.0).lh(19.0);
-    pub const MONO: TextStyle = TextStyle::new(11.0, 400.0).lh(16.5).family(Family::SystemMono);
-    pub const TIMER: TextStyle = TextStyle::new(22.0, 700.0).lh(27.0).family(Family::SystemMono);
+    pub const MONO: TextStyle = TextStyle::new(11.0, 400.0)
+        .lh(16.5)
+        .family(Family::SystemMono);
+    pub const TIMER: TextStyle = TextStyle::new(22.0, 700.0)
+        .lh(27.0)
+        .family(Family::SystemMono);
     pub const NAMING_TITLE: TextStyle = TextStyle::new(18.0, 700.0).lh(24.0);
     pub const PRIVACY_TITLE: TextStyle = TextStyle::new(18.0, 700.0).lh(24.0);
 }
 
 pub mod metric {
     pub const GUTTER: f32 = 24.0;
-    pub const CARD_PAD: f32 = 18.0;
-    pub const GAP: f32 = 12.0;
     pub const RADIUS_SM: f32 = 6.0;
     pub const RADIUS_MD: f32 = 10.0;
     pub const RADIUS_LG: f32 = 14.0;
-    pub const BUTTON_H: f32 = 36.0;
     pub const CTA_W: f32 = 200.0;
     pub const CTA_H: f32 = 44.0;
-    pub const ROW_H: f32 = 46.0;
     pub const STEP: f32 = 26.0;
 }
 

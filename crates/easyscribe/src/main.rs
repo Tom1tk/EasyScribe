@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 //! EasyScribe 3.2.3 — Rune single-window app.
 //!
 //! Startup resolves the single-exe payload (or a development runtime), imports
@@ -15,38 +17,59 @@ mod workers;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use easyscribe_core::{Paths, Status};
+use easyscribe_core::{Paths, Status, payload};
 use rune::{AppSpec, Cx, El, Tx, Waker};
 
 use app::{AppState, FileEntry, FileState, Init, UiState};
 
 static PATHS: OnceLock<Paths> = OnceLock::new();
+/// Set before `rune::run`; `AppSpec::init` is a plain function pointer.
+static FIRST_RUN: AtomicBool = AtomicBool::new(false);
 
 fn main() {
+    easyscribe_core::offline::install();
     let headless = std::env::args().any(|a| {
         matches!(
             a.as_str(),
-            "--snap" | "--scene" | "--list-scenes" | "--script" | "--desktop"
+            "--snap" | "--scene" | "--list-scenes" | "--script" | "--desktop" | "--selftest"
         )
     }) || std::env::var_os("EASYSCRIBE_HEADLESS").is_some();
 
     platform::set_app_identity();
 
-    let paths = match Paths::discover() {
-        Ok(paths) => paths,
-        Err(error) => {
-            let text = format!("EasyScribe could not prepare its program files:\n\n{error}");
-            if headless {
-                eprintln!("{text}");
-            } else {
-                dialogs::error("EasyScribe cannot start", &text);
+    // A first launch shows its unpacking progress in the window. Cached
+    // launches, development builds and headless snapshots take the direct path
+    // and behave exactly as before.
+    let first_run = !headless && payload::needs_prepare().unwrap_or(false);
+    let paths = if first_run {
+        match Paths::at(payload::data_root()) {
+            Ok(paths) => paths,
+            Err(error) => {
+                dialogs::error(
+                    "EasyScribe cannot start",
+                    &format!("EasyScribe could not prepare its program files:\n\n{error}"),
+                );
+                std::process::exit(1);
             }
-            std::process::exit(1);
+        }
+    } else {
+        match Paths::discover() {
+            Ok(paths) => paths,
+            Err(error) => {
+                let text = format!("EasyScribe could not prepare its program files:\n\n{error}");
+                if headless {
+                    eprintln!("{text}");
+                } else {
+                    dialogs::error("EasyScribe cannot start", &text);
+                }
+                std::process::exit(1);
+            }
         }
     };
 
-    if !headless {
+    if !headless && !first_run {
         app::startup(&paths);
         app::recover_before_ui(&paths);
         if let Some(message) = app::startup_error(&paths) {
@@ -59,7 +82,12 @@ fn main() {
         }
     }
 
+    if std::env::args().any(|arg| arg == "--selftest") {
+        std::process::exit(run_selftest(&paths));
+    }
+
     let _ = PATHS.set(paths);
+    FIRST_RUN.store(first_run, Ordering::Relaxed);
 
     let height = initial_height();
     let spec = AppSpec {
@@ -73,12 +101,83 @@ fn main() {
         families: ("Segoe UI", "Consolas"),
         setup: Some(setup),
         poll: Some(poll),
-        on_key: None,
+        on_key: Some(on_key),
     };
-    rune::run(spec);
+    rune::App::new(spec).on_close(on_close).run();
+}
+
+/// Load every native model once and decode a short local WAV. The release
+/// workflow runs this on the packed executable; `--list-scenes` alone never
+/// touches sherpa-onnx or whisper.cpp.
+fn run_selftest(paths: &Paths) -> i32 {
+    use easyscribe_core::diarizer::DiarizationEngine;
+    use easyscribe_core::{
+        CancelToken, SilentReporter, TranscriptionEngine, sherpa_engine, whispercpp,
+    };
+    use std::sync::Arc;
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut note = |name: &str, result: easyscribe_core::Result<()>| match result {
+        Ok(()) => println!("ok: {name}"),
+        Err(error) => {
+            println!("FAILED: {name}: {error}");
+            failures.push(format!("{name}: {error}"));
+        }
+    };
+
+    let wav = paths.temp_dir.join("selftest.wav");
+    let write = (|| -> easyscribe_core::Result<()> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&wav, spec)
+            .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+        // Five seconds of silence loads and runs every decoder without
+        // depending on a bundled speech sample.
+        for _ in 0..80_000 {
+            writer
+                .write_sample(0_i16)
+                .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+        }
+        writer
+            .finalize()
+            .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))
+    })();
+    note("write test audio", write);
+
+    note("sherpa-onnx whisper model", {
+        let engine = TranscriptionEngine::new(paths.clone());
+        engine.ensure_loaded(&SilentReporter)
+    });
+    note("silero VAD model", {
+        sherpa_engine::build_vad(paths, 5.0).map(|_| ())
+    });
+    note("whisper.cpp model and decode", {
+        let reporter: Arc<dyn easyscribe_core::Reporter> = Arc::new(SilentReporter);
+        whispercpp::transcribe_file(paths, &wav, &CancelToken::new(), &reporter).map(|_| ())
+    });
+    note("speaker diarization models", {
+        let engine = DiarizationEngine::new(paths.clone());
+        engine
+            .diarize(&wav, &CancelToken::new(), Arc::new(SilentReporter))
+            .map(|_| ())
+    });
+
+    let _ = std::fs::remove_file(&wav);
+    let report = if failures.is_empty() {
+        "EasyScribe selftest passed".to_owned()
+    } else {
+        format!("EasyScribe selftest failed:\n{}", failures.join("\n"))
+    };
+    let _ = std::fs::write(paths.logs_dir.join("selftest.txt"), &report);
+    if failures.is_empty() { 0 } else { 1 }
 }
 
 fn init() -> AppState {
+    let preparing = FIRST_RUN.load(Ordering::Relaxed);
     let paths = PATHS
         .get()
         .cloned()
@@ -86,6 +185,7 @@ fn init() -> AppState {
     AppState::new(Init {
         paths,
         window_height: scene_height(),
+        preparing,
     })
 }
 
@@ -102,10 +202,30 @@ fn view(s: &AppState, _cx: &mut Cx<AppState>) -> El {
 
 fn setup(s: &mut AppState, waker: Waker) {
     s.set_waker(waker);
+    if FIRST_RUN.load(Ordering::Relaxed) {
+        s.begin_prepare();
+    }
 }
 
 fn poll(s: &mut AppState, _now: f64, _tx: &mut Tx) -> bool {
     s.poll()
+}
+
+fn on_key(s: &mut AppState, event: &rune::KeyEvent, _tx: &mut Tx) -> bool {
+    s.handle_key(event)
+}
+
+/// Python's `atexit` cleanup: temporary WAVs and decoder JSON never outlive a
+/// session. Interrupted recordings live in `recordings/` and are handled by
+/// the recovery prompt instead.
+fn on_close(s: &mut AppState, _tx: &mut Tx) {
+    if let Some(cancel) = &s.record_stop {
+        cancel.cancel();
+    }
+    if let Some(cancel) = &s.cancel {
+        cancel.cancel();
+    }
+    easyscribe_core::logger::clean_temp_files(&s.paths.temp_dir);
 }
 
 /// The window fits the work area like the Python app: 820 pt at 1080p, 678 pt
@@ -122,7 +242,11 @@ fn initial_height() -> f32 {
         unsafe {
             let screen = GetSystemMetrics(SM_CYSCREEN) as f32;
             let dpi = GetDpiForSystem() as f32;
-            let logical = if dpi > 0.0 { screen * 96.0 / dpi } else { screen };
+            let logical = if dpi > 0.0 {
+                screen * 96.0 / dpi
+            } else {
+                screen
+            };
             return (logical - 90.0).clamp(600.0, 820.0);
         }
     }
@@ -136,7 +260,9 @@ fn initial_height() -> f32 {
 // Visual QA scenes (`cargo run -p easyscribe -- --snap out.png --scene files`)
 // ---------------------------------------------------------------------------
 
-const SCENES: &[(&str, fn(&mut AppState))] = &[
+type Scene = (&'static str, fn(&mut AppState));
+
+const SCENES: &[Scene] = &[
     ("files-empty", scene_files_empty),
     ("files", scene_files),
     ("running", scene_running),
@@ -149,13 +275,29 @@ const SCENES: &[(&str, fn(&mut AppState))] = &[
     ("find", scene_find),
     ("privacy", scene_privacy),
     ("details", scene_details),
+    ("preparing", scene_preparing),
 ];
 
 fn sample_files(s: &mut AppState) {
     s.files = vec![
-        file_entry("Team meeting 2026-09-14.m4a", 29_569_024, "/home/user/demo", FileState::Done),
-        file_entry("Interview with Sam.mp3", 12_845_056, "/home/user/demo", FileState::Done),
-        file_entry("Conference keynote.mp4", 145_000_000, "/home/user/demo", FileState::Waiting),
+        file_entry(
+            "Team meeting 2026-09-14.m4a",
+            29_569_024,
+            "/home/user/demo",
+            FileState::Done,
+        ),
+        file_entry(
+            "Interview with Sam.mp3",
+            12_845_056,
+            "/home/user/demo",
+            FileState::Done,
+        ),
+        file_entry(
+            "Conference keynote.mp4",
+            145_000_000,
+            "/home/user/demo",
+            FileState::Waiting,
+        ),
     ];
 }
 
@@ -274,8 +416,12 @@ fn scene_live(s: &mut AppState) {
 
 fn scene_find(s: &mut AppState) {
     scene_record(s);
-    s.last_recording = Some(PathBuf::from("/home/user/demo/recording_20261021_143207.wav"));
-    s.last_transcript = Some(PathBuf::from("/home/user/demo/recording_20261021_143207.txt"));
+    s.last_recording = Some(PathBuf::from(
+        "/home/user/demo/recording_20261021_143207.wav",
+    ));
+    s.last_transcript = Some(PathBuf::from(
+        "/home/user/demo/recording_20261021_143207.txt",
+    ));
     s.last_output_folder = Some(PathBuf::from("/home/user/demo"));
     s.last_segments = vec![
         easyscribe_core::Segment::new(0.0, 4.2, "Hello and welcome."),
@@ -340,6 +486,17 @@ fn scene_privacy(s: &mut AppState) {
     s.privacy_open = true;
 }
 
+fn scene_preparing(s: &mut AppState) {
+    s.mode = app::Mode::Files;
+    s.ui = UiState::Idle;
+    s.activity = None;
+    s.preparing = Some(app::PreparingState {
+        stage: "Unpacking the app files".into(),
+        progress: 0.43,
+        error: None,
+    });
+}
+
 fn scene_details(s: &mut AppState) {
     scene_done(s);
     s.details_open = true;
@@ -359,4 +516,3 @@ fn scene_details(s: &mut AppState) {
         "[ffmpeg] Extracting audio to 16 kHz mono WAV".into(),
     ];
 }
-

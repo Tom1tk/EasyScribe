@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::{Error, Paths, Reporter, Result};
 use crate::report::CancelToken;
+use crate::{Error, Paths, Reporter, Result};
 
 /// Offline/GDPR: let ffmpeg read local files only. Must come before `-i`.
 const LOCAL_FILES_ONLY: [&str; 2] = ["-protocol_whitelist", "file"];
@@ -31,32 +31,71 @@ pub fn probe_audio(paths: &Paths, input: &Path) -> Option<AudioInfo> {
     }
     let mut command = Command::new(&paths.ffprobe_bin);
     command
-        .arg("-v").arg("error")
-        .arg("-select_streams").arg("a:0")
-        .arg("-show_entries").arg("stream=codec_name,sample_rate,channels,duration")
-        .arg("-of").arg("json")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("a:0")
+        .arg("-show_entries")
+        .arg("stream=codec_name,sample_rate,channels,duration")
+        .arg("-of")
+        .arg("json")
         .args(LOCAL_FILES_ONLY)
         .arg(input)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     hide_window(&mut command);
-    let output = command.output().ok()?;
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+    let output = child.wait_with_output().ok()?;
     let value: Value = serde_json::from_slice(&output.stdout).ok()?;
     let stream = value.get("streams")?.get(0)?;
     Some(AudioInfo {
-        codec_name: stream.get("codec_name").and_then(Value::as_str).map(str::to_owned),
-        sample_rate: stream.get("sample_rate").and_then(Value::as_str).and_then(|s| s.parse().ok()),
-        channels: stream.get("channels").and_then(Value::as_u64).map(|c| c as u32),
-        duration_seconds: stream.get("duration").and_then(Value::as_str).and_then(|s| s.parse().ok()),
+        codec_name: stream
+            .get("codec_name")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        sample_rate: stream
+            .get("sample_rate")
+            .and_then(Value::as_str)
+            .and_then(|s| s.parse().ok()),
+        channels: stream
+            .get("channels")
+            .and_then(Value::as_u64)
+            .map(|c| c as u32),
+        duration_seconds: stream
+            .get("duration")
+            .and_then(Value::as_str)
+            .and_then(|s| s.parse().ok()),
     })
 }
 
 /// A WAV that is already mono 16 kHz PCM s16le can be copied without ffmpeg.
 fn is_already_suitable_wav(paths: &Paths, input: &Path) -> bool {
-    if input.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("wav")) != Some(true) {
+    if input
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("wav"))
+        != Some(true)
+    {
         return false;
     }
-    let Some(info) = probe_audio(paths, input) else { return false };
+    let Some(info) = probe_audio(paths, input) else {
+        return false;
+    };
     info.codec_name.as_deref() == Some("pcm_s16le")
         && info.sample_rate == Some(16_000)
         && info.channels == Some(1)
@@ -68,7 +107,11 @@ pub fn fmt_duration(seconds: f64) -> String {
     let h = total / 3600;
     let m = (total % 3600) / 60;
     let s = total % 60;
-    if h > 0 { format!("{h}h {m:02}m {s:02}s") } else { format!("{m}m {s:02}s") }
+    if h > 0 {
+        format!("{h}h {m:02}m {s:02}s")
+    } else {
+        format!("{m}m {s:02}s")
+    }
 }
 
 /// Total duration from an ffmpeg stderr header line.
@@ -108,19 +151,29 @@ pub fn extract_audio(
     };
 
     if is_already_suitable_wav(paths, input) {
-        log(format!("[ffmpeg] Already mono 16 kHz PCM WAV — copying directly: {}", filename(input)));
+        log(format!(
+            "[ffmpeg] Already mono 16 kHz PCM WAV — copying directly: {}",
+            filename(input)
+        ));
         let temp = paths.temp_wav();
         std::fs::copy(input, &temp)?;
         return Ok(temp);
     }
 
     if let Some(info) = probe_audio(paths, input) {
-        let duration = info.duration_seconds.map(fmt_duration).unwrap_or_else(|| "unknown duration".into());
+        let duration = info
+            .duration_seconds
+            .map(fmt_duration)
+            .unwrap_or_else(|| "unknown duration".into());
         log(format!(
             "[ffmpeg] Input: codec={}, sample_rate={} Hz, channels={}, duration={}",
             info.codec_name.as_deref().unwrap_or("?"),
-            info.sample_rate.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
-            info.channels.map(|v| v.to_string()).unwrap_or_else(|| "?".into()),
+            info.sample_rate
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
+            info.channels
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "?".into()),
             duration
         ));
     } else {
@@ -128,18 +181,25 @@ pub fn extract_audio(
     }
 
     let temp_wav = paths.temp_wav();
-    log(format!("[ffmpeg] Extracting audio → mono 16 kHz PCM WAV: {}", filename(input)));
+    log(format!(
+        "[ffmpeg] Extracting audio → mono 16 kHz PCM WAV: {}",
+        filename(input)
+    ));
     log(format!("[ffmpeg] Temp file: {}", filename(&temp_wav)));
 
     let mut command = Command::new(&paths.ffmpeg_bin);
     command
         .arg("-y")
         .args(LOCAL_FILES_ONLY)
-        .arg("-i").arg(input)
-        .arg("-ac").arg("1")
-        .arg("-ar").arg("16000")
+        .arg("-i")
+        .arg(input)
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
         .arg("-vn")
-        .arg("-acodec").arg("pcm_s16le")
+        .arg("-acodec")
+        .arg("pcm_s16le")
         .arg("-stats")
         .arg(&temp_wav)
         .stdout(Stdio::null())
@@ -203,15 +263,27 @@ pub fn extract_audio(
 
     let _ = reader.join();
     while let Ok(line) = rx.try_recv() {
-        handle_line(&line, &mut lines, &mut total_duration, &mut last_progress_log, &mut last_progress_value, &log);
+        handle_line(
+            &line,
+            &mut lines,
+            &mut total_duration,
+            &mut last_progress_log,
+            &mut last_progress_value,
+            &log,
+        );
     }
     if let Some(error) = failure {
         let _ = std::fs::remove_file(&temp_wav);
         return Err(error);
     }
 
-    let size_kb = std::fs::metadata(&temp_wav).map(|m| m.len() / 1024).unwrap_or(0);
-    log(format!("[ffmpeg] Extraction complete — {size_kb} KB written to {}", filename(&temp_wav)));
+    let size_kb = std::fs::metadata(&temp_wav)
+        .map(|m| m.len() / 1024)
+        .unwrap_or(0);
+    log(format!(
+        "[ffmpeg] Extraction complete — {size_kb} KB written to {}",
+        filename(&temp_wav)
+    ));
     Ok(temp_wav)
 }
 
@@ -224,11 +296,11 @@ fn handle_line(
     log: &impl Fn(String),
 ) {
     lines.push(line.to_owned());
-    if *total_duration == 0.0 {
-        if let Some(d) = parse_duration(line) {
-            *total_duration = d;
-            log(format!("[ffmpeg] Media duration: {}", fmt_duration(d)));
-        }
+    if *total_duration == 0.0
+        && let Some(d) = parse_duration(line)
+    {
+        *total_duration = d;
+        log(format!("[ffmpeg] Media duration: {}", fmt_duration(d)));
     }
     if let Some(pos) = parse_time(line) {
         if *total_duration > 0.0 && last_progress_log.elapsed() >= Duration::from_secs(1) {
@@ -249,7 +321,10 @@ fn handle_line(
         && !line.to_ascii_lowercase().contains("encoder")
     {
         let lower = line.to_ascii_lowercase();
-        if ["error", "warn", "invalid", "no such", "stream #"].iter().any(|k| lower.contains(k)) {
+        if ["error", "warn", "invalid", "no such", "stream #"]
+            .iter()
+            .any(|k| lower.contains(k))
+        {
             log(format!("[ffmpeg] {line}"));
         }
     }
@@ -272,7 +347,9 @@ fn read_lines(mut stream: impl Read, tx: mpsc::Sender<String>) {
                             end = i;
                             i += 1;
                         }
-                        let line = String::from_utf8_lossy(&buffer[start..end]).trim_end().to_string();
+                        let line = String::from_utf8_lossy(&buffer[start..end])
+                            .trim_end()
+                            .to_string();
                         let _ = tx.send(line);
                         start = i + 1;
                     }
@@ -298,12 +375,22 @@ fn snippet(lines: &[String]) -> String {
 pub fn validate_ffmpeg(paths: &Paths) -> Result<()> {
     let mut missing = Vec::new();
     if !ffmpeg_exists(paths) {
-        missing.push(format!("ffmpeg not found at: {}", paths.ffmpeg_bin.display()));
+        missing.push(format!(
+            "ffmpeg not found at: {}",
+            paths.ffmpeg_bin.display()
+        ));
     }
     if !ffprobe_exists(paths) {
-        missing.push(format!("ffprobe not found at: {}", paths.ffprobe_bin.display()));
+        missing.push(format!(
+            "ffprobe not found at: {}",
+            paths.ffprobe_bin.display()
+        ));
     }
-    if missing.is_empty() { Ok(()) } else { Err(Error::FfmpegNotFound(missing.join("\n"))) }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::FfmpegNotFound(missing.join("\n")))
+    }
 }
 
 fn ffmpeg_exists(paths: &Paths) -> bool {
@@ -316,7 +403,10 @@ fn ffprobe_exists(paths: &Paths) -> bool {
 }
 
 fn filename(path: &Path) -> String {
-    path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_owned()
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?")
+        .to_owned()
 }
 
 #[cfg(windows)]
@@ -335,8 +425,14 @@ mod tests {
 
     #[test]
     fn parses_duration_and_time() {
-        assert_eq!(parse_duration("  Duration: 00:04:05.67, start: 0.000000"), Some(245.67));
-        assert_eq!(parse_time("size=1kB time=00:00:02.50 bitrate=..."), Some(2.5));
+        assert_eq!(
+            parse_duration("  Duration: 00:04:05.67, start: 0.000000"),
+            Some(245.67)
+        );
+        assert_eq!(
+            parse_time("size=1kB time=00:00:02.50 bitrate=..."),
+            Some(2.5)
+        );
         assert_eq!(parse_duration("nope"), None);
     }
 

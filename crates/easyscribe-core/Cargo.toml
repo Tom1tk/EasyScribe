@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["sherpa-download"]
+sherpa-download = ["sherpa-rs/download-binaries"]
+sherpa-static = ["sherpa-rs/static"]
 vulkan = ["whisper-rs/vulkan"]
 
 [dependencies]

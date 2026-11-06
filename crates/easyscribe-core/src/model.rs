@@ -10,7 +10,11 @@ pub struct Segment {
 
 impl Segment {
     pub fn new(start: f64, end: f64, text: impl Into<String>) -> Self {
-        Self { start, end, text: text.into() }
+        Self {
+            start,
+            end,
+            text: text.into(),
+        }
     }
 }
 
@@ -33,7 +37,11 @@ pub struct Turn {
 
 impl Turn {
     pub fn new(start: f64, end: f64, speaker: impl Into<String>) -> Self {
-        Self { start, end, speaker: speaker.into() }
+        Self {
+            start,
+            end,
+            speaker: speaker.into(),
+        }
     }
 }
 

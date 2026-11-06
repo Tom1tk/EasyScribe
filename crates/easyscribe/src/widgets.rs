@@ -1,9 +1,7 @@
 //! Reusable controls painted in the EasyScribe design language.
 
-use rune::{
-    Color, Cursor, El, ScrollSpec, Shape, Tx, col, el, row, text,
-};
 use rune::LoopSpec;
+use rune::{Color, Cursor, El, ScrollSpec, Shape, col, el, row, text};
 
 use crate::app::AppState;
 use crate::theme::{Theme, metric, type_};
@@ -17,7 +15,6 @@ pub enum ButtonKind {
     Subtle,
     Link,
     LinkMuted,
-    White,
 }
 
 impl ButtonKind {
@@ -31,7 +28,6 @@ impl ButtonKind {
             Self::Subtle => (t.surface, t.surface_alt, t.muted, true),
             Self::Link => (Color::TRANSPARENT, t.surface_alt, t.teal_ink, false),
             Self::LinkMuted => (Color::TRANSPARENT, t.surface_alt, t.muted, false),
-            Self::White => (t.surface, t.surface_alt, t.ink, true),
         }
     }
 
@@ -40,11 +36,12 @@ impl ButtonKind {
             Self::Teal => t.teal,
             Self::Coral => t.coral,
             Self::Amber => t.amber,
-            Self::Secondary | Self::Subtle | Self::White | Self::Link | Self::LinkMuted => t.teal,
+            Self::Secondary | Self::Subtle | Self::Link | Self::LinkMuted => t.teal,
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn button<S: 'static>(
     t: &Theme,
     label: impl Into<String>,
@@ -64,14 +61,26 @@ pub fn button<S: 'static>(
         .center()
         .justify_center()
         .radius(metric::RADIUS_MD)
-        .fill(if enabled { fill } else { t.secondary })
-        .cursor(if enabled { Cursor::Pointer } else { Cursor::Default })
+        .fill(if enabled {
+            fill
+        } else {
+            match kind {
+                ButtonKind::Link | ButtonKind::LinkMuted => Color::TRANSPARENT,
+                ButtonKind::Subtle => t.surface,
+                _ => t.secondary,
+            }
+        })
+        .cursor(if enabled {
+            Cursor::Pointer
+        } else {
+            Cursor::Default
+        })
         .focusable(enabled);
     if width > 0.0 {
         b = b.w(width);
     }
     if bordered {
-        b = b.border(1.0, if enabled { t.border } else { t.border });
+        b = b.border(1.0, t.border);
     }
     if enabled {
         b = b
@@ -106,7 +115,14 @@ pub fn step_badge(_t: &Theme, number: &str, soft: Color, ink: Color) -> El {
         .child(text(number.to_owned()).font(type_::STRONG).color(ink))
 }
 
-pub fn step_header(t: &Theme, number: &str, title: &str, soft: Color, ink: Color, right: Option<El>) -> El {
+pub fn step_header(
+    t: &Theme,
+    number: &str,
+    title: &str,
+    soft: Color,
+    ink: Color,
+    right: Option<El>,
+) -> El {
     let mut r = row()
         .w_full()
         .center_y()
@@ -158,16 +174,25 @@ pub fn checkbox(
         .size(22.0, 22.0)
         .radius(metric::RADIUS_SM)
         .fill(if enabled { fill } else { t.surface_alt })
-        .border(if checked { 0.0 } else { 2.0 }, if enabled { accent } else { t.border })
+        .border(
+            if checked { 0.0 } else { 2.0 },
+            if enabled { accent } else { t.border },
+        )
         .focusable(enabled);
     if checked && enabled {
-        box_el = box_el.shape(
-            Shape::new().stroke(vec![[5.0, 11.0], [9.5, 15.5], [17.0, 6.0]], 2.4, Color::WHITE),
-        );
+        box_el = box_el.shape(Shape::new().stroke(
+            vec![[5.0, 11.0], [9.5, 15.5], [17.0, 6.0]],
+            2.4,
+            Color::WHITE,
+        ));
     }
     if enabled {
         box_el = box_el
-            .hover(if checked { accent_hover } else { accent.alpha(0.10) })
+            .hover(if checked {
+                accent_hover
+            } else {
+                accent.alpha(0.10)
+            })
             .press(Color::BLACK.alpha(0.05))
             .focus_ring(2.0, 2.0, accent)
             .cursor(Cursor::Pointer)
@@ -177,13 +202,22 @@ pub fn checkbox(
 }
 
 pub fn radio(t: &Theme, selected: bool, enabled: bool, accent: Color) -> El {
-    let mut circle = el()
-        .size(20.0, 20.0)
-        .radius(10.0)
-        .fill(t.surface)
-        .border(2.0, if enabled { if selected { accent } else { t.border_strong } } else { t.border });
+    let mut circle = el().size(20.0, 20.0).radius(10.0).fill(t.surface).border(
+        2.0,
+        if enabled {
+            if selected { accent } else { t.border_strong }
+        } else {
+            t.border
+        },
+    );
     if selected {
-        circle = circle.center().child(el().size(10.0, 10.0).radius(5.0).fill(if enabled { accent } else { t.faint }));
+        circle = circle
+            .center()
+            .child(
+                el().size(10.0, 10.0)
+                    .radius(5.0)
+                    .fill(if enabled { accent } else { t.faint }),
+            );
     }
     circle
 }
@@ -228,12 +262,11 @@ pub fn progress_bar(t: &Theme, bar: Bar, color: Color) -> El {
         track = track.child(fill);
     } else {
         track = track.child(
-            el()
-                .w(220.0)
+            el().w(220.0)
                 .h_full()
                 .radius(4.0)
                 .fill(color)
-                .looping(LoopSpec::slide(1.25, [-240.0, 0.0], [820.0, 0.0])),
+                .looping(LoopSpec::slide(1.25, [-20.0, 0.0], [820.0, 0.0])),
         );
     }
     track
@@ -280,8 +313,7 @@ pub fn logo(size: f32) -> El {
         let x = left + i as f32 * (bar_w + gap);
         let y = (size - height * scale) / 2.0;
         tile = tile.child(
-            el()
-                .w(bar_w)
+            el().w(bar_w)
                 .h(height * scale)
                 .radius(bar_w / 2.0)
                 .fill(Color::WHITE)
@@ -291,14 +323,9 @@ pub fn logo(size: f32) -> El {
     tile
 }
 
-pub fn chevron(t: &Theme) -> El {
-    el().size(12.0, 12.0).shape(
-        Shape::new().stroke(vec![[2.0, 4.0], [6.0, 8.0], [10.0, 4.0]], 1.8, t.ink),
-    )
-}
-
 /// A scrollable, selectable read-only text block. `stick_bottom` follows appended
 /// text like the live transcript and details log.
+#[allow(clippy::too_many_arguments)]
 pub fn read_text(
     key: &'static str,
     value: String,
@@ -309,13 +336,16 @@ pub fn read_text(
     min_height: f32,
     stick_bottom: bool,
 ) -> El {
-    el()
-        .key(key)
+    el().key(key)
         .w_full()
         .grow(1.0)
         .min_h(min_height)
         .scroll(ScrollSpec { stick_bottom })
-        .radius(if fill == Color::TRANSPARENT { 0.0 } else { metric::RADIUS_MD })
+        .radius(if fill == Color::TRANSPARENT {
+            0.0
+        } else {
+            metric::RADIUS_MD
+        })
         .fill(fill)
         .padding(padding)
         .child(
@@ -326,26 +356,6 @@ pub fn read_text(
                 .selectable(true)
                 .selection_group(true),
         )
-}
-
-/// A soft feature tile that can be pressed as a whole (record choices).
-pub fn pressable_tile(
-    fill: Color,
-    border: Color,
-    on_press: impl Fn(&mut AppState) + 'static,
-) -> El {
-    row()
-        .w_full()
-        .grow(1.0)
-        .radius(metric::RADIUS_MD)
-        .fill(fill)
-        .border(2.0, border)
-        .padding(12.0)
-        .gap(10.0)
-        .cursor(Cursor::Pointer)
-        .focusable(true)
-        .press(Color::BLACK.alpha(0.035))
-        .on_press(move |s: &mut AppState| on_press(s))
 }
 
 pub fn empty_spacer() -> El {

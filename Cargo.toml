@@ -10,7 +10,7 @@ members = [
 version = "3.2.3"
 edition = "2024"
 license = "MIT"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -24,8 +24,8 @@ log = { version = "0.4", features = ["std"] }
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate", "time"] }
 cpal = "0.18"
-rodio = { version = "0.23", default-features = false, features = ["playback"] }
-sherpa-rs = { version = "0.6.8", default-features = false, features = ["download-binaries"] }
+rodio = { version = "0.23", default-features = false, features = ["playback", "wav"] }
+sherpa-rs = { version = "0.6.8", default-features = false }
 whisper-rs = { version = "0.16", default-features = false }
 
 [profile.release]
