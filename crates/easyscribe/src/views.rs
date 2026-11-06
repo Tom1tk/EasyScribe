@@ -35,11 +35,11 @@ pub fn view(s: &AppState) -> El {
         Mode::Files => files_view(s),
         Mode::Record => record_view(s),
     };
-    // On a short window the files/options cards would push the naming panel's
-    // Save button below the glass. Naming is the only action that can be taken
-    // at that moment, so give it the screen. Python clips this panel on short
-    // windows; this is an intentional usability improvement.
-    let focus_names = s.naming.is_some() && s.window_height < 820.0;
+    // The files/options cards push the naming panel's Save button below the
+    // glass even at the default 820 pt height. Naming is the only action that
+    // can be taken at that moment, so give it the screen. Python clips this
+    // panel; this is an intentional usability improvement.
+    let focus_names = s.naming.is_some() && s.window_height <= 820.0;
     if !focus_names {
         main = main.child(content);
     }
