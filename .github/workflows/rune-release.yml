@@ -28,7 +28,9 @@ jobs:
       TAG: ${{ inputs.tag }}
       # The 1.12.9 Windows static libraries are built with the static MSVC
       # runtime. Match that for Rust and for the vendored whisper.cpp.
-      RUSTFLAGS: "-C target-feature=+crt-static"
+      # advapi32 supplies the ETW and registry imports that onnxruntime and
+      # espeak-ng use; their static libs do not always carry the defaultlib.
+      RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=advapi32.lib"
       CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded"
       CMAKE_POLICY_DEFAULT_CMP0091: "NEW"
       GGML_NATIVE: "OFF"
