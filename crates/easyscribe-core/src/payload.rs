@@ -1,0 +1,558 @@
+//! The single-exe payload: a compressed archive appended to the executable,
+//! extracted once into a per-user runtime cache.
+//!
+//! This replaces the Python installer/launcher completely. The exe is a normal
+//! program plus an overlay; Windows ignores the overlay, the app reads its own
+//! footer and reuses the extracted runtime on every later launch.
+
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::{Error, Result};
+
+pub const FOOTER_MAGIC: &[u8; 8] = b"ESCFTR01";
+pub const TRAILER_MAGIC: &[u8; 8] = b"ESCEOF01";
+pub const FOOTER_SIZE: usize = 128;
+pub const CONTAINER_VERSION: u16 = 1;
+pub const RUNTIME_MARKER: &str = ".complete";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Footer {
+    pub version: u16,
+    pub flags: u16,
+    pub payload_offset: u64,
+    pub payload_size: u64,
+    pub manifest_offset: u64,
+    pub manifest_size: u64,
+    pub payload_sha256: [u8; 32],
+    pub app_version: String,
+    pub build_id: String,
+}
+
+impl Footer {
+    pub fn to_bytes(&self) -> [u8; FOOTER_SIZE] {
+        let mut bytes = [0_u8; FOOTER_SIZE];
+        bytes[0..8].copy_from_slice(FOOTER_MAGIC);
+        bytes[8..10].copy_from_slice(&self.version.to_le_bytes());
+        bytes[10..12].copy_from_slice(&self.flags.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(FOOTER_SIZE as u32).to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.payload_offset.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.payload_size.to_le_bytes());
+        bytes[32..40].copy_from_slice(&self.manifest_offset.to_le_bytes());
+        bytes[40..48].copy_from_slice(&self.manifest_size.to_le_bytes());
+        bytes[48..80].copy_from_slice(&self.payload_sha256);
+        copy_padded(&mut bytes[80..96], self.app_version.as_bytes());
+        copy_padded(&mut bytes[96..112], self.build_id.as_bytes());
+        let crc = crc32fast::hash(&bytes[0..112]);
+        bytes[112..116].copy_from_slice(&crc.to_le_bytes());
+        bytes[120..128].copy_from_slice(TRAILER_MAGIC);
+        bytes
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != FOOTER_SIZE
+            || &bytes[0..8] != FOOTER_MAGIC
+            || &bytes[120..128] != TRAILER_MAGIC
+        {
+            return Err(Error::Payload("not an EasyScribe payload".into()));
+        }
+        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        let flags = u16::from_le_bytes([bytes[10], bytes[11]]);
+        let footer_size = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        if footer_size != FOOTER_SIZE {
+            return Err(Error::Payload("unsupported payload footer size".into()));
+        }
+        let crc = u32::from_le_bytes(bytes[112..116].try_into().unwrap());
+        if crc != crc32fast::hash(&bytes[0..112]) {
+            return Err(Error::Payload("payload footer is damaged".into()));
+        }
+        let payload_offset = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
+        let payload_size = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+        let manifest_offset = u64::from_le_bytes(bytes[32..40].try_into().unwrap());
+        let manifest_size = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+        let mut hash = [0_u8; 32];
+        hash.copy_from_slice(&bytes[48..80]);
+        let app_version = read_padded(&bytes[80..96]);
+        let build_id = read_padded(&bytes[96..112]);
+        Ok(Self {
+            version,
+            flags,
+            payload_offset,
+            payload_size,
+            manifest_offset,
+            manifest_size,
+            payload_sha256: hash,
+            app_version,
+            build_id,
+        })
+    }
+
+    pub fn cache_key(&self) -> String {
+        let digest = self
+            .payload_sha256
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        format!("v1-{}", &digest[..32])
+    }
+}
+
+fn copy_padded(target: &mut [u8], text: &[u8]) {
+    let len = target.len().min(text.len());
+    target[..len].copy_from_slice(&text[..len]);
+}
+
+fn read_padded(bytes: &[u8]) -> String {
+    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+/// Read the footer at the end of `exe`, if there is one.
+pub fn read_footer(exe: &Path) -> Result<Option<Footer>> {
+    let mut file = match File::open(exe) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    let len = file.metadata()?.len();
+    if len < FOOTER_SIZE as u64 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
+    let mut bytes = [0_u8; FOOTER_SIZE];
+    file.read_exact(&mut bytes)?;
+    if &bytes[0..8] != FOOTER_MAGIC {
+        return Ok(None);
+    }
+    let footer = Footer::from_bytes(&bytes)?;
+    if footer.payload_offset + footer.payload_size + FOOTER_SIZE as u64 != len {
+        return Err(Error::Payload(
+            "This EasyScribe file is damaged or incomplete. Download it again.".into(),
+        ));
+    }
+    Ok(Some(footer))
+}
+
+#[derive(Debug, Clone)]
+pub struct Prepared {
+    pub runtime_dir: PathBuf,
+    pub data_dir: PathBuf,
+}
+
+/// Resolve the runtime and data directories, extracting the appended payload
+/// on first launch. Development can bypass the payload with
+/// `EASYSCRIBE_PAYLOAD_DIR`.
+pub fn prepare() -> Result<Prepared> {
+    let data_dir = data_root();
+    if let Some(dir) = std::env::var_os("EASYSCRIBE_PAYLOAD_DIR") {
+        return Ok(Prepared { runtime_dir: PathBuf::from(dir), data_dir });
+    }
+    let exe = std::env::current_exe().map_err(Error::Io)?;
+    let Some(footer) = read_footer(&exe)? else {
+        // Development checkout: models/assets live beside the Cargo project.
+        return Ok(Prepared { runtime_dir: crate::config::dev_base_dir(), data_dir });
+    };
+
+    let runtime_root = runtime_root(&data_dir);
+    let runtime = runtime_root.join(footer.cache_key());
+    if cache_complete(&runtime, &footer) {
+        return Ok(Prepared { runtime_dir: runtime, data_dir });
+    }
+    std::fs::create_dir_all(&runtime_root)?;
+    let _lock = CacheLock::acquire(&runtime_root.join(".lock"))?;
+    if cache_complete(&runtime, &footer) {
+        return Ok(Prepared { runtime_dir: runtime, data_dir });
+    }
+    extract_to(&exe, &footer, &runtime_root, &runtime)?;
+    Ok(Prepared { runtime_dir: runtime, data_dir })
+}
+
+/// `%LOCALAPPDATA%\EasyScribe`, or a portable `EasyScribe-data` folder when
+/// an `EasyScribe.portable` marker sits next to the exe.
+pub fn data_root() -> PathBuf {
+    if let Some(dir) = std::env::var_os("EASYSCRIBE_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("EasyScribe.portable").exists() {
+                return dir.join("EasyScribe-data");
+            }
+        }
+    }
+    dirs::data_local_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(crate::APP_NAME)
+}
+
+pub fn runtime_root(data_dir: &Path) -> PathBuf {
+    std::env::var_os("EASYSCRIBE_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join("runtime"))
+}
+
+fn cache_complete(runtime: &Path, footer: &Footer) -> bool {
+    let marker = runtime.join(RUNTIME_MARKER);
+    let Ok(text) = std::fs::read_to_string(&marker) else { return false };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    let expected = footer.cache_key();
+    if value.get("payload_sha256").and_then(|v| v.as_str()) != Some(expected.trim_start_matches("v1-")) {
+        return false;
+    }
+    let required = [
+        "manifest.json",
+        "models/silero_vad.onnx",
+        "models/diarization/segmentation.onnx",
+        "models/diarization/embedding.onnx",
+        "models/whisper/turbo-encoder.int8.onnx",
+        "models/whisper/turbo-decoder.int8.onnx",
+        "models/whisper/turbo-tokens.txt",
+        "ffmpeg/ffmpeg.exe",
+        "ffmpeg/ffprobe.exe",
+    ];
+    required.iter().all(|rel| runtime.join(rel).is_file())
+}
+
+fn extract_to(exe: &Path, footer: &Footer, runtime_root: &Path, runtime: &Path) -> Result<()> {
+    let staging = runtime_root.join(format!(
+        "{}.tmp-{}-{}",
+        runtime.file_name().and_then(|n| n.to_str()).unwrap_or("runtime"),
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    std::fs::create_dir_all(&staging)?;
+    let result = (|| -> Result<()> {
+        let mut file = File::open(exe)?;
+        let mut hasher = Sha256::new();
+        file.seek(SeekFrom::Start(footer.payload_offset))?;
+        let mut remaining = footer.payload_size;
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        while remaining > 0 {
+            let take = remaining.min(buffer.len() as u64) as usize;
+            file.read_exact(&mut buffer[..take])?;
+            hasher.update(&buffer[..take]);
+            remaining -= take as u64;
+        }
+        if hasher.finalize().as_slice() != footer.payload_sha256 {
+            return Err(Error::Payload(
+                "The app files could not be verified. Download EasyScribe again.".into(),
+            ));
+        }
+        file.seek(SeekFrom::Start(footer.payload_offset))?;
+        let take = file.take(footer.payload_size);
+        extract_zip(take, &staging)?;
+        let marker = serde_json::json!({
+            "payload_sha256": footer.cache_key().trim_start_matches("v1-"),
+            "app_version": footer.app_version,
+            "payload_format": footer.version,
+            "build_id": footer.build_id,
+        });
+        let temp_marker = staging.join(".complete.tmp");
+        std::fs::write(&temp_marker, serde_json::to_string_pretty(&marker)?)?;
+        std::fs::rename(&temp_marker, staging.join(RUNTIME_MARKER))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return result;
+    }
+    if runtime.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+    } else {
+        std::fs::rename(&staging, runtime)?;
+    }
+    Ok(())
+}
+
+fn extract_zip<R: Read + Seek>(reader: R, dest: &Path) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|e| Error::Payload(format!("The app files are damaged: {e}")))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| Error::Payload(format!("The app files are damaged: {e}")))?;
+        let Some(path) = entry.enclosed_name() else {
+            return Err(Error::Payload("The app files contain an unsafe path.".into()));
+        };
+        let path = sanitize_relative(&path)?;
+        let out = dest.join(&path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out)?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = File::create(&out)?;
+        std::io::copy(&mut entry, &mut file)?;
+    }
+    Ok(())
+}
+
+fn sanitize_relative(path: &Path) -> Result<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => out.push(part),
+            Component::CurDir => {}
+            _ => return Err(Error::Payload("The app files contain an unsafe path.".into())),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err(Error::Payload("The app files contain an empty path.".into()));
+    }
+    Ok(out)
+}
+
+struct CacheLock {
+    path: PathBuf,
+}
+
+impl CacheLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        let deadline = Instant::now() + Duration::from_secs(300);
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(path) {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "{}", std::process::id());
+                    return Ok(Self { path: path.to_path_buf() });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if Instant::now() >= deadline {
+                        return Err(Error::Payload(
+                            "EasyScribe is already getting ready in another window.".into(),
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Err(e) => return Err(Error::Io(e)),
+            }
+        }
+    }
+}
+
+impl Drop for CacheLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Manifest {
+    schema: u32,
+    app: String,
+    app_version: String,
+    payload_format: u16,
+    target: String,
+    built_utc: String,
+    build_id: String,
+    total_uncompressed: u64,
+    files: Vec<ManifestFile>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ManifestFile {
+    path: String,
+    size: u64,
+    method: String,
+    sha256: String,
+}
+
+/// Build the appendable archive for `payload_dir`. Returns the container bytes
+/// and manifest (used by the pack tool and by tests).
+pub fn build_container(payload_dir: &Path, app_version: &str, build_id: &str) -> Result<Vec<u8>> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_files(payload_dir, payload_dir, &mut files)?;
+    files.sort();
+    if files.is_empty() {
+        return Err(Error::Payload("the payload directory is empty".into()));
+    }
+
+    let mut manifest_files = Vec::new();
+    let mut total = 0_u64;
+    for file in &files {
+        let relative = file.strip_prefix(payload_dir).map_err(|_| Error::Payload("bad payload path".into()))?;
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let size = std::fs::metadata(file)?.len();
+        total += size;
+        let method = if size > 8 * 1024 * 1024 { "store" } else { "deflate" };
+        manifest_files.push(ManifestFile {
+            path: relative,
+            size,
+            method: method.into(),
+            sha256: sha256_file(file)?,
+        });
+    }
+    let manifest = Manifest {
+        schema: 1,
+        app: crate::APP_NAME.into(),
+        app_version: app_version.into(),
+        payload_format: CONTAINER_VERSION,
+        target: "windows-x86_64".into(),
+        built_utc: chrono::Utc::now().to_rfc3339(),
+        build_id: build_id.into(),
+        total_uncompressed: total,
+        files: manifest_files,
+    };
+    let manifest_json = serde_json::to_vec_pretty(&manifest)?;
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut cursor);
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored)
+            .large_file(true);
+        zip.start_file("manifest.json", stored)
+            .map_err(|e| Error::Payload(e.to_string()))?;
+        zip.write_all(&manifest_json)?;
+        for file in &files {
+            let relative = file.strip_prefix(payload_dir).unwrap().to_string_lossy().replace('\\', "/");
+            let size = std::fs::metadata(file)?.len();
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(if size > 8 * 1024 * 1024 {
+                    zip::CompressionMethod::Stored
+                } else {
+                    zip::CompressionMethod::Deflated
+                })
+                .compression_level(Some(3))
+                .large_file(true);
+            zip.start_file(relative, options)
+                .map_err(|e| Error::Payload(e.to_string()))?;
+            let mut input = File::open(file)?;
+            std::io::copy(&mut input, &mut zip)?;
+        }
+        zip.finish().map_err(|e| Error::Payload(e.to_string()))?;
+    }
+    Ok(cursor.into_inner())
+}
+
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name.ends_with(".tmp") || name.ends_with(".pdb") {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(Error::Payload(format!("payload contains a symlink: {}", path.display())));
+        }
+        if metadata.is_dir() {
+            collect_files(root, &path, out)?;
+        } else if metadata.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Append `container` to a copy of `binary` and write `out`.
+pub fn pack(binary: &Path, payload_dir: &Path, out: &Path, app_version: &str, build_id: &str) -> Result<Footer> {
+    let container = build_container(payload_dir, app_version, build_id)?;
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(binary, out)?;
+    let payload_offset = std::fs::metadata(out)?.len();
+    let mut file = OpenOptions::new().write(true).open(out)?;
+    file.seek(SeekFrom::End(0))?;
+    file.write_all(&container)?;
+    let payload_size = container.len() as u64;
+    let payload_sha256: [u8; 32] = Sha256::digest(&container).into();
+    let manifest = {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&container))
+            .map_err(|e| Error::Payload(e.to_string()))?;
+        let mut entry = archive.by_name("manifest.json").map_err(|e| Error::Payload(e.to_string()))?;
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        bytes
+    };
+    let manifest_offset = find_manifest_offset(&container)?;
+    let footer = Footer {
+        version: CONTAINER_VERSION,
+        flags: 0,
+        payload_offset,
+        payload_size,
+        manifest_offset,
+        manifest_size: manifest.len() as u64,
+        payload_sha256,
+        app_version: app_version.into(),
+        build_id: build_id.into(),
+    };
+    file.write_all(&footer.to_bytes())?;
+    file.flush()?;
+    Ok(footer)
+}
+
+fn find_manifest_offset(container: &[u8]) -> Result<u64> {
+    // The manifest is the first entry. Its local header ends after the name
+    // and extra fields; find the exact data offset so `manifest_offset` is a
+    // real location inside the container.
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(container))
+        .map_err(|e| Error::Payload(e.to_string()))?;
+    let entry = archive.by_name("manifest.json").map_err(|e| Error::Payload(e.to_string()))?;
+    Ok(entry.data_start())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footer_round_trip() {
+        let footer = Footer {
+            version: 1,
+            flags: 0,
+            payload_offset: 1234,
+            payload_size: 5678,
+            manifest_offset: 12,
+            manifest_size: 34,
+            payload_sha256: [7; 32],
+            app_version: "3.2.3".into(),
+            build_id: "abc".into(),
+        };
+        let bytes = footer.to_bytes();
+        let parsed = Footer::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.payload_size, 5678);
+        assert_eq!(parsed.app_version, "3.2.3");
+        assert_eq!(parsed.cache_key().len(), 35);
+    }
+
+    #[test]
+    fn container_extracts_and_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = dir.path().join("payload");
+        std::fs::create_dir_all(payload.join("models")).unwrap();
+        std::fs::write(payload.join("models/a.txt"), b"hello").unwrap();
+        std::fs::write(payload.join("run.bin"), vec![0_u8; 100]).unwrap();
+        let container = build_container(&payload, "3.2.3", "test").unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&container)).unwrap();
+        assert!(archive.by_name("manifest.json").is_ok());
+        assert!(archive.by_name("models/a.txt").is_ok());
+    }
+}

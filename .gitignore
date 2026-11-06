@@ -22,9 +22,11 @@ build/
 
 # Model files (large binaries — user must provide these)
 models/
+/models
 
 # whisper.cpp binary + GGUF model (large binaries — built/downloaded locally)
 whispercpp/
+/whispercpp
 
 # ffmpeg binaries (downloaded by build script)
 tools/ffmpeg/
@@ -53,3 +55,6 @@ desktop.ini
 
 # ASR A/B test set (downloaded by tests/asr_ab/fetch.py)
 tests/asr_ab/data/
+
+# Rust build output
+/target/

@@ -1,0 +1,30 @@
+[package]
+name = "easyscribe-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+dirs = "6"
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hound = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+log = { workspace = true }
+sha2 = { workspace = true }
+crc32fast = "1"
+zip = { workspace = true }
+cpal = { workspace = true }
+rodio = { workspace = true }
+sherpa-rs = { workspace = true }
+whisper-rs = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"

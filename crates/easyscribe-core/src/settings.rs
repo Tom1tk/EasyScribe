@@ -1,0 +1,135 @@
+//! Remembered choices, stored as JSON in `recordings/settings.json`.
+//! A missing or broken file means "use the defaults"; unknown keys survive a
+//! save, exactly as the Python implementation preserves them.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::{Map, Value};
+
+use crate::Result;
+
+const RECORDINGS_DIR_KEY: &str = "recordings_dir";
+const SPEAKER_SPEED_KEY: &str = "speaker_speed_factor";
+
+#[derive(Debug, Clone)]
+pub struct Settings {
+    path: PathBuf,
+    data: Map<String, Value>,
+}
+
+impl Settings {
+    pub fn load(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let data = match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Value>(&text) {
+                Ok(Value::Object(map)) => map,
+                Ok(_) => Map::new(),
+                Err(e) => {
+                    log::warn!("Could not read settings, using defaults: {e}");
+                    Map::new()
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Map::new(),
+            Err(e) => {
+                log::warn!("Could not read settings, using defaults: {e}");
+                Map::new()
+            }
+        };
+        Self { path, data }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The chosen recordings folder, or `None` when unset/missing.
+    pub fn load_recordings_dir(&self) -> Option<PathBuf> {
+        let value = self.data.get(RECORDINGS_DIR_KEY)?.as_str()?;
+        if value.is_empty() {
+            return None;
+        }
+        let folder = PathBuf::from(value);
+        if folder.is_dir() {
+            Some(folder)
+        } else {
+            log::warn!("Chosen recordings folder is missing, using the default: {}", folder.display());
+            None
+        }
+    }
+
+    pub fn save_recordings_dir(&mut self, folder: Option<&Path>) -> Result<()> {
+        self.save(RECORDINGS_DIR_KEY, folder.map(|f| Value::String(f.display().to_string())))
+    }
+
+    /// How much slower (>1) or faster (<1) than expected this PC found speakers.
+    pub fn load_speaker_speed(&self) -> Option<f64> {
+        self.data.get(SPEAKER_SPEED_KEY)?.as_f64().filter(|v| *v > 0.0)
+    }
+
+    pub fn save_speaker_speed(&mut self, factor: f64) -> Result<()> {
+        let rounded = (factor * 1000.0).round() / 1000.0;
+        self.save(SPEAKER_SPEED_KEY, Some(Value::from(rounded)))
+    }
+
+    fn save(&mut self, key: &str, value: Option<Value>) -> Result<()> {
+        self.data.remove(key);
+        if let Some(value) = value {
+            self.data.insert(key.to_string(), value);
+        }
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let text = serde_json::to_string_pretty(&Value::Object(self.data.clone()))?;
+        if let Err(e) = std::fs::write(&self.path, text) {
+            log::warn!("Could not save settings: {e}");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_file_means_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Settings::load(dir.path().join("settings.json"));
+        assert_eq!(s.load_recordings_dir(), None);
+        assert_eq!(s.load_speaker_speed(), None);
+    }
+
+    #[test]
+    fn round_trips_recordings_and_speaker_speed() {
+        let dir = tempfile::tempdir().unwrap();
+        let chosen = dir.path().join("Recordings");
+        std::fs::create_dir_all(&chosen).unwrap();
+        let path = dir.path().join("settings.json");
+        let mut s = Settings::load(&path);
+        s.save_recordings_dir(Some(&chosen)).unwrap();
+        s.save_speaker_speed(1.23456).unwrap();
+
+        let s2 = Settings::load(&path);
+        assert_eq!(s2.load_recordings_dir().as_deref(), Some(chosen.as_path()));
+        assert_eq!(s2.load_speaker_speed(), Some(1.235));
+    }
+
+    #[test]
+    fn missing_chosen_folder_falls_back_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"recordings_dir":"/definitely/not/here"}"#).unwrap();
+        assert_eq!(Settings::load(&path).load_recordings_dir(), None);
+    }
+
+    #[test]
+    fn preserves_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"other": 7, "recordings_dir": null}"#).unwrap();
+        let mut s = Settings::load(&path);
+        s.save_speaker_speed(2.0).unwrap();
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["other"], 7);
+    }
+}
