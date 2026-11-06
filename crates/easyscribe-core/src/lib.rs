@@ -11,6 +11,7 @@ pub mod live;
 pub mod logger;
 pub mod mic;
 pub mod offline;
+pub mod outputs;
 pub mod payload;
 pub mod recovery;
 pub mod rename;

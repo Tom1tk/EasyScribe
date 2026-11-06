@@ -207,6 +207,7 @@ pub fn speaker_transcript(
             for clip in clips.values() {
                 let _ = std::fs::remove_file(clip);
             }
+            cancel.check()?;
             result?;
         }
     }

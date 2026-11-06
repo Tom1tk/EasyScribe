@@ -91,7 +91,11 @@ impl DiarizationEngine {
             .map_err(|e| Error::Diarization(format!("Speaker diarization failed: {e}")))?;
 
         let progress_reporter = reporter.clone();
+        let progress_cancel = cancel.clone();
         let progress = Box::new(move |done: i32, total: i32| -> i32 {
+            if progress_cancel.is_cancelled() {
+                return 1;
+            }
             if total > 0 {
                 let pct = (100 * done / total) as f64;
                 progress_reporter.progress(pct / 100.0);
@@ -104,6 +108,7 @@ impl DiarizationEngine {
 
         let segments = match engine.compute(samples, Some(progress)) {
             Ok(segments) => segments,
+            Err(_) if cancel.is_cancelled() => return Err(Error::Cancelled),
             Err(e) if e.to_string().contains("No segments") => Vec::new(),
             Err(e) => return Err(Error::Diarization(format!("Speaker diarization failed: {e}"))),
         };

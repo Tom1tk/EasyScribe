@@ -4,6 +4,11 @@
 //! process makes the single-exe payload smaller and gives the same beam-search
 //! results without writing JSON to a temporary file; the transcript shape and
 //! beam size (5) are unchanged.
+//!
+//! Stop is immediate: whisper.cpp's abort callback polls the shared cancel
+//! token during decoding, so a long file can be stopped without waiting for
+//! the decode to finish. A GPU decode failure is retried once on the CPU (see
+//! `REFERENCE_BACKEND.md` §10 and the plan's audit disposition).
 
 use std::path::Path;
 
@@ -11,8 +16,8 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 use crate::audio::load_wav_float32;
 use crate::model::Segment;
-use crate::{Error, Paths, Reporter, Result};
 use crate::report::CancelToken;
+use crate::{Error, Paths, Reporter, Result};
 
 pub const BEAM_SIZE: i32 = 5;
 
@@ -28,6 +33,29 @@ pub fn validate(paths: &Paths) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The GPU ggml will use, when this build has Vulkan and the machine has a
+/// device. ggml lists discrete GPUs before integrated ones, matching the
+/// Python app's `_pick_gpu`.
+pub fn selected_gpu() -> Option<(i32, String)> {
+    #[cfg(feature = "vulkan")]
+    {
+        let devices = whisper_rs::vulkan::list_devices();
+        for device in &devices {
+            log::info!(
+                "whisper.cpp GPU {}: {} ({:.1} GB VRAM)",
+                device.id,
+                device.name,
+                device.vram.total as f64 / 1_073_741_824.0
+            );
+        }
+        devices.first().map(|d| (d.id, d.name.clone()))
+    }
+    #[cfg(not(feature = "vulkan"))]
+    {
+        None
+    }
 }
 
 /// Transcribe a mono 16 kHz WAV with whisper.cpp beam search.
@@ -53,11 +81,55 @@ pub fn transcribe_file(
     }
     cancel.check()?;
 
-    let context = WhisperContext::new_with_params(
-        &paths.whispercpp_model,
-        WhisperContextParameters::default(),
-    )
-    .map_err(|e| Error::WhisperCpp(format!("Could not load Whisper model: {e}")))?;
+    reporter.log(&format!(
+        "[whisper.cpp] CPU: {} | {} threads",
+        cpu_name(),
+        crate::config::num_threads()
+    ));
+
+    let gpu = selected_gpu();
+    if let Some((id, name)) = &gpu {
+        reporter.log(&format!("[whisper.cpp] Engine: Vulkan (device {id}: {name})"));
+    } else {
+        reporter.log("[whisper.cpp] Engine: CPU (whisper.cpp)");
+    }
+
+    let use_gpu = gpu.is_some();
+    let first = decode(paths, &samples, cancel, reporter, use_gpu, gpu.as_ref().map(|g| g.0));
+    let segments = match first {
+        Ok(segments) => segments,
+        Err(Error::Cancelled) => return Err(Error::Cancelled),
+        Err(error) if use_gpu => {
+            reporter.log(&format!(
+                "[whisper.cpp] GPU decode failed ({error}). Retrying on the CPU…"
+            ));
+            log::warn!("whisper.cpp GPU decode failed, retrying on CPU: {error}");
+            decode(paths, &samples, cancel, reporter, false, None)
+                .map_err(|e| Error::WhisperCpp(format!("whisper.cpp failed: {e}")))?
+        }
+        Err(error) => return Err(Error::WhisperCpp(format!("whisper.cpp failed: {error}"))),
+    };
+
+    reporter.progress(1.0);
+    reporter.log(&format!("[whisper.cpp] Decoded {} segment(s)", segments.len()));
+    Ok(segments)
+}
+
+fn decode(
+    paths: &Paths,
+    samples: &[f32],
+    cancel: &CancelToken,
+    reporter: &dyn Reporter,
+    use_gpu: bool,
+    device: Option<i32>,
+) -> Result<Vec<Segment>> {
+    let mut context_params = WhisperContextParameters::default();
+    context_params.use_gpu(use_gpu);
+    if let Some(device) = device {
+        context_params.gpu_device(device);
+    }
+    let context = WhisperContext::new_with_params(&paths.whispercpp_model, context_params)
+        .map_err(|e| Error::WhisperCpp(format!("Could not load Whisper model: {e}")))?;
     let mut state = context
         .create_state()
         .map_err(|e| Error::WhisperCpp(format!("Could not create Whisper state: {e}")))?;
@@ -73,16 +145,17 @@ pub fn transcribe_file(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_n_threads(crate::config::num_threads() as i32);
-    reporter.log("[whisper.cpp] Engine: CPU (whisper.cpp)");
-    reporter.log(&format!(
-        "[whisper.cpp] CPU: {} | {} threads",
-        cpu_name(),
-        crate::config::num_threads()
-    ));
+    let cancelled = cancel.clone();
+    params.set_abort_callback_safe(move || cancelled.is_cancelled());
 
-    state
-        .full(params, &samples)
-        .map_err(|e| Error::WhisperCpp(format!("whisper.cpp failed: {e}")))?;
+    let started = std::time::Instant::now();
+    let result = state.full(params, samples);
+    if cancel.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    result.map_err(|e| Error::WhisperCpp(format!("whisper.cpp failed: {e}")))?;
+    log::info!("whisper.cpp decode took {:.1}s", started.elapsed().as_secs_f32());
+    let _ = reporter;
 
     let mut segments = Vec::new();
     for segment in state.as_iter() {
@@ -100,8 +173,6 @@ pub fn transcribe_file(
             text,
         });
     }
-    reporter.progress(1.0);
-    reporter.log(&format!("[whisper.cpp] Decoded {} segment(s)", segments.len()));
     Ok(segments)
 }
 
@@ -117,8 +188,8 @@ pub fn cpu_name() -> String {
     }
     #[cfg(windows)]
     {
-        // The registry value the Python app reads. Use PowerShell-free winreg
-        // would add a crate; `platform.processor` equivalent is enough here.
+        // The registry value the Python app reads. Reading the registry would
+        // add a crate for one log line; PROCESSOR_IDENTIFIER is equivalent.
         if let Ok(name) = std::env::var("PROCESSOR_IDENTIFIER") {
             return name;
         }

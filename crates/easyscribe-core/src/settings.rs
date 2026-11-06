@@ -23,9 +23,13 @@ impl Settings {
         let data = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<Value>(&text) {
                 Ok(Value::Object(map)) => map,
-                Ok(_) => Map::new(),
+                Ok(_) => {
+                    backup_broken(&path, &text);
+                    Map::new()
+                }
                 Err(e) => {
                     log::warn!("Could not read settings, using defaults: {e}");
+                    backup_broken(&path, &text);
                     Map::new()
                 }
             },
@@ -131,5 +135,19 @@ mod tests {
         s.save_speaker_speed(2.0).unwrap();
         let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(value["other"], 7);
+    }
+}
+
+/// Keep a malformed settings file beside the original before defaults are
+/// written over it. The audit's "settings recovery" improvement.
+fn backup_broken(path: &Path, _text: &str) {
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let backup = path.with_file_name(format!(
+        "{}.broken-{stamp}",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("settings.json")
+    ));
+    match std::fs::rename(path, &backup) {
+        Ok(()) => log::warn!("Moved unreadable settings to {}", backup.display()),
+        Err(e) => log::warn!("Could not back up unreadable settings: {e}"),
     }
 }
