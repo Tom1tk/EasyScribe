@@ -17,7 +17,7 @@ mod workers;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use easyscribe_core::{Paths, Status, payload};
 use rune::{AppSpec, Cx, El, Tx, Waker};
@@ -27,6 +27,9 @@ use app::{AppState, FileEntry, FileState, Init, UiState};
 static PATHS: OnceLock<Paths> = OnceLock::new();
 /// Set before `rune::run`; `AppSpec::init` is a plain function pointer.
 static FIRST_RUN: AtomicBool = AtomicBool::new(false);
+/// The real window height in points. Layout decisions (file rows, short-window
+/// naming, page scroll) must use the same value the window was created with.
+static WINDOW_HEIGHT_BITS: AtomicU32 = AtomicU32::new(0);
 
 fn main() {
     easyscribe_core::offline::install();
@@ -90,6 +93,7 @@ fn main() {
     FIRST_RUN.store(first_run, Ordering::Relaxed);
 
     let height = initial_height();
+    WINDOW_HEIGHT_BITS.store(height.to_bits(), Ordering::Relaxed);
     let spec = AppSpec {
         title: "EasyScribe 3.2.3",
         size: (900.0, height),
@@ -182,9 +186,15 @@ fn init() -> AppState {
         .get()
         .cloned()
         .unwrap_or_else(|| Paths::discover().expect("EasyScribe paths"));
+    let bits = WINDOW_HEIGHT_BITS.load(Ordering::Relaxed);
+    let window_height = if bits == 0 {
+        scene_height()
+    } else {
+        f32::from_bits(bits)
+    };
     AppState::new(Init {
         paths,
-        window_height: scene_height(),
+        window_height,
         preparing,
     })
 }
@@ -231,6 +241,14 @@ fn on_close(s: &mut AppState, _tx: &mut Tx) {
 /// The window fits the work area like the Python app: 820 pt at 1080p, 678 pt
 /// on a scaled 1366×768 laptop, never below 600.
 fn initial_height() -> f32 {
+    // Headless scene renders and visual QA use an explicit height even on
+    // Windows, where the real screen would otherwise win.
+    if let Some(height) = std::env::var("EASYSCRIBE_WINDOW_HEIGHT")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+    {
+        return height.clamp(600.0, 820.0);
+    }
     #[cfg(windows)]
     {
         #[link(name = "user32")]

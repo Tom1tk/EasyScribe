@@ -54,6 +54,18 @@ pub fn view(s: &AppState) -> El {
         main = main.child(details_card(s));
     }
 
+    // The page has no scrollbar at normal heights. On the 600–678 pt windows
+    // the reference allows a last-resort page scroll so the utility row and a
+    // tall result stay reachable; without it they are clipped below the glass.
+    if s.window_height < 700.0 {
+        main = main
+            .min_h(0.0)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(16.0);
+    }
+
     let mut root = el().key("root").w_full().h_full().child(main);
     if s.privacy_open {
         root = root.child(privacy_overlay(s));
