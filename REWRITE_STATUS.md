@@ -1,6 +1,6 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-06 (session 8 — own audit and rust.10)
+**Updated:** 2026-11-06 (session 9 — audit 3 and rust.11)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Phase:** 7 — speed, GPU, process isolation and final release
@@ -10,11 +10,12 @@ isolated in a child, flash attention and the no-speech gate are in, and the
 selftest measures real speech. The audit-2 follow-up blockers (missing tracked
 speech fixture, `Win32_Security`, Linux sherpa link, `whisper-cli` job object,
 missing redistributable notices) are fixed. `rust.7` failed in the Vulkan loader
-copy, `rust.8` in a multi-config CMake assertion and `rust.9` in a wrong
-MSVC-only FMA assertion; all three are fixed and `v3.2.3-rust.10` is the current
-validation run. The independent audit against the CLI engine, diarization
-worker, transcript clips and release pipeline is being actioned; the confirmed
-fixes are listed below.
+copy, `rust.8` in a multi-config CMake assertion, `rust.9` in a wrong
+MSVC-only FMA assertion, and `rust.10` on the app's own
+`CMAKE_BUILD_TYPE:UNINITIALIZED=Release` cache form; all four are fixed.
+Six independent audits of the finished product are recorded in
+`docs/rewrite/AUDIT_3.md`; their confirmed data-loss, recovery, payload and
+release-gate fixes are in `d59b8f2`, and `v3.2.3-rust.11` is the validation run.
 
 ## What is built
 
@@ -53,9 +54,9 @@ fixes are listed below.
       the Cargo/CMake profile, per-phase whisper timings, and loads the sherpa
       Whisper ONNX model, Silero VAD, whisper.cpp GGUF and diarization models.
 - [x] Local release selftest, 4 threads, 23.3 s speech:
-      `whisper-cli` cold **43.9 s**, in-process cold **65.7 s**, after sherpa
-      **65.9 s**, diarization in-process **10.6 s**, diarization child
-      **10.5 s**, silence check **0.1 s** (zero segments, "No speech found").
+      `whisper-cli` cold **48.2 s**, in-process cold **67.9 s**, after sherpa
+      **65.7 s**, diarization in-process **10.4 s**, diarization child
+      **10.6 s**, silence check **0.1 s** (zero segments, "No speech found").
 - [x] All 13 headless scenes render (`preparing` plus the 12 app states).
 - [x] UI click/state tests pass.
 - [x] Packed first-run smoke with a 300 MB fake payload: extraction, marker,
@@ -67,13 +68,19 @@ fixes are listed below.
 - [x] `v3.2.3-rust.5` built from the updated workflow with the GGUF SHA-256
       gate and asserted `GGML_NATIVE=OFF`, `GGML_AVX=ON`, `GGML_AVX2=ON`,
       `CMAKE_BUILD_TYPE=Release`; both selftest decodes passed.
-- [x] Audit 2 follow-up: the selftest WAV/TXT now live in tracked `assets/`;
-      `windows-sys` has `Win32_Security`; the Linux job restores the sherpa
-      runtime cache and re-runs `sherpa-rs-sys`'s build script; `whisper-cli`
-      shares the kill-on-close job object; the payload ships the Vulkan loader
-      and notices for it and the VC++ redistributables; `current_dir` and the
-      repeated GPU probe were removed; a malformed diarization message stops the
-      worker immediately.
+- [x] Audit 3: six independent audits of the finished product, recorded in
+      `docs/rewrite/AUDIT_3.md`. Confirmed fixes include the single-instance
+      lock, PCM writer handshake and atomic sidecar, partial-recording save,
+      sample-format/config coverage, multi-channel averaging, atomic transcript
+      writes, empty-diarization parity, batch output de-duplication, payload
+      staging validation and marker fsync, stale-staging age gate, newer-runtime
+      protection, relative env paths, MSRV 1.89, version metadata derived from
+      Cargo, the Rune-only GGUF cache save, the unconditional Vulkan loader, the
+      multi-config CMake gate, and the espeak-ng TTS-only link exclusion.
+- [x] Audit 3 residual risks are listed in `docs/rewrite/AUDIT_3.md`. The
+      unverified Windows items (real-PC speed, microphone, DPI, dialogs,
+      drag/drop, SmartScreen, low-disk unpack) remain gated by
+      `docs/rewrite/CLEAN_PC_TEST.md`.
 
 ## Functional/packaging decisions
 
@@ -248,38 +255,39 @@ fixes are listed below.
 
 - Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
   drag/drop and a real microphone can only be proven on a real Windows PC or VM.
-  `v3.2.3-rust.10` exercises the CPU path on CI (the runner has no GPU), but not
+  `v3.2.3-rust.11` exercises the CPU path on CI (the runner has no GPU), but not
   a dedicated/integrated GPU or a crashing driver.
 - The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
-  file on v3.2.3 GPU, v3.2.3 CPU and rust.10, then record wall times in this
+  file on v3.2.3 GPU, v3.2.3 CPU and rust.11, then record wall times in this
   file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
 - The 655 s CI decode cause is unproven. The OpenMP hypothesis was not supported
-  by the local benchmark; rust.10's same-runner control measurement is the next
+  by the local benchmark; rust.11's same-runner control measurement is the next
   datapoint.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
   shipping primary path is the child process.
-- The download is about 1.8 GB and every update is full-size; after first launch
-  the extracted runtime takes about another 1.7 GB (roughly 2x the exe).
+- The download is about 1.86 GB and every update is full-size. A fresh install
+  uses about 3.6 GB (exe plus ~1.7 GB runtime); an update needs up to about
+  5.3 GB free temporarily while the old and new runtimes coexist.
 - A real ~1.8 GB payload unpack on a nearly full disk still needs a clean-PC
   test; the local fake-payload smoke validates mechanics only.
 - Authenticode signing is not enabled. The footer parser tolerates a certificate
   appended after the footer, and the release publishes a SHA-256 file.
+- Audit 3 lists the remaining live-mode, hot-unplug, non-ASCII path and UI
+  parity risks in `docs/rewrite/AUDIT_3.md`. The live decoder/VAD race and
+  hot-unplug reporting are the highest-risk items not fixed in this pass.
 
 ## Next actions
 
-1. Commit and push these fixes, then dispatch `v3.2.3-rust.10` from
-   `rune-rewrite`.
-2. Confirm `rune-release.yml@refs/heads/rune-rewrite`, the whisper-cli control
-   time, system-info features, golden text, speech budget, both selftest
-   engines, the child diarization, imports/subsystem, cached launch and draft
-   assets. Record the result (pass or fail) here.
-3. Run an independent code audit over the finished Rust/Rune product and fix
-   confirmed findings.
-4. Verify the draft `EasyScribe-v3.2.3-rust.10.exe` and `.sha256`; delete the
-   superseded `rust.4`–`rust.9` drafts if present.
-5. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
+1. Verify `v3.2.3-rust.11` from `d59b8f2`: confirm
+   `rune-release.yml@refs/heads/rune-rewrite`, the espeak-free Windows link, the
+   whisper-cli control time, system-info features, golden text, speech budget,
+   both selftest engines, the child diarization, imports/subsystem, cached
+   launch and draft assets. Record the result (pass or fail) here.
+2. Verify the draft `EasyScribe-v3.2.3-rust.11.exe` and `.sha256`; delete the
+   superseded `rust.4`–`rust.10` drafts if present.
+3. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
    microphone, DPI, dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the
    real-PC speed comparison; record results here.
-6. Hand over for the decision on replacing v3.2.3. Do not publish rust.10 as
+4. Hand over for the decision on replacing v3.2.3. Do not publish rust.11 as
    Latest until the real-PC speed and clean-PC checks pass.

@@ -365,3 +365,39 @@ the narrative history.
   clippy/fmt clean, release selftest passes (cold CLI 46.1 s, in-process 67.4 s,
   after-sherpa 68.2 s, diarization 10.5/10.5 s, silence 0.1 s).
   `v3.2.3-rust.10` is dispatched from `rune-rewrite`.
+
+## 2026-11-06 — Session 10: rust.11 and the independent audit
+
+- **rust.10 failed on the app's CMake gate, not the build.** The Visual Studio
+  generator writes `CMAKE_BUILD_TYPE:UNINITIALIZED=Release`, not
+  `CMAKE_BUILD_TYPE:STRING=Release`. The gate now accepts either form and keeps
+  asserting `GGML_NATIVE=OFF`, `GGML_AVX=ON` and `GGML_AVX2=ON`.
+- **Six independent audits** covered core transcription/outputs, the Rune UI,
+  microphone/live recording, the payload/cache/platform layer, diarization and
+  the release pipeline. Their confirmed fixes are in `d59b8f2` and summarised in
+  `docs/rewrite/AUDIT_3.md`.
+- **Recording hardening.** A single-instance lock prevents a second window from
+  deleting the first one's temp audio or recovering its live recording. The PCM
+  writer now opens the file and writes the initial sidecar before the microphone
+  starts, updates the sidecar atomically, drains queued chunks on Stop, keeps the
+  valid prefix after a disk error, and supports I8/U8/I24/U24/I32/U32/I64/U64.
+  Multi-channel capture averages channels; config selection prefers 16 kHz then
+  48 kHz, mono first.
+- **Recovery hardening.** Invalid/zero metadata is rejected, the WAV is written
+  to a temp file and fsynced before rename, and a missing PCM after conversion
+  is success, not a failed recovery.
+- **Output hardening.** Transcript writes are atomic; empty diarization produces
+  one unnamed speaker (Python parity); batch outputs with the same name get a
+  numeric suffix; speaker clips stream frames instead of allocating the file.
+- **Payload hardening.** A staging tree is checked against the required files
+  before `.complete` is written, the marker is fsynced, stale staging is
+  age-gated on cached launches, relative env paths are anchored to the exe, and
+  the declared MSRV is 1.89.
+- **Release hardening.** The sherpa archive's TTS-only `espeak-ng.lib` and
+  `piper_phonemize.lib` are removed from the link set (EasyScribe never calls
+  TTS), so the GPL-3.0 static-link risk is removed if the Windows link
+  succeeds. The tag must match the workspace version, ffmpeg/ffprobe and the
+  VC++ DLLs are executed in the payload, and the GGUF cache is Rune-only.
+- Local verification: 68 tests pass, clippy/fmt clean, release selftest passes
+  (whisper-cli 48.2 s, in-process 67.9 s, after-sherpa 65.7 s, diarization
+  10.4/10.6 s, silence 0.1 s). `v3.2.3-rust.11` is dispatched from `d59b8f2`.
