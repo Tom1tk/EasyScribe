@@ -311,6 +311,33 @@ jobs:
           Write-Host ("Selftest speech budget: {0:N0}s (2x the control, minimum 60s)" -f $budget)
           Add-Content $env:GITHUB_ENV "EASYSCRIBE_SELFTEST_BUDGET_SEC=$budget"
 
+      # sherpa-onnx 1.12.9's cmake/show-info.cmake calls wmic, which Windows 11
+      # runners no longer ship. The empty output makes string(REPLACE) receive
+      # too few arguments under CMake 4. Quote the input so the configure step
+      # succeeds; the source is copied from the Cargo registry into OUT_DIR by
+      # sherpa-rs-sys, so patch it after cargo fetch and before the build.
+      - name: Fetch Rust dependencies
+        shell: pwsh
+        run: |
+          cargo fetch
+          if ($LASTEXITCODE -ne 0) { throw "cargo fetch failed" }
+
+      - name: Patch sherpa-onnx for Windows 11 / CMake 4
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Recurse -Filter show-info.cmake -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "sherpa-rs-sys" -and $_.FullName -match "sherpa-onnx" }
+          if (-not $files) { throw "sherpa-onnx show-info.cmake not found; cargo fetch did not extract it" }
+          $old = 'string(REPLACE "\n" ";" SHERPA_ONNX_OS_LIST ${SHERPA_ONNX_OS_TWO_LINES})'
+          $new = 'string(REPLACE "\n" ";" SHERPA_ONNX_OS_LIST "${SHERPA_ONNX_OS_TWO_LINES}")'
+          foreach ($file in $files) {
+            $text = Get-Content $file.FullName -Raw
+            if ($text.Contains($new)) { Write-Host "Already patched: $($file.FullName)"; continue }
+            if (-not $text.Contains($old)) { throw "Unexpected show-info.cmake content: $($file.FullName)" }
+            Set-Content -Path $file.FullName -Value $text.Replace($old, $new) -NoNewline
+            Write-Host "Patched $($file.FullName)"
+          }
+
       # Build the app and packer together so both see the static sherpa
       # feature. Linux CI runs the test suite; this job validates the Windows
       # static link and packaging.
@@ -321,7 +348,7 @@ jobs:
           # so a restored target directory could keep an older CMake
           # configuration. Reconfigure whisper.cpp from scratch.
           if (Test-Path target\release) {
-            foreach ($pattern in @("whisper-rs-sys-*", "whisper-rs-*")) {
+            foreach ($pattern in @("whisper-rs-sys-*", "whisper-rs-*", "sherpa-rs-sys-*")) {
               Get-ChildItem target\release\build -Directory -Filter $pattern -ErrorAction SilentlyContinue |
                 Remove-Item -Recurse -Force
               Get-ChildItem target\release\.fingerprint -Directory -Filter $pattern -ErrorAction SilentlyContinue |
