@@ -40,7 +40,8 @@ wins**; see Appendix B for the one known stale screenshot.
 
 - Non-technical people transcribing private recordings on their own computer.
 - Calm, plain language. One clear next step at a time.
-- Visible text is sentence case. No em or en dashes, no exclamation marks.
+- Designed copy uses sentence case. No em or en dashes, no exclamation marks.
+  Engine log lines in the details panel may contain their own punctuation.
 - Every control says what it does; no jargon, no file-format talk except the
   supported-extension list.
 - The app is fully offline. Nothing is uploaded, shared, tracked or checked for
@@ -51,7 +52,8 @@ wins**; see Appendix B for the one known stale screenshot.
 - **Light theme only.** `ctk.set_appearance_mode("light")`. There is no dark
   mode, no theme picker, and the UI must not follow the OS dark setting.
 - Base CustomTkinter theme is irrelevant; every widget overrides its colours.
-- WCAG AA (4.5:1) or better for every text/background pair in the oracle.
+- Body and heading text pairs target WCAG AA (4.5:1) or better; disabled
+  text is exempt.
 
 ### 1.3 Feature colour language
 
@@ -250,7 +252,8 @@ jump.
 
 ### 3.1 Palette
 
-All tokens are defined in `gui.py` class `C`.
+Named tokens live in `gui.py` class `C`; the two hover values marked
+hard-coded are literals in the widget calls, not class attributes.
 
 #### Neutrals
 
@@ -293,9 +296,9 @@ All tokens are defined in `gui.py` class `C`.
 | `CRIMSON` | `#A61F35` | errors, failed pill, error title, drop warning |
 | `CRIMSON_SOFT` | `#FCE8EB` | failed pill, error message background |
 
-All text on the soft tints uses the matching `*_INK`; all text on solid feature
-buttons is white. Disabled primary buttons are filled `SECONDARY` with `FAINT`
-text.
+Headings and status text on the soft tints use the matching `*_INK`; body copy
+on tinted option tiles stays `MUTED`. All text on solid feature buttons is
+white. Disabled primary buttons are filled `SECONDARY` with `FAINT` text.
 
 ### 3.2 Typography
 
@@ -431,7 +434,8 @@ pressed button by ~5% for tactile feedback without changing the palette.
 - Rune may add a very subtle shadow: `0 1px 2px rgba(19,26,43,.06)` plus
   `0 8px 24px rgba(19,26,43,.04)`; keep the 1 px border and white fill.
 - Content is inset 18 px left/right unless a nested element says otherwise.
-- Cards never scroll internally except the file list and speaker list.
+- Cards themselves never scroll; the file list, speaker list, live transcript
+  and details log have their own scrollable areas.
 
 ### 4.2 Step header
 
@@ -442,8 +446,8 @@ Used identically in both tabs:
 - 10 px gap, then a 15 bold ink title.
 - The rest of the row expands; optional right-side controls sit at the far
   right (count/link or Change).
-- Header padding inside the card: 18 px sides, `(16, 10)` top/bottom (some
-  steps use `(16, 8)`).
+- Header padding inside the card: Files steps use 18 px sides and `(16, 10)`
+  top/bottom; Record step 1 uses `(16, 8)`, Record steps 2 and 3 use `(0, 8)`.
 
 Files steps: `1` `Add recordings`; `2` `Choose options`.
 Record steps: `1` `Choose a microphone`; `2` `What do you want?`; `3` `Record`.
@@ -615,7 +619,7 @@ As soon as `count > 0`:
 - Start button becomes `Transcribe N files` and is enabled; hint blank.
 
 **File row** (46 px, transparent, 8 px horizontal padding inside list, 3 px
-vertical gap):
+vertical padding so rows sit 6 px apart):
 
 - Line 1: middle-shortened filename to 60 characters, 13 regular ink, height
   20.
@@ -623,8 +627,8 @@ vertical gap):
   muted, height 18. Two spaces surround `·`. If `stat()` fails, size is
   `Not found` and the parent path is still shown.
 - Optional status pill, 72 × 24, spanning both lines, 8 px gap before the
-  Remove link. No pill is shown before a batch starts; statuses appear only
-  after the worker sets them.
+  Remove link. No pill is shown before a batch starts; once a batch starts,
+  every row gets `Waiting` and then updates as the worker reports.
 - `Remove` link button, 70 × 28, muted text, right aligned; disabled while a
   job runs.
 
@@ -704,7 +708,7 @@ Expanded card contents, top to bottom:
    - `Change folder` secondary 130 × 32 at the far right; opens a native folder
      picker titled `Choose where to save transcripts`. No initial directory.
    - `Use default` clears the custom choice; no persistence across launches.
-4. Two option tiles side by side, equal width, 6 px outer / 18 px inner
+4. Two option tiles side by side, equal width, 18 px outer / 6 px inner
    paddings, 12 px between:
 
 **Add timestamps (sky)**
@@ -902,7 +906,8 @@ sits below the live card.
 
 ### 6.3 Step 2: what do you want?
 
-Two equal-width radio tiles, 12 px gap, 2 px border, radius 10:
+Two equal-width radio tiles, 12 px gap, 18 px outer / 6 px inner paddings,
+2 px border, radius 10:
 
 **Best quality transcript after recording** (default)
 
@@ -1377,7 +1382,9 @@ Interaction:
   clip. On other platforms the button is enabled but silent in the oracle;
   Rune should implement actual playback on all supported platforms. Clicking it
   repeatedly may overlap; there is no playing indicator. Playback is stopped
-  when the panel closes (Windows).
+  when `Save transcript with names` or `Skip names` closes the panel (Windows);
+  the cancellation path destroys the panel directly, so a sample already
+  playing may finish.
 - Temp clips are deleted immediately after the naming callback returns.
 
 If the panel cannot be created for any reason, the queue is released
@@ -1689,14 +1696,15 @@ therefore contain transcript text even though the technical log files do not.
 | Find speakers | Speaker copy | `<transcript stem> (speakers).txt` | Existing copy with that name is overwritten silently; original kept |
 | Rename | Renames only | old stem → new stem, preserving ` (variant)` suffixes | Blocked before any change if a destination exists |
 | Crash recovery | WAV | `recording_<timestamp>.wav` in chosen/default recordings folder | No existing file is deleted on "No" |
-| Settings | `settings.json` | JSON `recordings_dir` key | Rewritten atomically enough for a small JSON file |
+| Settings | `settings.json` | JSON keys `recordings_dir` (user choice) and `speaker_speed_factor` (internal); whole file rewritten | Small direct rewrite, no atomic temp-file swap |
 | Logs | `EasyScribe_YYYYMMDD_HHMMSS.log` | in `logs/` | Oldest removed when at 10 |
 
 Important duplicate/collision notes:
 
 - Ordinary Files-mode output has **no overwrite confirmation** and no suffix.
   Two inputs with the same stem sent to one custom output folder overwrite each
-  other; `last_transcript` may be `None` because two files were saved.
+  other; both still count as saved, so the result can say `2 transcripts ready`
+  while only one file exists, and `last_transcript` is `None`.
 - Best-quality collision protection is exactly one suffix level:
   `<stem>.txt` → `<stem> (best quality).txt`; if that also exists, it is
   overwritten.
@@ -1959,7 +1967,7 @@ in earlier sections are repeated here only where useful for coverage.
 | Drop title, empty, no DnD | `Choose the recordings to transcribe` |
 | Drop subtitle, empty, no DnD | `MP3, WAV, M4A, MP4 and other audio and video files.` |
 | Drop title, files, DnD | `Drag more files here` |
-| Drop subtitle, files, DnD | `Or add more from your computer.` (hidden when files exist) |
+| Drop subtitle (set but hidden when files exist), DnD | `Or add more from your computer.` |
 | Drop title, files, no DnD | `Choose the recordings to transcribe` |
 | Drop button, empty | `Choose files` |
 | Drop button, files | `Add files` |
@@ -2239,7 +2247,8 @@ return f"about {hours_text}" + (f" {rest} minutes" if rest else "")
 - U+2500 in the 50-character log separator.
 - U+2022 in startup dependency error bullets (`  • Missing: …`).
 - Straight ASCII apostrophes and quotes; no curly quotes.
-- No exclamation marks, em dashes or en dashes in visible copy.
+- No exclamation marks, em dashes or en dashes in designed UI copy; engine log
+  lines may contain their own punctuation.
 - Sentence case for headings and buttons, except product names and
   `EasyScribe`.
 - Full stops at the end of sentences and result details; button labels have no
@@ -2265,8 +2274,9 @@ change.
 5. **Clear all has no confirmation** and keeps options/output settings.
 6. **Remove has no confirmation**; removing a Done row does not clear the
    visible result.
-7. **File list no per-row percentage.** Only the current file has a status pill
-   and the global card shows per-file progress.
+7. **No per-row percentage.** Every row gets a status pill, but only the
+   current file says `Working`; numeric progress appears only in the global
+   activity card.
 8. **Progress resets per file**, not cumulative across a batch.
 9. **Output collisions overwrite silently** for ordinary transcripts and the
    `(best quality)`/`(speakers)` suffix targets; only Rename refuses collisions.
@@ -2374,8 +2384,8 @@ These are visual-only and may be applied without changing IA:
   alter text or layout.
 - **Screen changes:** 120–160 ms fade/slide for mode switch, activity/result
   appearance, details, naming panel; honour reduced motion.
-- **Lists:** 46 px rows, 3 px gaps, auto-hide scrollbar, gentle hover on Remove;
-  keep status pill and metadata positions.
+- **Lists:** 46 px rows, 3 px row padding (6 px between rows), auto-hide
+  scrollbar, gentle hover on Remove; keep status pill and metadata positions.
 - **Speaker panel:** fade/slide in from the activity card; focus first entry;
   animate the share label subtly; keep the amber 2 px border.
 - **Privacy dialog:** native modal-looking window with the same content; no
