@@ -279,9 +279,9 @@ jobs:
           if ($deps -match '(?i)sherpa|onnxruntime|VCRUNTIME|MSVCP|VULKAN') {
             throw "The exe imports a non-system or non-static-runtime DLL; the single-file requirement is broken."
           }
-          if (-not $deps.Contains("KERNEL32.dll")) { throw "dumpbin did not report a valid Windows executable" }
+          if ($deps -notmatch '(?i)KERNEL32\.dll') { throw "dumpbin did not report a valid Windows executable" }
           $headers = (& dumpbin /headers $out | Out-String)
-          if ($headers -notmatch '(?i)subsystem.*Windows GUI') {
+          if ($headers -notmatch '(?is)subsystem\s+Windows GUI') {
             throw "The release executable was not linked as a Windows GUI application"
           }
           $hash = (Get-FileHash $out -Algorithm SHA256).Hash.ToLowerInvariant()
