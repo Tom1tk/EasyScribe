@@ -113,20 +113,43 @@ pub fn recover_pcm_to_wav(
     metadata: &RecordingMetadata,
     wav_path: &Path,
 ) -> Result<()> {
+    if metadata.sample_rate == 0 || metadata.channels == 0 || metadata.bit_depth != 16 {
+        return Err(Error::Recovery(format!(
+            "The recording metadata is invalid (rate {}, {} channel(s), {} bit).",
+            metadata.sample_rate, metadata.channels, metadata.bit_depth
+        )));
+    }
+    if metadata.samples_written == 0 {
+        return Err(Error::Recovery(
+            "The recording contains no saved audio.".into(),
+        ));
+    }
     let byte_count = (metadata.samples_written as usize).saturating_mul(2);
     let raw = std::fs::read(pcm_path)?;
     let raw = &raw[..byte_count.min(raw.len())];
     let spec = hound::WavSpec {
-        channels: metadata.channels.max(1),
-        sample_rate: metadata.sample_rate.max(1),
+        channels: metadata.channels,
+        sample_rate: metadata.sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer = hound::WavWriter::create(wav_path, spec)?;
-    for chunk in raw.chunks_exact(2) {
-        writer.write_sample(i16::from_le_bytes([chunk[0], chunk[1]]))?;
+    let tmp = wav_path.with_extension(format!("wav.tmp-{}", std::process::id()));
+    let result = (|| -> Result<()> {
+        let mut writer = hound::WavWriter::create(&tmp, spec)?;
+        for chunk in raw.chunks_exact(2) {
+            writer.write_sample(i16::from_le_bytes([chunk[0], chunk[1]]))?;
+        }
+        writer.finalize()?;
+        let file = std::fs::File::open(&tmp)?;
+        file.sync_all()?;
+        let _ = std::fs::remove_file(wav_path);
+        std::fs::rename(&tmp, wav_path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return result;
     }
-    writer.finalize()?;
     log::info!(
         "Recovered {} → {} ({} bytes)",
         pcm_path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
@@ -173,9 +196,21 @@ pub fn handle_orphan(
         recover_pcm_to_wav(pcm_path, metadata, &wav_path)?;
     }
     // Delete the audio first: if that fails, the sidecar still describes the
-    // pair so the next start can try again.
-    std::fs::remove_file(pcm_path)?;
-    let _ = std::fs::remove_file(json_path);
+    // pair so the next start can try again. "Already gone" is success.
+    match std::fs::remove_file(pcm_path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(json_path);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::remove_file(json_path);
+        }
+        Err(e) => {
+            log::warn!(
+                "Recovered {} but could not remove the raw file: {e}",
+                pcm_path.display()
+            );
+        }
+    }
     Ok(Some(wav_path))
 }
 

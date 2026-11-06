@@ -187,9 +187,9 @@ pub fn speaker_transcript(
     let started = Instant::now();
     let engine = DiarizationEngine::new(paths.clone());
     let turns: Vec<Turn> = diarize_in_child(paths, audio_path, cancel, reporter.clone())?;
-    if turns.is_empty() {
-        return Err(Error::Diarization("no speaker segments were found".into()));
-    }
+    // An empty result is a valid "one unnamed speaker" case, exactly as in
+    // Python: assign_speakers falls back to SPEAKER_00 and the labelled
+    // transcript is still written. Do not fail Find Speakers here.
     engine.save_measured_speed(audio_path, raw_segments, started.elapsed().as_secs_f64());
     let assigned = assign_speakers(raw_segments, &turns);
 

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::Result;
 
 pub const APP_NAME: &str = "EasyScribe";
-pub const APP_VERSION: &str = "3.2.3";
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const VAD_SAMPLE_RATE: u32 = 16_000;
 pub const VAD_CHUNK_SAMPLES: usize = 512;
@@ -72,12 +72,12 @@ impl Paths {
     /// Resolve paths for the running app and create the runtime directories.
     pub fn discover() -> Result<Self> {
         if let Some(base) = std::env::var_os("EASYSCRIBE_BASE_DIR") {
-            let base = PathBuf::from(base);
+            let base = resolve_env_path(base);
             // Worker processes inherit both so they read the same extracted
             // runtime while writing settings/temp files to the parent's data
             // directory instead of a second copy beside the models.
             if let Some(data) = std::env::var_os("EASYSCRIBE_DATA_DIR") {
-                return Self::for_runtime(base, PathBuf::from(data));
+                return Self::for_runtime(base, resolve_env_path(data));
             }
             return Self::at(base);
         }
@@ -210,9 +210,22 @@ pub fn dev_base_dir() -> PathBuf {
     discover_base_dir()
 }
 
+/// Resolve an environment-provided directory. Relative paths are anchored to
+/// the executable, never to a shortcut's working directory (often System32).
+pub(crate) fn resolve_env_path(value: std::ffi::OsString) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        return path;
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&path)))
+        .unwrap_or(path)
+}
+
 fn discover_base_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("EASYSCRIBE_BASE_DIR") {
-        return PathBuf::from(dir);
+        return resolve_env_path(dir);
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()

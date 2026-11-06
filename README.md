@@ -162,7 +162,7 @@ The sections below are for developers and IT staff.
 | Live transcription | sherpa-onnx, Silero VAD chunks | CPU |
 | Speaker diarization | sherpa-onnx: pyannote segmentation-3.0 + WeSpeaker ResNet34-LM | CPU |
 
-File transcription runs the bundled `whisper-cli` as a child process, exactly like v3.2.3. It probes Vulkan devices, prefers a dedicated GPU, remembers one that failed, and retries once on the CPU with `-ng`. A driver crash only kills the child, so the app and the CPU fallback survive. The linked `whisper-rs` engine remains as a fallback when the payload has only the GGUF model, and is exercised by the selftest. **Show details** reports the engine and thread count.
+File transcription runs the bundled `whisper-cli` as a child process, exactly like v3.2.3. It probes Vulkan devices, prefers a dedicated GPU, remembers one that failed, and retries once on the CPU with `-ng`. A driver crash only kills the child, so the app and the CPU fallback survive. The linked `whisper-rs` engine remains as a fallback when the bundled CLI cannot start (development builds and damaged payloads), and is exercised by the selftest. **Show details** reports the engine and thread count.
 
 Speaker diarization also runs in a child process of the same exe, so Stop is immediate and its memory is reclaimed when it exits.
 

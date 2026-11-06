@@ -1,7 +1,7 @@
 //! Background workers. They own every long-running operation and communicate
 //! with the UI only through [`Event`] values.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -91,6 +91,10 @@ pub fn spawn_batch(
             let mut fatal: Option<String> = None;
             let mut recording_segments = None;
             let mut output_folder: Option<PathBuf> = None;
+            // Two inputs with the same stem (interview.mp3 and interview.wav,
+            // or same-named files from different folders) must not overwrite
+            // each other's transcript.
+            let mut planned: HashSet<PathBuf> = HashSet::new();
 
             for (index, input) in request.files.iter().enumerate() {
                 if cancel.is_cancelled() {
@@ -159,6 +163,8 @@ pub fn spawn_batch(
                         outputs::transcript_output(input, request.output_folder.as_deref())
                     }
                 });
+                let output = outputs::unique_output_path(output, &planned);
+                planned.insert(output.clone());
                 if let Some(parent) = output.parent() {
                     output_folder = Some(parent.to_path_buf());
                 }

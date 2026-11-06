@@ -4,12 +4,12 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, Stream};
+use cpal::{Sample, SampleFormat, Stream};
 use serde::Serialize;
 
 use crate::audio::LinearResampler;
@@ -191,8 +191,10 @@ impl MicRecorder {
         let channels = config.channels() as usize;
 
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-        let pcm_path = output_dir.join(format!("recording_{timestamp}.pcm"));
-        let json_path = output_dir.join(format!("recording_{timestamp}.json"));
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let stem = format!("recording_{timestamp}_{}", &suffix[..8]);
+        let pcm_path = output_dir.join(format!("{stem}.pcm"));
+        let json_path = output_dir.join(format!("{stem}.json"));
 
         self.stop = Arc::new(AtomicBool::new(false));
         self.samples_written = Arc::new(AtomicU64::new(0));
@@ -202,10 +204,11 @@ impl MicRecorder {
         *self.writer_error.lock().expect("writer error poisoned") = None;
         self.pcm_path = Some(pcm_path.clone());
         self.json_path = Some(json_path.clone());
-        self.session_stem = Some(format!("recording_{timestamp}"));
+        self.session_stem = Some(stem);
         self.feed_vad = feed_vad;
 
         let (pcm_tx, pcm_rx) = mpsc::channel::<Vec<i16>>();
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<std::result::Result<(), String>>(1);
         let samples_written = self.samples_written.clone();
         let stop = self.stop.clone();
         let writer_json = json_path.clone();
@@ -221,9 +224,35 @@ impl MicRecorder {
                     samples_written,
                     stop,
                     writer_error,
+                    ready_tx,
                 )
             })
             .map_err(|e| Error::Transcription(format!("Could not start PCM writer: {e}")))?;
+        // Do not open the microphone until the PCM file exists. A full or
+        // read-only recordings folder must fail here, not after the meeting.
+        match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.stop.store(true, Ordering::SeqCst);
+                drop(pcm_tx);
+                let _ = writer.join();
+                let _ = std::fs::remove_file(&pcm_path);
+                let _ = std::fs::remove_file(&json_path);
+                return Err(Error::Transcription(format!(
+                    "The raw audio file could not be created: {error}"
+                )));
+            }
+            Err(_) => {
+                self.stop.store(true, Ordering::SeqCst);
+                drop(pcm_tx);
+                let _ = writer.join();
+                let _ = std::fs::remove_file(&pcm_path);
+                let _ = std::fs::remove_file(&json_path);
+                return Err(Error::Transcription(
+                    "The PCM writer did not start in time.".into(),
+                ));
+            }
+        }
 
         let vad_queue = if feed_vad {
             Some(Arc::new(AudioQueue::new(VAD_QUEUE_CHUNKS)))
@@ -239,7 +268,9 @@ impl MicRecorder {
         let stream = build_stream(&device, &config, move |data| {
             let mut mono = Vec::with_capacity(data.len() / channels.max(1));
             for frame in data.chunks(channels.max(1)) {
-                mono.push(frame[0]);
+                // A stereo interface may put the only active mic on either
+                // channel; average instead of taking channel 0.
+                mono.push(frame.iter().copied().sum::<f32>() / frame.len() as f32);
             }
             if let Some(resampler) = resampler.as_mut() {
                 mono = resampler.process(&mono);
@@ -322,9 +353,17 @@ impl MicRecorder {
             .expect("writer error poisoned")
             .take()
         {
-            return Err(Error::Transcription(format!(
-                "The raw audio could not be written: {error}"
-            )));
+            let written = self.samples_written.load(Ordering::SeqCst);
+            if written == 0 {
+                return Err(Error::Transcription(format!(
+                    "The raw audio could not be written: {error}"
+                )));
+            }
+            // Keep the valid part of the recording. Python still converts the
+            // PCM after a writer error, and a partial WAV is better than none.
+            log::warn!(
+                "PCM writer stopped after {written} samples ({error}); saving the partial recording"
+            );
         }
         if !convert_to_wav {
             return Ok(None);
@@ -374,28 +413,68 @@ impl MicRecorder {
     }
 }
 
+fn supported_format(format: SampleFormat) -> bool {
+    matches!(
+        format,
+        SampleFormat::F32
+            | SampleFormat::F64
+            | SampleFormat::I8
+            | SampleFormat::U8
+            | SampleFormat::I16
+            | SampleFormat::U16
+            | SampleFormat::I24
+            | SampleFormat::U24
+            | SampleFormat::I32
+            | SampleFormat::U32
+            | SampleFormat::I64
+            | SampleFormat::U64
+    )
+}
+
+fn format_rank(format: SampleFormat) -> u8 {
+    match format {
+        SampleFormat::F32 => 0,
+        SampleFormat::I16 => 1,
+        SampleFormat::I24 => 2,
+        SampleFormat::I32 => 3,
+        SampleFormat::F64 => 4,
+        _ => 5,
+    }
+}
+
 fn choose_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig> {
-    let mut fallback: Option<cpal::SupportedStreamConfig> = None;
+    let mut best: Option<((u8, u8, u8, u32), cpal::SupportedStreamConfig)> = None;
     if let Ok(ranges) = device.supported_input_configs() {
         for range in ranges {
-            if range.channels() < 1 {
+            if range.channels() < 1 || !supported_format(range.sample_format()) {
                 continue;
             }
-            if range.min_sample_rate() <= VAD_SAMPLE_RATE
-                && range.max_sample_rate() >= VAD_SAMPLE_RATE
-            {
-                if let Some(config) = range.try_with_sample_rate(VAD_SAMPLE_RATE) {
-                    if config.channels() == 1 {
-                        return Ok(config);
-                    }
-                    fallback.get_or_insert(config);
-                }
+            let min = range.min_sample_rate();
+            let max = range.max_sample_rate();
+            // Prefer the native 16 kHz stream. Otherwise use 48 kHz rather
+            // than whichever range happened to be enumerated first.
+            let rate = if min <= VAD_SAMPLE_RATE && max >= VAD_SAMPLE_RATE {
+                VAD_SAMPLE_RATE
+            } else if min <= 48_000 && max >= 48_000 {
+                48_000
             } else {
-                fallback.get_or_insert(range.with_max_sample_rate());
+                max.min(96_000)
+            };
+            let Some(config) = range.try_with_sample_rate(rate) else {
+                continue;
+            };
+            let score = (
+                u8::from(rate != VAD_SAMPLE_RATE),
+                u8::from(config.channels() != 1),
+                format_rank(config.sample_format()),
+                rate,
+            );
+            if best.as_ref().is_none_or(|(current, _)| score < *current) {
+                best = Some((score, config));
             }
         }
     }
-    if let Some(config) = fallback {
+    if let Some((_, config)) = best {
         return Ok(config);
     }
     device
@@ -449,6 +528,82 @@ fn build_stream(
             err_fn,
             None,
         ),
+        SampleFormat::I8 => device.build_input_stream(
+            config,
+            move |data: &[i8], _| {
+                let converted: Vec<f32> = data.iter().map(|v| *v as f32 / 128.0).collect();
+                on_samples(&converted)
+            },
+            err_fn,
+            None,
+        ),
+        SampleFormat::U8 => device.build_input_stream(
+            config,
+            move |data: &[u8], _| {
+                let converted: Vec<f32> =
+                    data.iter().map(|v| (*v as f32 - 128.0) / 128.0).collect();
+                on_samples(&converted)
+            },
+            err_fn,
+            None,
+        ),
+        SampleFormat::I24 => device.build_input_stream(
+            config,
+            move |data: &[cpal::I24], _| {
+                let converted: Vec<f32> = data.iter().map(|v| f32::from_sample(*v)).collect();
+                on_samples(&converted)
+            },
+            err_fn,
+            None,
+        ),
+        SampleFormat::U24 => device.build_input_stream(
+            config,
+            move |data: &[cpal::U24], _| {
+                let converted: Vec<f32> = data.iter().map(|v| f32::from_sample(*v)).collect();
+                on_samples(&converted)
+            },
+            err_fn,
+            None,
+        ),
+        SampleFormat::I64 => device.build_input_stream(
+            config,
+            move |data: &[i64], _| {
+                let converted: Vec<f32> = data
+                    .iter()
+                    .map(|v| *v as f32 / 9_223_372_036_854_775_808.0)
+                    .collect();
+                on_samples(&converted)
+            },
+            err_fn,
+            None,
+        ),
+        SampleFormat::U32 => device.build_input_stream(
+            config,
+            move |data: &[u32], _| {
+                let converted: Vec<f32> = data
+                    .iter()
+                    .map(|v| ((*v as f64 - 2_147_483_648.0) / 2_147_483_648.0) as f32)
+                    .collect();
+                on_samples(&converted)
+            },
+            err_fn,
+            None,
+        ),
+        SampleFormat::U64 => device.build_input_stream(
+            config,
+            move |data: &[u64], _| {
+                let converted: Vec<f32> = data
+                    .iter()
+                    .map(|v| {
+                        ((*v as f64 - 9_223_372_036_854_775_808.0) / 9_223_372_036_854_775_808.0)
+                            as f32
+                    })
+                    .collect();
+                on_samples(&converted)
+            },
+            err_fn,
+            None,
+        ),
         SampleFormat::F64 => device.build_input_stream(
             config,
             move |data: &[f64], _| {
@@ -472,13 +627,14 @@ fn writer_loop(
     pcm_path: PathBuf,
     json_path: PathBuf,
     samples_written: Arc<AtomicU64>,
-    _stop: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
     error_slot: Arc<std::sync::Mutex<Option<String>>>,
+    ready: SyncSender<std::result::Result<(), String>>,
 ) {
     use std::io::Write;
     let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
+        .create_new(true)
+        .write(true)
         .open(&pcm_path);
     let mut file = match file {
         Ok(file) => file,
@@ -487,35 +643,77 @@ fn writer_loop(
             if let Ok(mut slot) = error_slot.lock() {
                 *slot = Some(e.to_string());
             }
+            let _ = ready.send(Err(e.to_string()));
             return;
         }
     };
+    // Make the sidecar exist from the first second, so a crash or power loss
+    // leaves a recoverable pair instead of an orphan PCM.
+    write_sidecar(&json_path, 0);
+    if ready.send(Ok(())).is_err() {
+        return;
+    }
     let mut chunks = 0_u64;
-    for chunk in rx {
-        let mut bytes = Vec::with_capacity(chunk.len() * 2);
-        for sample in &chunk {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
-        if let Err(e) = file.write_all(&bytes) {
-            log::error!("PCM writer error: {e}");
-            if let Ok(mut slot) = error_slot.lock() {
-                *slot = Some(e.to_string());
+    loop {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(chunk) => {
+                if let Err(e) = write_pcm_chunk(&mut file, &chunk) {
+                    record_writer_error(&error_slot, &e);
+                    return;
+                }
+                let total = samples_written.fetch_add(chunk.len() as u64, Ordering::SeqCst)
+                    + chunk.len() as u64;
+                chunks += 1;
+                if chunks.is_multiple_of(FSYNC_EVERY) {
+                    let _ = file.flush();
+                    let _ = file.sync_data();
+                    write_sidecar(&json_path, total);
+                }
             }
-            return;
-        }
-        let total =
-            samples_written.fetch_add(chunk.len() as u64, Ordering::SeqCst) + chunk.len() as u64;
-        chunks += 1;
-        if chunks.is_multiple_of(FSYNC_EVERY) {
-            let _ = file.flush();
-            let _ = file.sync_data();
-            write_sidecar(&json_path, total);
+            Err(RecvTimeoutError::Timeout) => {
+                if stop.load(Ordering::SeqCst) {
+                    while let Ok(chunk) = rx.try_recv() {
+                        if let Err(e) = write_pcm_chunk(&mut file, &chunk) {
+                            record_writer_error(&error_slot, &e);
+                            return;
+                        }
+                        samples_written.fetch_add(chunk.len() as u64, Ordering::SeqCst);
+                    }
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                while let Ok(chunk) = rx.try_recv() {
+                    if let Err(e) = write_pcm_chunk(&mut file, &chunk) {
+                        record_writer_error(&error_slot, &e);
+                        return;
+                    }
+                    samples_written.fetch_add(chunk.len() as u64, Ordering::SeqCst);
+                }
+                break;
+            }
         }
     }
     let total = samples_written.load(Ordering::SeqCst);
     let _ = file.flush();
     let _ = file.sync_data();
     write_sidecar(&json_path, total);
+}
+
+fn write_pcm_chunk(file: &mut std::fs::File, chunk: &[i16]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut bytes = Vec::with_capacity(chunk.len() * 2);
+    for sample in chunk {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    file.write_all(&bytes)
+}
+
+fn record_writer_error(error_slot: &std::sync::Mutex<Option<String>>, error: &std::io::Error) {
+    log::error!("PCM writer error: {error}");
+    if let Ok(mut slot) = error_slot.lock() {
+        *slot = Some(error.to_string());
+    }
 }
 
 fn write_sidecar(json_path: &Path, samples_written: u64) {
@@ -525,9 +723,22 @@ fn write_sidecar(json_path: &Path, samples_written: u64) {
         bit_depth: 16,
         samples_written,
     };
-    if let Ok(text) = serde_json::to_string(&sidecar)
-        && let Err(e) = std::fs::write(json_path, text)
-    {
+    let Ok(text) = serde_json::to_string(&sidecar) else {
+        return;
+    };
+    let tmp = json_path.with_extension(format!("json.tmp-{}", std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        // Windows rename does not replace an existing file.
+        let _ = std::fs::remove_file(json_path);
+        std::fs::rename(&tmp, json_path)
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
         log::warn!("JSON sidecar write failed: {e}");
     }
 }

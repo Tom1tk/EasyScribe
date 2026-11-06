@@ -93,11 +93,13 @@ $target = if ($env:CARGO_TARGET_DIR) {
     Join-Path $root "target"
 }
 
+$version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+if (-not $version) { throw "Could not read the workspace version from Cargo.toml" }
 & (Join-Path $target "release\easyscribe-pack.exe") `
     --binary (Join-Path $target "release\easyscribe.exe") `
     --payload $payload `
     --out "dist\EasyScribe.exe" `
-    --version "3.2.3"
+    --version $version
 if ($LASTEXITCODE -ne 0) { throw "pack failed" }
 
 Write-Host "Built dist\EasyScribe.exe"

@@ -213,7 +213,7 @@ pub fn prepare_with_progress<F: FnMut(&str, f32)>(mut progress: F) -> Result<Pre
     let data_dir = data_root();
     if let Some(dir) = std::env::var_os("EASYSCRIBE_PAYLOAD_DIR") {
         return Ok(Prepared {
-            runtime_dir: PathBuf::from(dir),
+            runtime_dir: crate::config::resolve_env_path(dir),
             data_dir,
         });
     }
@@ -234,6 +234,7 @@ pub fn prepare_with_progress<F: FnMut(&str, f32)>(mut progress: F) -> Result<Pre
     let runtime_root = runtime_root(&data_dir);
     let runtime = runtime_root.join(footer.cache_key());
     if cache_complete(&runtime, &footer) {
+        cleanup_stale_staging(&runtime_root);
         cleanup_old_runtimes(&runtime_root, &runtime);
         return Ok(Prepared {
             runtime_dir: runtime,
@@ -244,6 +245,7 @@ pub fn prepare_with_progress<F: FnMut(&str, f32)>(mut progress: F) -> Result<Pre
     progress("Preparing EasyScribe", 0.0);
     let _lock = CacheLock::acquire(&runtime_root.join(".lock"))?;
     if cache_complete(&runtime, &footer) {
+        cleanup_stale_staging(&runtime_root);
         cleanup_old_runtimes(&runtime_root, &runtime);
         return Ok(Prepared {
             runtime_dir: runtime,
@@ -264,7 +266,7 @@ pub fn prepare_with_progress<F: FnMut(&str, f32)>(mut progress: F) -> Result<Pre
 /// an `EasyScribe.portable` marker sits next to the exe.
 pub fn data_root() -> PathBuf {
     if let Some(dir) = std::env::var_os("EASYSCRIBE_DATA_DIR") {
-        return PathBuf::from(dir);
+        return crate::config::resolve_env_path(dir);
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
@@ -278,10 +280,32 @@ pub fn data_root() -> PathBuf {
         .join(crate::APP_NAME)
 }
 
+/// The per-user runtime cache root.
 pub fn runtime_root(data_dir: &Path) -> PathBuf {
     std::env::var_os("EASYSCRIBE_RUNTIME_DIR")
-        .map(PathBuf::from)
+        .map(crate::config::resolve_env_path)
         .unwrap_or_else(|| data_dir.join("runtime"))
+}
+
+/// Take a per-user lock so two EasyScribe windows cannot share (and clean) the
+/// same temporary folder or recover each other's live recording. The file stays
+/// open for the process lifetime; Windows releases it when the process exits.
+pub fn acquire_instance_lock() -> Result<std::fs::File> {
+    let dir = data_root();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(".instance.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    match fs2::FileExt::try_lock_exclusive(&file) {
+        Ok(()) => Ok(file),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Err(Error::Payload(
+            "EasyScribe is already running. Close the other window and try again.".into(),
+        )),
+        Err(error) => Err(Error::Io(error)),
+    }
 }
 
 fn cache_complete(runtime: &Path, footer: &Footer) -> bool {
@@ -300,6 +324,13 @@ fn cache_complete(runtime: &Path, footer: &Footer) -> bool {
     {
         return false;
     }
+    required_files_present(runtime)
+}
+
+/// The files every shipped runtime must contain. Used both for a cache hit and
+/// for a freshly extracted staging tree, so an incomplete archive is never
+/// marked complete and re-extracted forever.
+fn required_files_present(runtime: &Path) -> bool {
     let required = [
         "manifest.json",
         "models/silero_vad.onnx",
@@ -402,6 +433,11 @@ fn extract_to_with_progress<F: FnMut(&str, f32)>(
         progress("Unpacking the app files", 0.45);
         let take = file.take(footer.payload_size);
         extract_zip_with_progress(take, &staging, progress)?;
+        if !required_files_present(&staging) {
+            return Err(Error::Payload(
+                "The app files are incomplete. Download EasyScribe again.".into(),
+            ));
+        }
         let marker = serde_json::json!({
             "payload_sha256": footer.cache_key().trim_start_matches("v1-"),
             "app_version": footer.app_version,
@@ -413,7 +449,10 @@ fn extract_to_with_progress<F: FnMut(&str, f32)>(
                 .unwrap_or(0),
         });
         let temp_marker = staging.join(".complete.tmp");
-        std::fs::write(&temp_marker, serde_json::to_string_pretty(&marker)?)?;
+        let mut marker_file = File::create(&temp_marker)?;
+        marker_file.write_all(serde_json::to_string_pretty(&marker)?.as_bytes())?;
+        marker_file.sync_all()?;
+        drop(marker_file);
         std::fs::rename(&temp_marker, staging.join(RUNTIME_MARKER))?;
         Ok(())
     })();
@@ -549,7 +588,16 @@ fn cleanup_stale_staging(runtime_root: &Path) {
             continue;
         };
         if name.starts_with("v1-") && name.contains(".tmp-") && path.is_dir() {
-            let _ = std::fs::remove_dir_all(&path);
+            // A cached launch has no extraction lock; only remove a staging
+            // folder that is old enough not to belong to a live extraction.
+            let stale = std::fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age > Duration::from_secs(3600));
+            if stale {
+                let _ = std::fs::remove_dir_all(&path);
+            }
         }
     }
 }

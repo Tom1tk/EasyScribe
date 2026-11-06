@@ -141,6 +141,29 @@ pub fn speakers_output(transcript: &Path) -> PathBuf {
     transcript.with_file_name(format!("{stem} (speakers).txt"))
 }
 
+/// Avoid overwriting another transcript from the same batch. Uses the same
+/// ` (2)`, ` (3)` suffix style as the recording outputs.
+pub fn unique_output_path(path: PathBuf, planned: &std::collections::HashSet<PathBuf>) -> PathBuf {
+    if !planned.contains(&path) {
+        return path;
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("transcript");
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("txt");
+    for number in 2..10_000 {
+        let candidate = path.with_file_name(format!("{stem} ({number}).{ext}"));
+        if !planned.contains(&candidate) {
+            return candidate;
+        }
+    }
+    path
+}
+
 /// Up to three shortened failure/skip names, then `and N more`.
 pub fn names_summary(paths: &[&Path]) -> String {
     let names: Vec<String> = paths

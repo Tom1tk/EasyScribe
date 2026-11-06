@@ -43,6 +43,21 @@ fn main() {
         )
     }) || std::env::var_os("EASYSCRIBE_HEADLESS").is_some();
 
+    // One GUI instance per user. Without this, a second launch deletes the
+    // first one's temp files, offers to recover its live recording, and can
+    // extract over the runtime it is using.
+    let _instance_lock = if headless {
+        None
+    } else {
+        match payload::acquire_instance_lock() {
+            Ok(file) => Some(file),
+            Err(error) => {
+                dialogs::error("EasyScribe is already running", &error.to_string());
+                std::process::exit(0);
+            }
+        }
+    };
+
     platform::set_app_identity();
 
     // A first launch shows its unpacking progress in the window. Cached

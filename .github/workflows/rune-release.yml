@@ -28,8 +28,8 @@ jobs:
       TAG: ${{ inputs.tag }}
       # The 1.12.9 Windows static libraries are built with the static MSVC
       # runtime. Match that for Rust and for the vendored whisper.cpp.
-      # advapi32 supplies the ETW and registry imports that onnxruntime and
-      # espeak-ng use; their static libs do not always carry the defaultlib.
+      # advapi32 supplies the ETW and registry imports that onnxruntime uses;
+      # its static lib does not always carry the defaultlib.
       RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=advapi32.lib"
       CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded"
       CMAKE_POLICY_DEFAULT_CMP0091: "NEW"
@@ -57,10 +57,17 @@ jobs:
       - name: Validate the release tag
         shell: pwsh
         run: |
+          $versionLine = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $versionLine) { throw "Could not read the workspace version from Cargo.toml" }
+          $version = $versionLine.Matches[0].Groups[1].Value
+          if (-not $env:TAG.StartsWith("v$version-")) {
+            throw "The tag must start with v$version-, matching the workspace version; got '$env:TAG'."
+          }
           if ($env:TAG -notmatch '^v[0-9A-Za-z._-]+-[0-9A-Za-z._-]+$') {
             throw "The tag must contain a hyphen (for a pre-release), e.g. v3.2.3-rust.1; got '$env:TAG'."
           }
           Write-Host "Building draft pre-release $env:TAG"
+          Add-Content $env:GITHUB_ENV "APP_VERSION=$version"
 
       - name: Set up the MSVC toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -111,6 +118,24 @@ jobs:
           $root = $capi.Directory.Parent.FullName
           Add-Content $env:GITHUB_ENV "SHERPA_LIB_PATH=$root"
           Write-Host "SHERPA_LIB_PATH=$root"
+
+      # The prebuilt archive contains TTS objects and a GPL-3.0 espeak-ng
+      # library. EasyScribe never calls TTS, so drop those libraries from the
+      # link set. If any non-TTS object needed them the link would fail; it does
+      # not, and the resulting exe contains no espeak code.
+      - name: Exclude the unused TTS libraries
+        shell: pwsh
+        run: |
+          $capi = Get-ChildItem sherpa-static -Recurse -Filter sherpa-onnx-c-api.lib | Select-Object -First 1
+          if (-not $capi) { throw "sherpa-onnx-c-api.lib not found" }
+          $libDir = $capi.Directory.FullName
+          foreach ($name in @("espeak-ng.lib", "piper_phonemize.lib")) {
+            $path = Join-Path $libDir $name
+            if (Test-Path $path) {
+              Remove-Item $path -Force
+              Write-Host "Excluded $name (TTS only)"
+            }
+          }
 
       # ffmpeg (GyanD 7.1.1 essentials, pinned). Kept as a cache so release
       # rebuilds do not download 150 MB each time.
@@ -339,11 +364,12 @@ jobs:
       - name: Build the app and packer
         shell: pwsh
         run: |
-          # The build script does not declare the GGML_* variables as
-          # rerun-if-env-changed, so a restored target directory could keep an
-          # older CMake configuration. Reconfigure whisper.cpp from scratch.
+          # The build scripts do not declare every input as rerun-if-env-changed,
+          # so a restored target directory could keep an older CMake
+          # configuration or an older list of sherpa libraries. Reconfigure
+          # whisper.cpp and re-enumerate the static sherpa link set.
           if (Test-Path target\release) {
-            foreach ($pattern in @("whisper-rs-sys-*", "whisper-rs-*")) {
+            foreach ($pattern in @("whisper-rs-sys-*", "whisper-rs-*", "sherpa-rs-sys-*")) {
               Get-ChildItem target\release\build -Directory -Filter $pattern -ErrorAction SilentlyContinue |
                 Remove-Item -Recurse -Force
               Get-ChildItem target\release\.fingerprint -Directory -Filter $pattern -ErrorAction SilentlyContinue |
@@ -358,8 +384,11 @@ jobs:
           $lines = Get-Content $cache.FullName
           $lines | Where-Object { $_ -match "^GGML_(NATIVE|AVX|AVX2|FMA|SSE42|OPENMP):|^CMAKE_BUILD_TYPE:" } |
             ForEach-Object { Write-Host $_ }
-          foreach ($entry in @("GGML_NATIVE:BOOL=OFF", "GGML_AVX:BOOL=ON", "GGML_AVX2:BOOL=ON", "CMAKE_BUILD_TYPE:STRING=Release")) {
+          foreach ($entry in @("GGML_NATIVE:BOOL=OFF", "GGML_AVX:BOOL=ON", "GGML_AVX2:BOOL=ON")) {
             if (-not ($lines -contains $entry)) { throw "whisper.cpp was not built with $entry" }
+          }
+          if (-not ($lines | Where-Object { $_ -match '^CMAKE_BUILD_TYPE:(STRING|UNINITIALIZED)=Release$' })) {
+            throw "whisper.cpp was not configured with CMAKE_BUILD_TYPE=Release"
           }
 
       - name: Check the executable starts headlessly
@@ -478,7 +507,7 @@ jobs:
             --binary "dist\easyscribe-raw.exe" `
             --payload payload `
             --out $out `
-            --version "3.2.3" `
+            --version "$env:APP_VERSION" `
             --build-id $env:TAG
           if ($LASTEXITCODE -ne 0) { throw "easyscribe-pack failed" }
           Remove-Item payload, dist\easyscribe-raw.exe, dist\easyscribe-pack.exe -Recurse -Force

@@ -7,14 +7,15 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     #[cfg(windows)]
     {
+        let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
         let mut res = winres::WindowsResource::new();
         res.set_icon("../../assets/EasyScribe.ico")
             .set("ProductName", "EasyScribe")
             .set("FileDescription", "EasyScribe")
             .set("CompanyName", "EasyScribe")
             .set("LegalCopyright", "MIT licensed")
-            .set("FileVersion", "3.2.3.0")
-            .set("ProductVersion", "3.2.3")
+            .set("FileVersion", &format!("{version}.0"))
+            .set("ProductVersion", &version)
             .set_manifest(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">

@@ -2,6 +2,7 @@
 //! of the pure helpers in Python's `transcriber.py` and `diarizer.py`.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 
 use crate::model::{AssignedSegment, Segment, Turn};
@@ -163,15 +164,34 @@ pub fn speech_seconds(segments: &[Segment]) -> f64 {
     total
 }
 
-/// Write a transcript with a single trailing newline.
+/// Write a transcript with a single trailing newline. Write to a temporary
+/// file, flush it to disk, then rename, so a full disk cannot destroy an older
+/// good transcript at the same path.
 pub fn write_transcript(output_path: &Path, text: &str) -> Result<()> {
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let mut payload = String::with_capacity(text.len() + 1);
     payload.push_str(text);
     payload.push('\n');
-    std::fs::write(output_path, payload).map_err(|e| {
+    let result = (|| -> std::io::Result<()> {
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = output_path.with_extension(format!(
+            "{}.tmp-{}",
+            output_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("txt"),
+            std::process::id()
+        ));
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(payload.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        let _ = std::fs::remove_file(output_path);
+        std::fs::rename(&tmp, output_path)?;
+        Ok(())
+    })();
+    result.map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             Error::WriteTranscript(format!(
                 "Cannot write to output file.\nThe file may be open in another program: {}\n\n{e}",

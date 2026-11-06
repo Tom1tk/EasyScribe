@@ -2,6 +2,7 @@
 //! process identity/priority. Each has a portable fallback.
 
 use std::path::Path;
+#[cfg(not(windows))]
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 

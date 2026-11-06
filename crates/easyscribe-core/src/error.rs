@@ -40,6 +40,9 @@ pub enum Error {
     #[error("{0}")]
     WriteTranscript(String),
 
+    #[error("{0}")]
+    Recovery(String),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
