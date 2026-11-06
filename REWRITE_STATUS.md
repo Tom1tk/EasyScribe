@@ -5,7 +5,7 @@
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Phase:** 6 — packaging, audit and Windows release
 **Overall:** implementation complete; functional, code-quality, packaging and UI
-audits addressed. Windows release run `42232368420` (`v3.2.3-rust.2`) is the
+audits addressed. Windows release run `42235634403` (`v3.2.3-rust.3`) is the
 final validation gate.
 
 ## What is built
@@ -48,6 +48,9 @@ final validation gate.
       regression test covers the previous real-payload failure.
 - [x] Flock-based cache lock, stale staging cleanup, incomplete-runtime
       replacement, and signed-exe footer scanning.
+- [x] Windows run `42232368420` built and packed the exe successfully after
+      adding `advapi32`; it stopped only at a CI regex that rejected dumpbin's
+      `subsystem (Windows GUI)` spelling. The regex is fixed in `370fcc2`.
 
 ## Functional/packaging decisions
 
@@ -110,7 +113,7 @@ final validation gate.
 
 ## Next actions
 
-1. Watch Windows run `42232368420` (`v3.2.3-rust.2`): static link with
+1. Watch Windows run `42235634403` (`v3.2.3-rust.3`): static link with
    `advapi32`, GUI startup, import/subsystem scan, `--selftest`, cached launch
    and draft upload.
 2. Fix any remaining Windows-only failure and re-run with the next tag.

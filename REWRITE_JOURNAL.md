@@ -151,8 +151,19 @@ the narrative history.
   `advapi32.lib` defaultlib reliably. Both the CI environment and
   `scripts/build-windows.ps1` now pass `-C link-arg=advapi32.lib` with the
   static CRT flags.
+- **First Windows run after the link fix.** `v3.2.3-rust.2` built the release
+  binary, packed the 1.7 GB payload and reached the import check. The
+  `advapi32` link worked. It then failed only on a CI regex: dumpbin prints
+  `subsystem (Windows GUI)`, but the check expected no parentheses. The
+  corrected check accepts the real output; no application code changed.
+- **Naming at the default height.** The new folded-step titles pushed the
+  speaker panel's Save/Skip below the 820 pt glass. The naming panel now takes
+  the screen at 820 pt as well as below it, so both actions stay visible.
+- **Accessibility labels.** The timestamp and speaker checkboxes, rename field
+  and per-speaker name fields now expose their visible labels to the
+  accessibility tree.
 - **Verification.** 59 tests pass (6 app, 51 core, 2 offline; 1 ignored golden),
-  clippy clean, fmt clean. Re-rendered the 600/678/820 Files, Record and Live
-  scenes; short windows scroll and the folded steps read correctly. Dispatched
-  Windows run `42232368420` (`v3.2.3-rust.2`) for the static link, selftest,
-  import checks and draft pre-release.
+  clippy clean, fmt clean. Re-rendered the 600/678/820 Files, Record, Live and
+  Naming scenes; short windows scroll and the folded steps read correctly.
+  Dispatched Windows run `42235634403` (`v3.2.3-rust.3`) for the static link,
+  selftest, import checks and draft pre-release.
