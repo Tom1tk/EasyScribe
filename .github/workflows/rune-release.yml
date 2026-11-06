@@ -447,6 +447,7 @@ jobs:
             if (-not (Test-Path (Join-Path $dir $name))) { throw "Missing whisper-cli dependency: $name" }
           }
           $deps = (& dumpbin /dependents $bin | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin could not read $bin" }
           Write-Host $deps
           foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "vcomp140.dll")) {
             if (-not (Test-Path (Join-Path $dir $dll))) {
@@ -462,7 +463,11 @@ jobs:
           # Run it from its payload folder with an empty model; a missing
           # runtime DLL fails here, before the 1.8 GB exe is assembled.
           & $bin -m "" -f "" 2>&1 | Out-Null
-          if ($LASTEXITCODE -eq -1073741515) { throw "whisper-cli could not load a runtime DLL" }
+          $code = $LASTEXITCODE
+          if ($code -eq -1073741515) { throw "whisper-cli could not load a runtime DLL" }
+          # Empty paths are expected to make the CLI exit 1; only the loader
+          # failure above is meaningful. Do not let that 1 fail the step.
+          exit 0
 
       # The models and ffmpeg now live in payload\. Delete the originals so the
       # runner has room for the 1.7 GB archive temp file and the final exe.
@@ -609,6 +614,10 @@ jobs:
               **More info → Run anyway**.
             - The app is fully offline. ffmpeg is restricted to local files.
             - Temporary audio is deleted after each file and again on exit.
+            - **Licensing:** EasyScribe is MIT, but the bundled sherpa-onnx
+              static build includes GPL-3.0 `espeak-ng`. This draft is for
+              testing; the combined-work license decision is pending. See
+              `licenses/THIRD-PARTY-NOTICES.txt` in the runtime.
 
             Windows build: ${{ steps.revision.outputs.sha }}
           files: |

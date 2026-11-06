@@ -416,3 +416,13 @@ the narrative history.
   the Windows dependency graph.
 - Audit 3 findings and residual risks are in `docs/rewrite/AUDIT_3.md`.
   `v3.2.3-rust.12` is dispatched from the latest HEAD.
+
+## 2026-11-06 — Session 12: rust.12 payload verification
+
+- **rust.12 built and assembled the payload**, then failed in the payload
+  verification step because `whisper-cli -m "" -f ""` is expected to exit 1
+  (empty paths) and the step inherited that exit code. The check now captures
+  the code, fails only on the loader error `-1073741515`, and exits 0 after the
+  successful import/ffmpeg checks. `dumpbin`'s own exit code is now checked.
+- The GPL-3.0 espeak-ng disclosure is also in the draft release notes.
+- `v3.2.3-rust.13` is the validation run.
