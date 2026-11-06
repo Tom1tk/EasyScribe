@@ -1,10 +1,12 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-06 (session 3)
+**Updated:** 2026-11-06 (session 4)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Phase:** 6 — packaging, audit and Windows release
-**Overall:** implementation complete; functional, code-quality and packaging audits addressed; Windows CI is the remaining validation gate.
+**Overall:** implementation complete; functional, code-quality, packaging and UI
+audits addressed. Windows release run `42232368420` (`v3.2.3-rust.2`) is the
+final validation gate.
 
 ## What is built
 
@@ -28,7 +30,7 @@
 
 ## Verification completed
 
-- [x] `cargo test --workspace`: **5 app + 51 core + 2 offline = 58 passed**,
+- [x] `cargo test --workspace`: **6 app + 51 core + 2 offline = 59 passed**,
       1 ignored (the long-silence golden test, run manually).
 - [x] `cargo clippy --workspace --all-targets`: clean.
 - [x] `cargo fmt --all -- --check`: clean.
@@ -58,6 +60,7 @@
 | CPU-only whisper.cpp in this preview | `whisper-rs` Vulkan links `vulkan-1.dll` at load time, so a machine without a Vulkan driver could not start or fall back to CPU. GPU acceleration can return later as a dynamically loaded path. |
 | sherpa-onnx **1.12.9** static libs | `sherpa-rs` 0.6.8 binds the 1.12.9 C API; 1.13.x added struct fields and is ABI-incompatible. |
 | Static MSVC runtime | The 1.12.9 static libraries are `/MT`; the workflow sets `+crt-static` and `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`. |
+| Explicit `advapi32.lib` on Windows | onnxruntime's ETW/telemetry and espeak-ng's registry calls leave six undefined imports in `sherpa-rs`'s cdylib link. The build adds `-C link-arg=advapi32.lib` alongside the static CRT flags. |
 | Naming panel takes over below 820 pt | Python clips Save/Skip on short windows; the Rust build keeps them reachable. Intentional usability deviation. |
 | In-process engines | Stop is cooperative; diarization has a cancellation callback. Crash isolation remains optional future hardening. |
 | Privacy as an in-app modal | Same content/actions as the Python window; documented visual deviation. |
@@ -80,8 +83,17 @@
 - **Packaging audit** — switched to sherpa 1.12.9, removed the load-time Vulkan
   import, added static CRT, GUI subsystem, native `--selftest`, full runtime
   file checks, import/subsystem checks, cached-launch check and SHA-256 upload.
-- **UI audit** — rerun in session 3; confirmed issues are folded into the fixes
-  above. No blocker-level layout issue remains in the 600/760/820 scenes.
+- **UI audit** — all confirmed issues fixed: the real window height now reaches
+  `AppState`; the 600–678 pt page scrolls so the utility row and tall results
+  stay reachable; record tiles and microphone menu rows are keyboard-focusable
+  radios/options; unsupported drops produce the `Skipped …` note; the
+  timestamps/speaker labels toggle their options; Privacy traps focus; file
+  rows no longer show `Waiting` before a batch; folded Files/Record summaries
+  keep their step titles; `Use default` is a teal link; the file count is 13 pt
+  muted; recording-saved details shorten the folder to 60 characters; the
+  timer stays coral while saving; the level meter has no 1 px dot at zero; a
+  fatal batch keeps a full green bar when an earlier file saved; and the
+  speaker-naming panel focuses its first entry.
 
 ## Known limitations / residual risk
 
@@ -98,10 +110,9 @@
 
 ## Next actions
 
-1. Commit and push `rune-rewrite`.
-2. Add `.github/workflows/rune-release.yml` to `main` so `workflow_dispatch` is
-   available (the workflow itself checks out `rune-rewrite`).
-3. Dispatch `v3.2.3-rust.1`; watch the Windows build, static link, selftest and
-   draft release upload.
-4. Fix any Windows-only failures and re-run.
-5. Verify the draft asset and checksum, then hand over for real-device testing.
+1. Watch Windows run `42232368420` (`v3.2.3-rust.2`): static link with
+   `advapi32`, GUI startup, import/subsystem scan, `--selftest`, cached launch
+   and draft upload.
+2. Fix any remaining Windows-only failure and re-run with the next tag.
+3. Verify the draft `EasyScribe.exe` and `.sha256`, then hand over for
+   real-device testing (microphone, DPI, dialogs, drag/drop).

@@ -121,3 +121,36 @@ the narrative history.
   full required file list) extracted on first launch and reused the cache on the
   second. Next: commit/push, put the release workflow on `main`, dispatch the
   Windows draft build.
+
+## 2026-11-06 — Session 4: UI audit, Windows link fix, final build
+
+- **UI audit blockers fixed.** The computed window height (`820/678/600 pt`) was
+  never passed to `AppState`, so short-window layout decisions used the
+  default. The real height is now stored before `App::new`; headless scenes can
+  override it with `EASYSCRIBE_WINDOW_HEIGHT`. At 600–678 pt the page scrolls,
+  so the utility row and tall results are reachable where the reference allows
+  a last-resort scroll.
+- **Keyboard and pointer audit fixes.** Record-mode tiles are focusable radios
+  in a focus group; microphone menu rows are focusable options and the selector
+  is a labelled combobox. Rejected file drops route through `add_files` so the
+  `Skipped …` note appears. The timestamps and speaker labels toggle their
+  options. Privacy is a real modal, trapping focus and restoring it on close.
+- **Visual audit fixes.** Idle file rows no longer show `Waiting`; folded Files
+  and Record summaries keep the `Choose options` / `Record` (and microphone)
+  step titles; `Use default` uses the teal link style; the file count is 13 pt
+  muted; the recording-saved detail shortens the folder to 60 characters; the
+  timer stays coral while saving; the level meter no longer draws a 1 px dot at
+  zero; a fatal batch that saved an earlier file keeps a full green bar; and
+  the speaker-naming panel focuses its first entry.
+- **Windows link failure and fix.** The first release run reached
+  `Build the app and packer` and failed while linking `sherpa_rs.dll`: six
+  unresolved `advapi32` imports from onnxruntime's ETW telemetry and
+  espeak-ng's registry lookup. The 1.12.9 static libs do not carry the
+  `advapi32.lib` defaultlib reliably. Both the CI environment and
+  `scripts/build-windows.ps1` now pass `-C link-arg=advapi32.lib` with the
+  static CRT flags.
+- **Verification.** 59 tests pass (6 app, 51 core, 2 offline; 1 ignored golden),
+  clippy clean, fmt clean. Re-rendered the 600/678/820 Files, Record and Live
+  scenes; short windows scroll and the folded steps read correctly. Dispatched
+  Windows run `42232368420` (`v3.2.3-rust.2`) for the static link, selftest,
+  import checks and draft pre-release.

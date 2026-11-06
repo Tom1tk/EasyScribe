@@ -846,6 +846,21 @@ fn record_view(s: &AppState) -> El {
         record_card = record_card
             .child(step_header(
                 t,
+                "1",
+                "Choose a microphone",
+                t.coral_soft,
+                t.coral_ink,
+                None,
+            ))
+            .child(
+                text(s.mic_summary())
+                    .font(type_::BODY)
+                    .color(t.muted)
+                    .pl(32.0)
+                    .wrap(),
+            )
+            .child(step_header(
+                t,
                 "2",
                 "What do you want?",
                 t.coral_soft,
@@ -853,7 +868,7 @@ fn record_view(s: &AppState) -> El {
                 Some(change_button(s)),
             ))
             .child(
-                text(s.record_summary())
+                text(s.record_mode_summary().to_owned())
                     .font(type_::BODY)
                     .color(t.muted)
                     .pl(32.0)

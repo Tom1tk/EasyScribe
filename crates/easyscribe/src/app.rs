@@ -1598,17 +1598,20 @@ impl AppState {
         format!("{timestamps}, {speakers}, {saved}.")
     }
 
-    pub fn record_summary(&self) -> String {
+    pub fn mic_summary(&self) -> String {
         let mic = self
             .mic_choices
             .get(self.selected_mic)
             .map(|m| m.label.clone())
             .unwrap_or_else(|| "Default microphone".into());
-        let choice = match self.record_mode {
+        outputs::shorten(&mic, 50)
+    }
+
+    pub fn record_mode_summary(&self) -> &'static str {
+        match self.record_mode {
             RecordMode::Best => "Best quality transcript after recording.",
             RecordMode::Live => "Show words as I speak.",
-        };
-        format!("{}. {choice}", outputs::shorten(&mic, 50))
+        }
     }
 
     pub fn rename_note_color(&self) -> rune::Color {
@@ -1846,6 +1849,24 @@ mod tests {
         state.ui = UiState::Idle;
         state.switch_mode(Mode::Record);
         assert_eq!(state.mode, Mode::Record);
+    }
+
+    #[test]
+    fn naming_panel_focuses_the_first_speaker() {
+        let mut state = test_state();
+        let mut speaker_map = HashMap::new();
+        speaker_map.insert("SPEAKER_00".to_owned(), "Speaker 1".to_owned());
+        speaker_map.insert("SPEAKER_01".to_owned(), "Speaker 2".to_owned());
+        let preview = SpeakerPreview {
+            speaker_map,
+            clips: HashMap::new(),
+            shares: HashMap::new(),
+        };
+        let (tx, _rx) = std::sync::mpsc::sync_channel(1);
+        state.show_naming(preview, tx);
+        let naming = state.naming.as_ref().expect("naming panel");
+        assert!(naming.rows[0].edit.focused);
+        assert!(!naming.rows[1].edit.focused);
     }
 
     #[test]
