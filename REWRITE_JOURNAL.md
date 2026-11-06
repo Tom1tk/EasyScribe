@@ -401,3 +401,18 @@ the narrative history.
 - Local verification: 68 tests pass, clippy/fmt clean, release selftest passes
   (whisper-cli 48.2 s, in-process 67.9 s, after-sherpa 65.7 s, diarization
   10.4/10.6 s, silence 0.1 s). `v3.2.3-rust.11` is dispatched from `d59b8f2`.
+
+## 2026-11-06 — Session 11: rust.11 and the espeak licensing finding
+
+- **rust.11 failed at the app link, not at compile.** The audit's GPL concern was
+  real: removing `espeak-ng.lib`/`piper_phonemize.lib` produced
+  `LNK2019: unresolved external symbol espeak_Initialize` from
+  `piper-phonemize-lexicon.obj`. The libraries are restored. espeak-ng
+  GPL-3.0 is now named in `licenses/THIRD-PARTY-NOTICES.txt` with a source
+  offer, and the combined-work licensing decision is recorded as a blocker for
+  publishing `Latest`.
+- The release tag must now match the workspace version, the app's CMake gate
+  accepts `CMAKE_BUILD_TYPE:UNINITIALIZED=Release`, and the offline test checks
+  the Windows dependency graph.
+- Audit 3 findings and residual risks are in `docs/rewrite/AUDIT_3.md`.
+  `v3.2.3-rust.12` is dispatched from the latest HEAD.

@@ -107,10 +107,12 @@ end of this document. This file records what was fixed and what remains.
   set.
 - **The release tag must match the workspace version** (`v<version>-...`), so
   a `v3.2.4` tag cannot silently ship a 3.2.3 binary.
-- **The prebuilt sherpa archive's TTS-only `espeak-ng.lib` and
-  `piper_phonemize.lib` are removed from the link set.** EasyScribe never calls
-  TTS; the Windows link is the proof that no espeak code is pulled. This
-  removes the GPL-3.0 static-link risk flagged by the packaging audit.
+- **The sherpa TTS/espeak link was investigated.** Removing `espeak-ng.lib` and
+  `piper_phonemize.lib` made the Windows link fail on
+  `piper-phonemize-lexicon.obj` (`espeak_Initialize`), which proves the linked
+  sherpa archive does pull espeak. The libraries are restored, the GPL-3.0
+  component is disclosed in `THIRD-PARTY-NOTICES.txt`, and the combined-work
+  licensing decision is recorded as a blocker for publishing `Latest`.
 
 ### Version metadata and dependencies
 
@@ -181,10 +183,14 @@ must be decided before the Rune preview replaces v3.2.3.
 16. **Diarization remains single-threaded** in `sherpa-rs` 0.6.8, and the
     crate has unchecked null results and `to_str().unwrap()` on model paths.
     The child process isolates crashes, but the binding should be replaced.
-17. **The `espeak-ng` exclusion must be confirmed by a successful rust.11
-    Windows link.** If the linker reports unresolved espeak symbols, restore
-    the library and add the GPL-3.0 notice/source offer instead of shipping
-    without a decision.
+17. **GPL-3.0 `espeak-ng` is statically linked into the Windows exe.** The
+    attempt to remove the TTS-only libraries failed at link time because
+    `piper-phonemize-lexicon.obj` is pulled and references `espeak_Initialize`.
+    The library is restored and disclosed with a source offer. Before `Latest`,
+    the owner must choose between relicensing the combined work under GPL-3.0
+    and rebuilding sherpa-onnx from source with TTS disabled (or replacing the
+    binding). This is the main remaining release blocker besides real-PC
+    verification.
 18. **The release workflow does not reject a re-used existing tag.** It
     validates the tag against the workspace version, but a re-dispatch of an
     existing `rust.N` tag can still attach assets to the old tag. Use a new
@@ -199,6 +205,8 @@ must be decided before the Rune preview replaces v3.2.3.
 - Release selftest, 4 threads, 23.3 s real speech: whisper-cli cold 48.2 s,
   in-process 67.9 s, after sherpa 65.7 s, diarization in-process 10.4 s,
   diarization child 10.6 s, silence 0.1 s with zero segments.
-- `v3.2.3-rust.11` is the validation run for this pass. Its result, the Windows
-  link (including the espeak exclusion), the control timing and the draft assets
-  are recorded in `REWRITE_STATUS.md`.
+- `v3.2.3-rust.11` failed at the app link when the espeak exclusion was tried;
+  the linker proved `piper-phonemize-lexicon.obj` references `espeak_Initialize`.
+  The libraries are restored and the GPL-3.0 component is disclosed.
+  `v3.2.3-rust.12` is the validation run for this pass. Its result, the control
+  timing and the draft assets are recorded in `REWRITE_STATUS.md`.

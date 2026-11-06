@@ -28,8 +28,8 @@ jobs:
       TAG: ${{ inputs.tag }}
       # The 1.12.9 Windows static libraries are built with the static MSVC
       # runtime. Match that for Rust and for the vendored whisper.cpp.
-      # advapi32 supplies the ETW and registry imports that onnxruntime uses;
-      # its static lib does not always carry the defaultlib.
+      # advapi32 supplies the ETW and registry imports that onnxruntime and
+      # espeak-ng use; their static libs do not always carry the defaultlib.
       RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=advapi32.lib"
       CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded"
       CMAKE_POLICY_DEFAULT_CMP0091: "NEW"
@@ -118,24 +118,6 @@ jobs:
           $root = $capi.Directory.Parent.FullName
           Add-Content $env:GITHUB_ENV "SHERPA_LIB_PATH=$root"
           Write-Host "SHERPA_LIB_PATH=$root"
-
-      # The prebuilt archive contains TTS objects and a GPL-3.0 espeak-ng
-      # library. EasyScribe never calls TTS, so drop those libraries from the
-      # link set. If any non-TTS object needed them the link would fail; it does
-      # not, and the resulting exe contains no espeak code.
-      - name: Exclude the unused TTS libraries
-        shell: pwsh
-        run: |
-          $capi = Get-ChildItem sherpa-static -Recurse -Filter sherpa-onnx-c-api.lib | Select-Object -First 1
-          if (-not $capi) { throw "sherpa-onnx-c-api.lib not found" }
-          $libDir = $capi.Directory.FullName
-          foreach ($name in @("espeak-ng.lib", "piper_phonemize.lib")) {
-            $path = Join-Path $libDir $name
-            if (Test-Path $path) {
-              Remove-Item $path -Force
-              Write-Host "Excluded $name (TTS only)"
-            }
-          }
 
       # ffmpeg (GyanD 7.1.1 essentials, pinned). Kept as a cache so release
       # rebuilds do not download 150 MB each time.
@@ -366,10 +348,9 @@ jobs:
         run: |
           # The build scripts do not declare every input as rerun-if-env-changed,
           # so a restored target directory could keep an older CMake
-          # configuration or an older list of sherpa libraries. Reconfigure
-          # whisper.cpp and re-enumerate the static sherpa link set.
+          # configuration. Reconfigure whisper.cpp from scratch.
           if (Test-Path target\release) {
-            foreach ($pattern in @("whisper-rs-sys-*", "whisper-rs-*", "sherpa-rs-sys-*")) {
+            foreach ($pattern in @("whisper-rs-sys-*", "whisper-rs-*")) {
               Get-ChildItem target\release\build -Directory -Filter $pattern -ErrorAction SilentlyContinue |
                 Remove-Item -Recurse -Force
               Get-ChildItem target\release\.fingerprint -Directory -Filter $pattern -ErrorAction SilentlyContinue |

@@ -11,11 +11,15 @@ selftest measures real speech. The audit-2 follow-up blockers (missing tracked
 speech fixture, `Win32_Security`, Linux sherpa link, `whisper-cli` job object,
 missing redistributable notices) are fixed. `rust.7` failed in the Vulkan loader
 copy, `rust.8` in a multi-config CMake assertion, `rust.9` in a wrong
-MSVC-only FMA assertion, and `rust.10` on the app's own
-`CMAKE_BUILD_TYPE:UNINITIALIZED=Release` cache form; all four are fixed.
-Six independent audits of the finished product are recorded in
-`docs/rewrite/AUDIT_3.md`; their confirmed data-loss, recovery, payload and
-release-gate fixes are in `d59b8f2`, and `v3.2.3-rust.11` is the validation run.
+MSVC-only FMA assertion, `rust.10` on the app's own
+`CMAKE_BUILD_TYPE:UNINITIALIZED=Release` cache form, and `rust.11` when the
+TTS-only sherpa libraries were removed. That last attempt proved espeak-ng is
+genuinely pulled by `piper-phonemize-lexicon.obj`; the libraries are restored,
+the GPL-3.0 component is disclosed, and the combined-work licensing decision is
+a blocker for `Latest`. Six independent audits of the finished product are
+recorded in `docs/rewrite/AUDIT_3.md`; their confirmed data-loss, recovery,
+payload and release-gate fixes are in `d59b8f2`, and `v3.2.3-rust.12` is the
+validation run.
 
 ## What is built
 
@@ -279,15 +283,19 @@ release-gate fixes are in `d59b8f2`, and `v3.2.3-rust.11` is the validation run.
 
 ## Next actions
 
-1. Verify `v3.2.3-rust.11` from `d59b8f2`: confirm
-   `rune-release.yml@refs/heads/rune-rewrite`, the espeak-free Windows link, the
-   whisper-cli control time, system-info features, golden text, speech budget,
-   both selftest engines, the child diarization, imports/subsystem, cached
-   launch and draft assets. Record the result (pass or fail) here.
-2. Verify the draft `EasyScribe-v3.2.3-rust.11.exe` and `.sha256`; delete the
-   superseded `rust.4`–`rust.10` drafts if present.
-3. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
+1. Verify `v3.2.3-rust.12` from the latest HEAD: confirm
+   `rune-release.yml@refs/heads/rune-rewrite`, the whisper-cli control time,
+   system-info features, golden text, speech budget, both selftest engines, the
+   child diarization, imports/subsystem, cached launch and draft assets. Record
+   the result (pass or fail) here.
+2. Verify the draft `EasyScribe-v3.2.3-rust.12.exe` and `.sha256`; delete the
+   superseded `rust.4`–`rust.11` drafts if present.
+3. Resolve the GPL-3.0 espeak-ng static-link decision before publishing
+   `Latest`: relicense the combined work under GPL-3.0 or rebuild sherpa-onnx
+   with TTS disabled.
+4. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
    microphone, DPI, dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the
    real-PC speed comparison; record results here.
-4. Hand over for the decision on replacing v3.2.3. Do not publish rust.11 as
-   Latest until the real-PC speed and clean-PC checks pass.
+5. Hand over for the decision on replacing v3.2.3. Do not publish rust.12 as
+   Latest until the real-PC speed, clean-PC checks and the espeak licensing
+   decision are complete.
