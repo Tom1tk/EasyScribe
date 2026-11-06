@@ -16,6 +16,8 @@ fn no_network_crate_is_a_runtime_dependency() {
             "easyscribe",
             "-e",
             "normal",
+            "--target",
+            "x86_64-pc-windows-msvc",
             "--prefix",
             "none",
         ])
