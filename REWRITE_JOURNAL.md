@@ -181,8 +181,11 @@ the narrative history.
   (`GGML_AVX*` off) and AVX2 builds; a 5 s silence decode takes about 70 s with
   generic kernels and passes both before and after loading sherpa. A standalone
   reproduction confirmed whisper-rs 0.16's `set_abort_callback_safe` boxes the
-  closure twice and then calls it through the wrong type, so its abort flag is
-  always false; Stop during whisper.cpp decoding never actually worked.
+  closure twice and then calls it through the wrong type; it reads memory that
+  is not the cancel token (false on Linux, where Stop therefore never worked).
+  The same undefined read can produce `true` on another layout: whisper.cpp
+  then rejects the encode at its final check, after the whole encoder has run,
+  which matches the Windows timing and error.
 - **Diagnostic changes.** `whispercpp` now installs a raw C abort callback with
   a live `AbortProbe` (fixing Stop), and `EASYSCRIBE_WHISPER_TRACE=1` prints
   model-load time, sample/region count, thread count, per-region `full()` time

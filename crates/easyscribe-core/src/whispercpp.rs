@@ -364,8 +364,9 @@ fn decode_regions(
         params.set_print_timestamps(false);
         params.set_n_threads(crate::config::num_threads() as i32);
         // whisper-rs' `set_abort_callback_safe` boxes the closure twice and
-        // then calls it through the wrong type, so the flag it reads is always
-        // false. Pass a plain C callback with a pointer to a live probe.
+        // then calls it through the wrong type, so it reads arbitrary memory
+        // instead of the cancel token. Pass a plain C callback with a pointer
+        // to a live probe.
         let probe = Box::new(AbortProbe {
             cancel: cancel.clone(),
             calls: 0.into(),

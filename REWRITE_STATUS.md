@@ -97,11 +97,15 @@ final validation gate.
   diagnostics. The Windows job now pins and asserts `GGML_AVX`/`GGML_AVX2`,
   wipes cached whisper build directories before compiling, verifies the GGUF
   SHA-256 and bumps the Rust cache key.
-- **whisper.cpp Stop fixed** — whisper-rs 0.16's
-  `set_abort_callback_safe` calls the closure through the wrong type, so its
-  abort flag always reads false (verified with a standalone reproduction on
-  Linux). `whispercpp::decode_regions` now installs a plain C abort callback
-  with a live `AbortProbe`, restoring cooperative Stop during long decodes.
+- **whisper.cpp Stop fixed (and a likely encode-failure cause removed).**
+  whisper-rs 0.16's `set_abort_callback_safe` boxes the closure twice and then
+  calls it through the wrong type, so the abort callback reads memory that is
+  not the cancel token. A Linux reproduction reads false even for a cancelled
+  token; on another layout the same undefined read can produce `true`, which
+  aborts the encoder at its final check and yields exactly
+  `whisper_full_with_state: failed to encode`. `whispercpp::decode_regions` now
+  installs a plain C abort callback with a live `AbortProbe`, restoring
+  cooperative Stop and removing the undefined read.
 - **UI audit** — all confirmed issues fixed: the real window height now reaches
   `AppState`; the 600–678 pt page scrolls so the utility row and tall results
   stay reachable; record tiles and microphone menu rows are keyboard-focusable
