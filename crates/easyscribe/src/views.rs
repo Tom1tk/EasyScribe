@@ -687,7 +687,8 @@ fn options_tiles(s: &AppState, busy: bool) -> El {
                     t.sky_hover,
                     |s: &mut AppState| s.timestamps = !s.timestamps,
                 )
-                .key("timestamp-toggle"),
+                .key("timestamp-toggle")
+                .label("Add timestamps"),
             )
             .child(timestamp_label),
     );
@@ -749,7 +750,8 @@ fn options_tiles(s: &AppState, busy: bool) -> El {
                         }
                     },
                 )
-                .key("speaker-toggle"),
+                .key("speaker-toggle")
+                .label("Name the speakers"),
             )
             .child(speaker_label),
     );
@@ -1430,6 +1432,7 @@ fn rename_row(s: &AppState) -> El {
                         .child(
                             text_input(&s.rename_edit, type_::BODY)
                                 .key("rename-input")
+                                .label("New name")
                                 .w_full()
                                 .single_line()
                                 .color(t.ink)
@@ -1647,6 +1650,7 @@ fn naming_panel(s: &AppState, naming: &NamingState) -> El {
                     .child(
                         text_input(&naming_row.edit, type_::BODY)
                             .key(format!("speaker-name-{index}"))
+                            .label(format!("Name for {}", naming_row.default_name))
                             .w_full()
                             .single_line()
                             .color(t.ink)
