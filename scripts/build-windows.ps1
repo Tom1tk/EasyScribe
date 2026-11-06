@@ -79,15 +79,56 @@ Copy-Item (Join-Path $root "LICENSE") (Join-Path $payload "LICENSE")
 # Build the app and packer in one cargo invocation so the static sherpa
 # feature applies to both; a separate `cargo run -p easyscribe-pack` would
 # rebuild core without it and download a dynamic sherpa just to package.
-cargo build --release -p easyscribe -p easyscribe-pack `
-    --no-default-features --features easyscribe/release-static
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-
 $target = if ($env:CARGO_TARGET_DIR) {
     $env:CARGO_TARGET_DIR
 } else {
     Join-Path $root "target"
 }
+
+# sherpa-onnx 1.12.9's cmake/show-info.cmake calls wmic, which Windows 11 no
+# longer ships. Patch the vendored copy after cargo fetch so the source build
+# configures under CMake 4.
+cargo fetch
+if ($LASTEXITCODE -ne 0) { throw "cargo fetch failed" }
+$showInfo = Get-ChildItem "$env:USERPROFILE\.cargo\registry\src" -Recurse -Filter show-info.cmake -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "sherpa-rs-sys" -and $_.FullName -match "sherpa-onnx" }
+if (-not $showInfo) { throw "sherpa-onnx show-info.cmake not found" }
+$old = 'string(REPLACE "\n" ";" SHERPA_ONNX_OS_LIST ${SHERPA_ONNX_OS_TWO_LINES})'
+$new = 'string(REPLACE "\n" ";" SHERPA_ONNX_OS_LIST "${SHERPA_ONNX_OS_TWO_LINES}")'
+$listLine = '  list(GET SHERPA_ONNX_OS_LIST 1 SHERPA_ONNX_OS)'
+$listGuard = @'
+  if(SHERPA_ONNX_OS_LIST)
+    list(GET SHERPA_ONNX_OS_LIST 1 SHERPA_ONNX_OS)
+  else()
+    set(SHERPA_ONNX_OS "Windows")
+  endif()
+'@
+foreach ($file in $showInfo) {
+    $text = Get-Content $file.FullName -Raw
+    if (-not $text.Contains($new)) {
+        if (-not $text.Contains($old)) { throw "Unexpected show-info.cmake string line: $($file.FullName)" }
+        $text = $text.Replace($old, $new)
+    }
+    if (-not $text.Contains('if(SHERPA_ONNX_OS_LIST)')) {
+        if (-not $text.Contains($listLine)) { throw "Unexpected show-info.cmake list line: $($file.FullName)" }
+        $text = $text.Replace($listLine, $listGuard)
+    }
+    Set-Content -Path $file.FullName -Value $text -NoNewline
+}
+
+# A restored target can keep the old, unpatched sherpa source in OUT_DIR.
+if (Test-Path (Join-Path $target "release")) {
+    foreach ($pattern in @("sherpa-rs-sys-*", "whisper-rs-sys-*", "whisper-rs-*")) {
+        Get-ChildItem (Join-Path $target "release\build") -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force
+        Get-ChildItem (Join-Path $target "release\.fingerprint") -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force
+    }
+}
+
+cargo build --release -p easyscribe -p easyscribe-pack `
+    --no-default-features --features easyscribe/release-static
+if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 $sherpaCache = Get-ChildItem (Join-Path $target "release\build") -Recurse -Filter CMakeCache.txt -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match "sherpa-rs-sys" } | Select-Object -First 1

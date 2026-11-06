@@ -330,11 +330,19 @@ jobs:
           if (-not $files) { throw "sherpa-onnx show-info.cmake not found; cargo fetch did not extract it" }
           $old = 'string(REPLACE "\n" ";" SHERPA_ONNX_OS_LIST ${SHERPA_ONNX_OS_TWO_LINES})'
           $new = 'string(REPLACE "\n" ";" SHERPA_ONNX_OS_LIST "${SHERPA_ONNX_OS_TWO_LINES}")'
+          $listLine = '  list(GET SHERPA_ONNX_OS_LIST 1 SHERPA_ONNX_OS)'
+          $listGuard = "  if(SHERPA_ONNX_OS_LIST)`n    list(GET SHERPA_ONNX_OS_LIST 1 SHERPA_ONNX_OS)`n  else()`n    set(SHERPA_ONNX_OS `"Windows`")`n  endif()"
           foreach ($file in $files) {
             $text = Get-Content $file.FullName -Raw
-            if ($text.Contains($new)) { Write-Host "Already patched: $($file.FullName)"; continue }
-            if (-not $text.Contains($old)) { throw "Unexpected show-info.cmake content: $($file.FullName)" }
-            Set-Content -Path $file.FullName -Value $text.Replace($old, $new) -NoNewline
+            if (-not $text.Contains($new)) {
+              if (-not $text.Contains($old)) { throw "Unexpected show-info.cmake string line: $($file.FullName)" }
+              $text = $text.Replace($old, $new)
+            }
+            if (-not $text.Contains('if(SHERPA_ONNX_OS_LIST)')) {
+              if (-not $text.Contains($listLine)) { throw "Unexpected show-info.cmake list line: $($file.FullName)" }
+              $text = $text.Replace($listLine, $listGuard)
+            }
+            Set-Content -Path $file.FullName -Value $text -NoNewline
             Write-Host "Patched $($file.FullName)"
           }
 
