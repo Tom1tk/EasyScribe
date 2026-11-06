@@ -13,8 +13,8 @@ use crate::app::{
 use crate::theme::{Theme, metric, type_};
 use crate::widgets::{
     Bar, ButtonKind, button, card, checkbox, empty_spacer, info_pill, label, link_text,
-    message_banner, muted, progress_bar, radio, read_text, small_ink, small_muted, status_pill,
-    step_badge, step_header, strong,
+    message_banner, muted, progress_bar, radio, read_text, small_muted, status_pill, step_header,
+    strong,
 };
 
 pub fn view(s: &AppState) -> El {
@@ -317,10 +317,11 @@ fn files_add_card(s: &AppState) -> El {
     let mut header_right = row().gap(10.0).center_y();
     if count > 0 {
         header_right = header_right
-            .child(small_ink(
-                t,
-                easyscribe_core::outputs::plural(count, "file"),
-            ))
+            .child(
+                text(easyscribe_core::outputs::plural(count, "file"))
+                    .font(type_::BODY)
+                    .color(t.muted),
+            )
             .child(
                 button(
                     t,
@@ -448,7 +449,9 @@ fn file_list(s: &AppState) -> El {
     let t = &s.theme;
     let busy = !s.idle();
     let mut list = col().key("file-list").w_full().gap(0.0);
-    let show_pills = s.activity.is_some() || !busy;
+    // Before a batch starts every row would say "Waiting"; the activity card
+    // is what marks a batch as running, so pills appear with it.
+    let show_pills = s.activity.is_some();
     for (index, file) in s.files.iter().enumerate() {
         let path = &file.path;
         let name = file.display_name.clone().unwrap_or_else(|| {
@@ -553,7 +556,7 @@ fn files_options_card(s: &AppState, busy: bool) -> El {
 
 fn options_folded(s: &AppState) -> El {
     let t = &s.theme;
-    row()
+    col()
         .key("options-folded")
         .w_full()
         .radius(metric::RADIUS_LG)
@@ -562,17 +565,22 @@ fn options_folded(s: &AppState) -> El {
         .shadow(2.0, 10.0, t.shadow)
         .padding(18.0)
         .py(14.0)
-        .center_y()
         .gap(10.0)
-        .child(step_badge(t, "2", t.teal_soft, t.teal_ink))
+        .child(step_header(
+            t,
+            "2",
+            "Choose options",
+            t.teal_soft,
+            t.teal_ink,
+            Some(change_button(s)),
+        ))
         .child(
             text(s.mode_summary_files())
                 .font(type_::BODY)
                 .color(t.muted)
-                .grow(1.0)
+                .pl(32.0)
                 .wrap(),
         )
-        .child(change_button(s))
 }
 
 fn change_button(s: &AppState) -> El {
@@ -620,7 +628,7 @@ fn files_output_row(s: &AppState, busy: bool) -> El {
         r = r.child(button(
             t,
             "Use default",
-            ButtonKind::LinkMuted,
+            ButtonKind::Link,
             100.0,
             32.0,
             type_::SMALL,
@@ -836,28 +844,30 @@ fn record_view(s: &AppState) -> El {
 
     if folded {
         record_card = record_card
+            .child(step_header(
+                t,
+                "2",
+                "What do you want?",
+                t.coral_soft,
+                t.coral_ink,
+                Some(change_button(s)),
+            ))
             .child(
-                row()
-                    .w_full()
-                    .center_y()
-                    .gap(10.0)
-                    .child(
-                        text(s.record_summary())
-                            .font(type_::BODY)
-                            .color(t.muted)
-                            .grow(1.0)
-                            .wrap(),
-                    )
-                    .child(change_button(s)),
+                text(s.record_summary())
+                    .font(type_::BODY)
+                    .color(t.muted)
+                    .pl(32.0)
+                    .wrap(),
             )
-            .child(
-                row()
-                    .w_full()
-                    .pt(4.0)
-                    .gap(8.0)
-                    .child(step_badge(t, "3", t.coral_soft, t.coral_ink))
-                    .child(record_controls(s)),
-            );
+            .child(step_header(
+                t,
+                "3",
+                "Record",
+                t.coral_soft,
+                t.coral_ink,
+                None,
+            ))
+            .child(record_controls(s));
     } else {
         record_card = record_card
             .child(step_header(
@@ -1132,7 +1142,7 @@ fn record_folder_row(s: &AppState, busy: bool) -> El {
         r = r.child(button(
             t,
             "Use default",
-            ButtonKind::LinkMuted,
+            ButtonKind::Link,
             100.0,
             32.0,
             type_::SMALL,
@@ -1163,11 +1173,9 @@ fn record_controls(s: &AppState) -> El {
     } else {
         "Start recording".to_owned()
     };
-    let timer_color = if recording && !s.record_saving {
-        t.coral_ink
-    } else {
-        t.faint
-    };
+    // Keep the timer coral while the recording is being saved: the stop
+    // request has not finished yet, and the timer is still meaningful.
+    let timer_color = if recording { t.coral_ink } else { t.faint };
     let level = if recording {
         s.level.clamp(0.0, 1.0)
     } else {
@@ -1180,7 +1188,7 @@ fn record_controls(s: &AppState) -> El {
         .radius(4.0)
         .fill(t.border)
         .clip_rounded(4.0);
-    if recording {
+    if recording && level > 0.0 {
         meter = meter.child(
             el().w((120.0 * level).max(1.0))
                 .h_full()

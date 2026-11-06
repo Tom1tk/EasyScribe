@@ -151,10 +151,6 @@ pub fn small_muted(t: &Theme, value: impl Into<String>) -> El {
     text(value.into()).font(type_::SMALL).color(t.muted)
 }
 
-pub fn small_ink(t: &Theme, value: impl Into<String>) -> El {
-    text(value.into()).font(type_::SMALL).color(t.ink)
-}
-
 pub fn link_text(t: &Theme, value: impl Into<String>) -> El {
     text(value.into()).font(type_::SMALL).color(t.teal_ink)
 }

@@ -690,6 +690,15 @@ impl AppState {
             activity.open_transcript = saved_count == 1;
             activity.open_folder = saved_count > 0 || recording_retry;
             activity.try_again = false;
+            if saved_count > 0 {
+                // The fatal error is about the remaining files; work that
+                // reached disk is still a successful result.
+                activity.bar_color = t.green;
+                activity.bar = BarMode::Determinate;
+                activity.progress = 1.0;
+            } else {
+                activity.bar_color = t.crimson;
+            }
         } else if done.cancelled {
             activity.title = "Stopped".into();
             activity.tone = Tone::Muted;
@@ -849,10 +858,13 @@ impl AppState {
         activity.bar_color = t.green;
         activity.bar = BarMode::Determinate;
         activity.progress = 1.0;
-        let folder = audio_path
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
+        let folder = outputs::shorten(
+            &audio_path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            60,
+        );
         activity.detail = if done.transcript.is_some() {
             format!("The audio and the live transcript are in {folder}.")
         } else if self.record_mode == RecordMode::Live {
@@ -950,16 +962,19 @@ impl AppState {
         raw_keys.sort();
         let rows = raw_keys
             .into_iter()
-            .map(|raw| {
+            .enumerate()
+            .map(|(index, raw)| {
                 let default_name = preview
                     .speaker_map
                     .get(&raw)
                     .cloned()
                     .unwrap_or_else(|| raw.clone());
+                let mut edit = TextEdit::new("");
+                edit.focused = index == 0;
                 NamingRow {
                     share: preview.shares.get(&raw).copied(),
                     clip: preview.clips.get(&raw).cloned(),
-                    edit: TextEdit::new(""),
+                    edit,
                     raw,
                     default_name,
                 }

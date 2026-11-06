@@ -21,7 +21,9 @@ if (-not $env:SHERPA_LIB_PATH) {
 
 # The official 1.12.9 static libraries use the static MSVC runtime. Match it
 # for Rust and for the whisper.cpp CMake build, otherwise the link fails.
-$env:RUSTFLAGS = (($env:RUSTFLAGS, "-C target-feature=+crt-static") -join " ").Trim()
+# advapi32 supplies the ETW and registry imports that onnxruntime and
+# espeak-ng use; their static libs do not always carry the defaultlib.
+$env:RUSTFLAGS = (($env:RUSTFLAGS, "-C target-feature=+crt-static", "-C link-arg=advapi32.lib") -join " ").Trim()
 $env:CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
 $env:CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
 $env:GGML_NATIVE = "OFF"
