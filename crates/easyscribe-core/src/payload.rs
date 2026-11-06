@@ -327,6 +327,8 @@ fn cache_complete(runtime: &Path, footer: &Footer) -> bool {
         "assets/selftest_speech.wav",
         "assets/selftest_speech.txt",
         "licenses/THIRD-PARTY-NOTICES.txt",
+        "licenses/Vulkan-Loader-Apache-2.0.txt",
+        "licenses/Microsoft-VC-Redistributable.txt",
         "LICENSE",
     ];
     required.iter().all(|rel| {
@@ -1023,6 +1025,8 @@ mod tests {
             "assets/selftest_speech.wav",
             "assets/selftest_speech.txt",
             "licenses/THIRD-PARTY-NOTICES.txt",
+            "licenses/Vulkan-Loader-Apache-2.0.txt",
+            "licenses/Microsoft-VC-Redistributable.txt",
             "LICENSE",
         ] {
             let path = runtime.join(rel);
