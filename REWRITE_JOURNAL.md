@@ -141,7 +141,9 @@ the narrative history.
   muted; the recording-saved detail shortens the folder to 60 characters; the
   timer stays coral while saving; the level meter no longer draws a 1 px dot at
   zero; a fatal batch that saved an earlier file keeps a full green bar; and
-  the speaker-naming panel focuses its first entry.
+  the speaker-naming panel focuses its first entry. At the default 820 pt
+  height the naming panel now takes over the screen as it already did below
+  820 pt, because the new folded-step titles pushed Save/Skip past the glass.
 - **Windows link failure and fix.** The first release run reached
   `Build the app and packer` and failed while linking `sherpa_rs.dll`: six
   unresolved `advapi32` imports from onnxruntime's ETW telemetry and

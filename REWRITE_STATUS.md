@@ -61,7 +61,7 @@ final validation gate.
 | sherpa-onnx **1.12.9** static libs | `sherpa-rs` 0.6.8 binds the 1.12.9 C API; 1.13.x added struct fields and is ABI-incompatible. |
 | Static MSVC runtime | The 1.12.9 static libraries are `/MT`; the workflow sets `+crt-static` and `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`. |
 | Explicit `advapi32.lib` on Windows | onnxruntime's ETW/telemetry and espeak-ng's registry calls leave six undefined imports in `sherpa-rs`'s cdylib link. The build adds `-C link-arg=advapi32.lib` alongside the static CRT flags. |
-| Naming panel takes over below 820 pt | Python clips Save/Skip on short windows; the Rust build keeps them reachable. Intentional usability deviation. |
+| Naming panel takes over at 820 pt and below | Python clips Save/Skip at the default height; the Rust build hides the Files/Record content while naming so both actions stay reachable. Intentional usability deviation. |
 | In-process engines | Stop is cooperative; diarization has a cancellation callback. Crash isolation remains optional future hardening. |
 | Privacy as an in-app modal | Same content/actions as the Python window; documented visual deviation. |
 
