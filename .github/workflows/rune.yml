@@ -19,6 +19,18 @@ jobs:
             libxkbcommon-dev pkg-config cmake
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Cache the sherpa-onnx runtime libraries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sherpa-rs
+          key: sherpa-rs-1.12.9-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Force a fresh sherpa-onnx link check
+        # Swatinem/rust-cache restores target/, including sherpa-rs-sys's
+        # build-script output, but not the download cache the output points at.
+        # Re-running build.rs restores or downloads the shared libraries that
+        # the linker needs.
+        run: |
+          rm -rf target/debug/build/sherpa-rs-sys-* target/debug/.fingerprint/sherpa-rs-sys-*
       - name: Tests
         run: cargo test --workspace
 

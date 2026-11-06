@@ -224,7 +224,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: whisper.cpp\build\bin\Release
-          key: whispercpp-vulkan-v1.8.6-vksdk1.4.313.2-v1
+          key: whispercpp-vulkan-v1.8.6-vksdk1.4.313.2-v2
 
       - name: Install Vulkan SDK
         if: steps.whispercpp-cache.outputs.cache-hit != 'true'
@@ -248,6 +248,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "whisper.cpp configure failed" }
           cmake --build whisper.cpp\build --config Release --target whisper-cli --parallel
           if ($LASTEXITCODE -ne 0) { throw "whisper.cpp build failed" }
+          # ggml-vulkan.dll imports vulkan-1.dll at load time. Ship the Khronos
+          # loader beside the CLI so a PC without a graphics driver can still
+          # start whisper-cli and decode on the CPU instead of failing to load.
+          $loader = Join-Path $env:VULKAN_SDK "Bin\vulkan-1.dll"
+          if (-not (Test-Path $loader)) { throw "vulkan-1.dll not found in the Vulkan SDK" }
+          Copy-Item $loader whisper.cpp\build\bin\Release\ -Force
 
       - name: Verify whisper-cli.exe runs
         shell: pwsh
@@ -265,7 +271,7 @@ jobs:
         shell: pwsh
         run: |
           $bin = "whisper.cpp\build\bin\Release\whisper-cli.exe"
-          $wav = (Resolve-Path "tests\data\selftest_speech.wav").Path
+          $wav = (Resolve-Path "assets\selftest_speech.wav").Path
           $model = (Resolve-Path "whispercpp\ggml-large-v3-turbo-q5_0.bin").Path
           $out = Join-Path $PWD "control-whisper"
           $watch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -366,8 +372,6 @@ jobs:
             }
           }
           Copy-Item assets payload\assets -Recurse
-          Copy-Item tests\data\selftest_speech.wav payload\assets\selftest_speech.wav
-          Copy-Item tests\data\selftest_speech.txt payload\assets\selftest_speech.txt
           Copy-Item licenses payload\licenses -Recurse
           Copy-Item LICENSE payload\LICENSE
           Get-ChildItem payload\whispercpp | Select-Object Name, Length | Format-Table
@@ -380,7 +384,7 @@ jobs:
           $dir = "payload\whispercpp"
           $bin = Join-Path $dir "whisper-cli.exe"
           if (-not (Test-Path $bin)) { throw "whisper-cli.exe is missing from the payload" }
-          foreach ($name in @("whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")) {
+          foreach ($name in @("whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll", "vulkan-1.dll")) {
             if (-not (Test-Path (Join-Path $dir $name))) { throw "Missing whisper-cli dependency: $name" }
           }
           $deps = (& dumpbin /dependents $bin | Out-String)
@@ -479,6 +483,7 @@ jobs:
             "whispercpp\ggml-large-v3-turbo-q5_0.bin",
             "whispercpp\whisper-cli.exe",
             "whispercpp\ggml-vulkan.dll",
+            "whispercpp\vulkan-1.dll",
             "assets\EasyScribe.ico",
             "assets\selftest_speech.wav",
             "assets\selftest_speech.txt",

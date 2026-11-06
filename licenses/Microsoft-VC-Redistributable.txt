@@ -1,0 +1,21 @@
+Microsoft Visual C++ 2022 Redistributable (14.x)
+=================================================
+
+EasyScribe ships these Microsoft runtime files beside whisper-cli.exe:
+
+  vcruntime140.dll
+  vcruntime140_1.dll
+  msvcp140.dll
+  vcomp140.dll
+
+They are part of the Microsoft Visual C++ Redistributable for Visual Studio
+2022. Microsoft permits these files to be redistributed with applications
+built using Visual Studio, subject to the Microsoft Visual Studio license
+terms.
+
+License terms and redistribution guidance:
+  https://visualstudio.microsoft.com/license-terms/
+  https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist
+
+The files are copied unmodified from the Visual Studio build tools installed
+on the release runner. EasyScribe does not modify or reverse engineer them.

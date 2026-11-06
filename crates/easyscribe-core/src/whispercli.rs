@@ -7,10 +7,11 @@
 //! fallback when no bundled binary is present (development and Linux tests).
 
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -73,7 +74,6 @@ pub fn probe_devices(paths: &Paths) -> Vec<CliGpu> {
     }
     let mut command = Command::new(&paths.whispercpp_bin);
     command
-        .current_dir(&paths.whispercpp_dir)
         .arg("-m")
         .arg(&empty)
         .arg("-f")
@@ -94,8 +94,37 @@ pub fn probe_devices(paths: &Paths) -> Vec<CliGpu> {
     devices
 }
 
+/// Probe once per process. The same binary cannot gain or lose a Vulkan
+/// device during one transcription session, and a probe starts a child
+/// process, so repeat files should not pay for it again.
+fn cached_devices(paths: &Paths) -> Vec<CliGpu> {
+    #[derive(Clone)]
+    struct CachedProbe {
+        bin: PathBuf,
+        devices: Vec<CliGpu>,
+    }
+    static CACHE: OnceLock<Mutex<Option<CachedProbe>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock()
+        && let Some(cached) = guard.as_ref()
+        && cached.bin == paths.whispercpp_bin
+    {
+        return cached.devices.clone();
+    }
+    let devices = probe_devices(paths);
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(CachedProbe {
+            bin: paths.whispercpp_bin.clone(),
+            devices: devices.clone(),
+        });
+    }
+    devices
+}
+
 fn run_probe(mut command: Command, timeout: Duration) -> Option<Vec<u8>> {
     let mut child = command.spawn().ok()?;
+    #[cfg(windows)]
+    crate::win_job::assign(&child);
     let started = Instant::now();
     loop {
         match child.try_wait() {
@@ -195,7 +224,7 @@ pub fn transcribe_file(
     }
 
     let mut settings = crate::settings::Settings::load(paths.settings_file.clone());
-    let devices = probe_devices(paths);
+    let devices = cached_devices(paths);
     for device in &devices {
         reporter.log(&format!(
             "[whisper.cpp] GPU {}: {} | {}",
@@ -245,6 +274,13 @@ pub fn transcribe_file(
             let _ = std::fs::remove_file(&output);
             return Err(Error::Cancelled);
         }
+        Err(error) if is_start_failure(&error) => {
+            let _ = std::fs::remove_file(&output);
+            reporter.log(&format!(
+                "[whisper.cpp] The bundled whisper-cli could not start ({error}). Using the in-process engine."
+            ));
+            return crate::whispercpp::transcribe_file(paths, audio_path, cancel, reporter);
+        }
         Err(error) if gpu_usable.is_some() => {
             let gpu = gpu_usable.expect("checked above");
             reporter.log(&format!(
@@ -259,9 +295,18 @@ pub fn transcribe_file(
                     gpu.name
                 ));
             }
-            run_cli(paths, audio_path, &output, None, cancel, reporter)?
+            match run_cli(paths, audio_path, &output, None, cancel, reporter) {
+                Ok(segments) => segments,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&output);
+                    return Err(error);
+                }
+            }
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            let _ = std::fs::remove_file(&output);
+            return Err(error);
+        }
     };
     let _ = std::fs::remove_file(&output);
     reporter.progress(1.0);
@@ -270,6 +315,13 @@ pub fn transcribe_file(
         segments.len()
     ));
     Ok(segments)
+}
+
+/// A spawn failure means the bundled CLI (or one of its DLLs) could not be
+/// loaded. Unlike a decode failure, this is safe to retry with the in-process
+/// engine, which is linked into the app and needs no child DLLs.
+fn is_start_failure(error: &Error) -> bool {
+    matches!(error, Error::WhisperCpp(message) if message.starts_with("Could not start "))
 }
 
 fn run_cli(
@@ -287,7 +339,6 @@ fn run_cli(
 
     let mut command = Command::new(&paths.whispercpp_bin);
     command
-        .current_dir(&paths.whispercpp_dir)
         .arg("-m")
         .arg(&paths.whispercpp_model)
         .arg("-f")
@@ -325,32 +376,44 @@ fn run_cli(
             paths.whispercpp_bin.display()
         ))
     })?;
-    let stderr = child.stderr.take();
+    #[cfg(windows)]
+    crate::win_job::assign(&child);
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::WhisperCpp(
+            "whisper-cli started without a stderr pipe".into(),
+        ));
+    };
     let (line_tx, line_rx) = mpsc::channel::<String>();
-    let reader = stderr.map(|stderr| {
-        std::thread::Builder::new()
-            .name("whisper-cli-stderr".into())
-            .spawn(move || {
-                for line in BufReader::new(stderr)
-                    .lines()
-                    .map_while(std::result::Result::ok)
-                {
-                    if line_tx.send(line).is_err() {
-                        break;
-                    }
+    let reader = match std::thread::Builder::new()
+        .name("whisper-cli-stderr".into())
+        .spawn(move || {
+            for line in BufReader::new(stderr)
+                .lines()
+                .map_while(std::result::Result::ok)
+            {
+                if line_tx.send(line).is_err() {
+                    break;
                 }
-            })
-    });
-    let reader = reader.transpose().ok().flatten();
+            }
+        }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::WhisperCpp(format!(
+                "Could not read whisper-cli progress: {error}"
+            )));
+        }
+    };
     let mut tail = Vec::new();
 
     let status = loop {
         if cancel.is_cancelled() {
             let _ = child.kill();
             let _ = child.wait();
-            if let Some(reader) = reader {
-                let _ = reader.join();
-            }
+            let _ = reader.join();
             return Err(Error::Cancelled);
         }
         match child.try_wait() {
@@ -362,18 +425,14 @@ fn run_cli(
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                if let Some(reader) = reader {
-                    let _ = reader.join();
-                }
+                let _ = reader.join();
                 return Err(Error::WhisperCpp(format!(
                     "Could not wait for whisper-cli: {error}"
                 )));
             }
         }
     };
-    if let Some(reader) = reader {
-        let _ = reader.join();
-    }
+    let _ = reader.join();
     drain_stderr(&line_rx, reporter, &mut tail);
 
     if !status.success() {
@@ -416,7 +475,7 @@ fn push_tail(tail: &mut Vec<String>, line: String) {
 fn describe_stderr(line: &str, reporter: &Arc<dyn Reporter>) {
     static PROGRESS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let progress = PROGRESS.get_or_init(|| {
-        Regex::new(r"whisper_print_progress_callback: progress = (\d+)%")
+        Regex::new(r"whisper_print_progress_callback:\s*progress\s*=\s*(\d+)%")
             .expect("valid whisper progress regex")
     });
     if let Some(caps) = progress.captures(line)

@@ -210,3 +210,99 @@ the narrative history.
   import/subsystem and cached-launch checks passed. The 655 s also showed the
   cached build was still scalar, so the workflow changes were copied to `main`
   (7f3e964) and `v3.2.3-rust.5` was dispatched with the asserted AVX2 build.
+
+## 2026-11-06 — Session 6: audit 2 — GPU, speed diagnosis, process isolation
+
+- **Audit 2's release-state findings.** The single exe was accepted, but two
+  findings blocked replacing v3.2.3: the 655 s CI decode and the missing GPU
+  path. Finding 5 clarified that the remembered-GPU code existed but was inert
+  because the Vulkan feature was off, and that a driver crash in-process cannot
+  be caught.
+- **Finding 3 first.** `v3.2.3-rust.5` was dispatched from `main` with the
+  updated workflow: the GGUF hash gate and the `GGML_NATIVE=OFF`,
+  `GGML_AVX=ON`, `GGML_AVX2=ON`, `CMAKE_BUILD_TYPE=Release` asserts all ran.
+  The decode still took 661.2 s cold and 635.8 s after sherpa for 5 s of
+  silence. That ruled out the missing AVX2 codegen and pointed at the
+  whisper-rs-sys build: it forces `GGML_OPENMP=OFF`, while the Python
+  `whisper-cli` build uses OpenMP. Enabling OpenMP in-process would import
+  `vcomp140.dll` at process start, which the one-exe contract cannot satisfy.
+- **GPU restored (option A).** `whispercli.rs` now runs the bundled Vulkan
+  `whisper-cli` as a child process with the reference argv (`-bs 5`, `-t`,
+  `-dev`, `-pp`, `--output-json`). It probes devices from whisper-cli's own
+  stderr, prefers a dedicated GPU over `uma: 1`, then matrix cores, persists the
+  choice with `save_gpu_device`, and on a non-zero exit saves the identity with
+  `save_gpu_disabled_for` and retries once with `-ng`. Stop kills the child.
+  `EASYSCRIBE_WHISPER_CPU=1` forces the CPU path for clean-PC testing. The
+  in-process `whisper-rs` engine remains the fallback and is still selftested.
+- **Speed diagnosis.** On the Linux dev box, 23.3 s of real speech with 4
+  threads: the independent `whisper-cli` took 43.9 s, the in-process engine
+  65.5 s. Flash attention is now on in-process (55 MB encode buffer instead of
+  212 MB). CI now runs the same `whisper-cli -ng` control on the same runner and
+  derives the selftest budget as 2x that control (minimum 60 s), so a fast
+  runner gets a tight gate and a slow runner cannot fail the release on runner
+  variance alone.
+- **No-speech gate.** Empty VAD bounds now return zero regions; the CLI and
+  in-process paths log `No speech found` and return an empty transcript without
+  decoding. Short files still run the VAD only for the no-speech decision and
+  stay undivided when speech exists, so the golden transcript is unchanged.
+  The selftest adds a 5 s silence check: 0.1 s, zero segments, message present.
+- **Diarization child.** `--worker diarize --wav <path> --threads N` runs only
+  the diarization engine, writes `{"progress":…}` / `{"turns":[…]}` /
+  `{"error":…}` JSON lines to stdout, and puts diagnostics on stderr. The parent
+  parses the pipe, forwards progress, kills on Stop, and assigns the child to a
+  Windows kill-on-close job object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`). The
+  selftest runs both the in-process engine and the child; local child timing
+  10.5 s vs 10.3 s in-process.
+- **Selftest now self-diagnosing.** It prints
+  `whisper_print_system_info()` and fails unless AVX2/FMA/F16C are 1, prints
+  `debug_assertions`/Cargo/CMake profiles, prints `print_timings()` per decode,
+  uses the 23.3 s speech fixture with a golden plain-text check, enforces the
+  speech budget on the primary path, tests the in-process fallback, and checks
+  silence. Local release result: cold 43.9 s, in-process 65.5 s, after sherpa
+  44.3 s, diarization 10.3/10.5 s, silence 0.1 s; all passed.
+- **Packaging.** The payload now carries `whisper-cli.exe`, `whisper.dll`,
+  `ggml*.dll`, the VC++/OpenMP redistributables, the selftest WAV and golden
+  text. CI checks every non-system whisper-cli dependency is present, verifies
+  the CLI runs, and asserts the CMake profile. The release notes now state the
+  ~1.8 GB download, the ~2x disk use and the AVX2/FMA/F16C/BMI2 requirement.
+- **Workflow ref hygiene.** `main` now holds a stub `rune-release.yml` that
+  fails with the correct `--ref rune-rewrite` command; the real pipeline lives
+  only on the branch. `v3.2.3-rust.6` was dispatched with
+  `gh workflow run rune-release.yml --ref rune-rewrite`, so the run page shows
+  `rune-release.yml@refs/heads/rune-rewrite`.
+- **Code audit.** All 64 tests pass (6 app, 56 core, 2 offline; 2 ignored
+  model-backed tests run manually), clippy and fmt clean. The ignored golden
+  test and the long-silence test pass. `cargo test` exercises the new
+  whisper-cli cancellation kill and GPU-ranking unit tests.
+
+## 2026-11-06 — Session 7: audit 2 follow-up and rust.7
+
+- **rust.6 failed before building.** `test-linux` restored the sherpa build
+  script output from `rust-cache` but not the shared libraries it points at, so
+  the linker could not find `libonnxruntime.so` / `libsherpa-onnx-c-api.so`.
+  `check-windows` hit the missing `Win32_Security` feature on
+  `CreateJobObjectW`. The release job reached the new control step and then
+  failed because `tests/data/selftest_speech.wav` is ignored by git.
+- **Tracked fixture.** Moved the generated 23.3 s clip and its golden text to
+  `assets/selftest_speech.wav` / `.txt`. The payload already copies `assets/`,
+  so the workflow and local build no longer reference an ignored path.
+- **CI link fix.** The Linux job now caches `~/.cache/sherpa-rs` and removes the
+  restored `sherpa-rs-sys` build/fingerprint directories before `cargo test`, so
+  the build script re-downloads or restores the libraries the linker needs.
+- **Windows fixes.** Added `Win32_Security`; moved the job object to
+  `win_job.rs` and assigned `whisper-cli` as well as the diarization worker;
+  shipped `vulkan-1.dll` from the Vulkan SDK so a PC with no driver can start
+  `whisper-cli` and decode on the CPU instead of failing at load time. The
+  `whisper.cpp` cache key was bumped to include the loader.
+- **Robustness.** Removed `current_dir` from the CLI probe/decode so test
+  binaries and development paths work; cached the Vulkan probe per process;
+  made the progress regex whitespace-tolerant; treated a malformed diarization
+  message as a terminal error and killed the worker immediately; cleaned up
+  child processes if a pipe or reader thread cannot be created; cleaned temp
+  JSON on every error path; and fall back to the in-process engine only when
+  `whisper-cli` cannot spawn (missing DLL), not when a decode fails.
+- **Notices.** Added entries for the whisper.cpp 1.8.6 Vulkan CLI, the Vulkan
+  loader and the VC++ 2022 redistributable DLLs, with license texts.
+- **Status honesty.** The status file now records rust.6 as a failure and keeps
+  the 655 s cause open; the OpenMP explanation was not supported by the local
+  benchmark. The rust.7 control step is the next measurement.

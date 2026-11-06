@@ -611,10 +611,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs the development models and tests/data/selftest_speech.wav"]
+    #[ignore = "needs the development models and assets/selftest_speech.wav"]
     fn golden_speech_text_matches_whisper_cli() {
         let base = Paths::at(crate::config::dev_base_dir()).expect("paths");
-        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data");
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let wav = data.join("selftest_speech.wav");
         let expected = data.join("selftest_speech.txt");
         if !wav.is_file() || !expected.is_file() || !base.whispercpp_model.is_file() {

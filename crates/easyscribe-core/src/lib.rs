@@ -31,3 +31,5 @@ pub use sherpa_engine::TranscriptionEngine;
 
 mod model;
 mod report;
+#[cfg(windows)]
+mod win_job;

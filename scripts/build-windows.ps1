@@ -57,8 +57,6 @@ if (-not (Test-Path (Join-Path $whisperDir "ggml-large-v3-turbo-q5_0.bin"))) {
 if (-not (Test-Path (Join-Path $whisperDir "whisper-cli.exe"))) {
     throw "missing whispercpp/whisper-cli.exe (build it with the Vulkan workflow)"
 }
-Copy-Item (Join-Path $root "tests\data\selftest_speech.wav") (Join-Path $payload "assets\selftest_speech.wav")
-Copy-Item (Join-Path $root "tests\data\selftest_speech.txt") (Join-Path $payload "assets\selftest_speech.txt")
 Copy-Item (Join-Path $root "LICENSE") (Join-Path $payload "LICENSE")
 
 # Build the app and packer in one cargo invocation so the static sherpa

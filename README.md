@@ -142,7 +142,7 @@ After a pause, the next block starts here.
 | "Name the speakers" is grey | The speaker models are missing from the runtime cache. Download the `.exe` again. |
 | No microphones in the list | Check your microphone in the Windows sound settings. |
 | Antivirus flags the `.exe` | Unsigned single-file apps are sometimes flagged by mistake. Add an exclusion only for a file downloaded from this project's Releases page. |
-| Transcription is slow | This preview runs whisper.cpp on the processor. Close other large apps, or use a shorter recording. **Show details** shows the engine and thread count. |
+| Transcription is slow | File transcription uses the GPU through Vulkan when the driver supports it; on the CPU it is slower than the Python release. Close other large apps, or use a shorter recording. **Show details** shows the engine and thread count. |
 | An unfinished recording is found at startup | Choose **Yes** to rebuild it as a `.wav`; the raw audio is kept if you choose **No**. |
 
 ---
@@ -156,12 +156,15 @@ The sections below are for developers and IT staff.
 
 | Task | Engine | Device |
 |---|---|---|
-| File transcription | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) through `whisper-rs`, large-v3-turbo q5_0, beam size 5 | CPU |
+| File transcription | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli`, large-v3-turbo q5_0, beam size 5 | Vulkan GPU when available, else CPU |
+| File transcription (in-process fallback) | `whisper-rs` with the same GGUF model, beam size 5 | CPU |
 | File transcription (fallback) | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) Whisper large-v3-turbo int8, VAD + greedy | CPU |
 | Live transcription | sherpa-onnx, Silero VAD chunks | CPU |
 | Speaker diarization | sherpa-onnx: pyannote segmentation-3.0 + WeSpeaker ResNet34-LM | CPU |
 
-Everything runs in-process. This preview intentionally uses the CPU-only whisper.cpp build: a Vulkan-linked `whisper-rs` imports `vulkan-1.dll` at load time, so machines without a Vulkan driver could not start or fall back to the CPU. **Show details** reports the engine and thread count. GPU acceleration can return later as a separate, dynamically loaded path.
+File transcription runs the bundled `whisper-cli` as a child process, exactly like v3.2.3. It probes Vulkan devices, prefers a dedicated GPU, remembers one that failed, and retries once on the CPU with `-ng`. A driver crash only kills the child, so the app and the CPU fallback survive. The linked `whisper-rs` engine remains as a fallback when the payload has only the GGUF model, and is exercised by the selftest. **Show details** reports the engine and thread count.
+
+Speaker diarization also runs in a child process of the same exe, so Stop is immediate and its memory is reclaimed when it exits.
 
 Audio is decoded with the bundled ffmpeg to 16 kHz mono. Recordings write raw PCM plus a JSON sidecar, so an interrupted recording can be rebuilt as a WAV on the next start.
 
@@ -225,14 +228,14 @@ Requirements for a Windows build:
 
 - Windows 10/11 x64 and Rust stable with the MSVC toolchain.
 - Static sherpa-onnx **1.12.9** MSVC libraries (`sherpa-onnx-v1.12.9-win-x64-static`) with `SHERPA_LIB_PATH` pointing at the extracted folder that contains `lib`. The 1.12.9 version matches the C API that `sherpa-rs` 0.6.8 binds; 1.13.x changed that struct layout.
-- `models/`, `ffmpeg/` (or `tools/ffmpeg/`) and `whispercpp/ggml-large-v3-turbo-q5_0.bin` populated.
+- `models/`, `ffmpeg/` (or `tools/ffmpeg/`) and `whispercpp/` with `ggml-large-v3-turbo-q5_0.bin` plus the Vulkan `whisper-cli.exe` and its DLLs. The release workflow builds these from whisper.cpp v1.8.6; to use an existing build, copy `whisper.cpp\build\bin\Release\*` into `whispercpp\`.
 
 ```powershell
 pwsh -File scripts/build-windows.ps1
 # -> dist\EasyScribe.exe
 ```
 
-The script builds the app and packer together with the `release-static` feature (static sherpa libraries, static MSVC runtime, CPU-only whisper.cpp), then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**; it publishes a draft pre-release tagged with a hyphenated version such as `v3.2.3-rust.1`.
+The script builds the app and packer together with the `release-static` feature (static sherpa libraries, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a draft pre-release tagged with a hyphenated version such as `v3.2.3-rust.6`.
 
 Local checks:
 

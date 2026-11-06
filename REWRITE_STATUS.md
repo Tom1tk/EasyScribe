@@ -1,12 +1,16 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-06 (session 4)
+**Updated:** 2026-11-06 (session 7 — audit 2 follow-up)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
-**Phase:** 6 — packaging, audit and Windows release
-**Overall:** implementation complete; functional, code-quality, packaging and UI
-audits addressed. Windows release run `42235634403` (`v3.2.3-rust.3`) is the
-final validation gate.
+**Phase:** 7 — speed, GPU, process isolation and final release
+**Overall:** implementation complete. Audit 2's findings are actioned: the
+Vulkan `whisper-cli` is back as a child process with CPU retry, diarization is
+isolated in a child, flash attention and the no-speech gate are in, and the
+selftest measures real speech. The audit-2 follow-up blockers (missing tracked
+speech fixture, `Win32_Security`, Linux sherpa link, `whisper-cli` job object,
+missing redistributable notices) are fixed. `v3.2.3-rust.7` is the current
+validation run; `rust.6` failed before it built anything.
 
 ## What is built
 
@@ -30,16 +34,24 @@ final validation gate.
 
 ## Verification completed
 
-- [x] `cargo test --workspace`: **6 app + 51 core + 2 offline = 59 passed**,
-      1 ignored (the long-silence golden test, run manually).
+- [x] `cargo test --workspace`: **6 app + 56 core + 2 offline = 64 passed**,
+      2 ignored (the model-backed long-silence and golden tests, run manually).
 - [x] `cargo clippy --workspace --all-targets`: clean.
 - [x] `cargo fmt --all -- --check`: clean.
-- [x] Real-engine golden: whisper.cpp output for
-      `tests/data/test_speech.wav` matches the Python v3.2.3 text byte for byte.
+- [x] Real-engine golden: both the in-process engine and the bundled
+      `whisper-cli` produce the expected plain-text transcript for
+      `assets/selftest_speech.wav` (23.3 s, generated test speech). The clip is
+      tracked outside `tests/data/` so CI has it without force-adding an ignored
+      `.wav`.
 - [x] Long-silence gate test: 40 s of added silence before and after the speech
       fixture still produces the `quarterly results` transcript.
-- [x] `--selftest` loads the sherpa Whisper ONNX model, Silero VAD,
-      whisper.cpp GGUF and diarization models, and decodes a local WAV.
+- [x] `--selftest` prints `whisper_print_system_info()` (AVX2/FMA/F16C all 1),
+      the Cargo/CMake profile, per-phase whisper timings, and loads the sherpa
+      Whisper ONNX model, Silero VAD, whisper.cpp GGUF and diarization models.
+- [x] Local release selftest, 4 threads, 23.3 s speech:
+      `whisper-cli` cold **43.9 s**, in-process cold **65.5 s**, after sherpa
+      **44.3 s**, diarization in-process **10.3 s**, diarization child
+      **10.5 s**, silence check **0.1 s** (zero segments, "No speech found").
 - [x] All 13 headless scenes render (`preparing` plus the 12 app states).
 - [x] UI click/state tests pass.
 - [x] Packed first-run smoke with a 300 MB fake payload: extraction, marker,
@@ -48,9 +60,16 @@ final validation gate.
       regression test covers the previous real-payload failure.
 - [x] Flock-based cache lock, stale staging cleanup, incomplete-runtime
       replacement, and signed-exe footer scanning.
-- [x] Windows run `42232368420` built and packed the exe successfully after
-      adding `advapi32`; it stopped only at a CI regex that rejected dumpbin's
-      `subsystem (Windows GUI)` spelling. The regex is fixed in `370fcc2`.
+- [x] `v3.2.3-rust.5` built from the updated workflow with the GGUF SHA-256
+      gate and asserted `GGML_NATIVE=OFF`, `GGML_AVX=ON`, `GGML_AVX2=ON`,
+      `CMAKE_BUILD_TYPE=Release`; both selftest decodes passed.
+- [x] Audit 2 follow-up: the selftest WAV/TXT now live in tracked `assets/`;
+      `windows-sys` has `Win32_Security`; the Linux job restores the sherpa
+      runtime cache and re-runs `sherpa-rs-sys`'s build script; `whisper-cli`
+      shares the kill-on-close job object; the payload ships the Vulkan loader
+      and notices for it and the VC++ redistributables; `current_dir` and the
+      repeated GPU probe were removed; a malformed diarization message stops the
+      worker immediately.
 
 ## Functional/packaging decisions
 
@@ -60,13 +79,18 @@ final validation gate.
 | Extract once to `%LOCALAPPDATA%\EasyScribe\runtime\v1-<hash>` | whisper.cpp/ffmpeg need real files; later launches reuse the cache. |
 | User data separate from runtime | Settings, logs, temp and recovery survive version updates. |
 | Old v3 shortcuts not repointed | Avoid touching user data without consent; portable exe runs anywhere. |
-| CPU-only whisper.cpp in this preview | `whisper-rs` Vulkan links `vulkan-1.dll` at load time, so a machine without a Vulkan driver could not start or fall back to CPU. GPU acceleration can return later as a dynamically loaded path. |
+| Vulkan `whisper-cli` child process is the primary file engine | Reuses the proven v3.2.3 binary and flags, gives real GPU acceleration, and a driver crash only kills the child. The in-process `whisper-rs` build remains the fallback. |
+| Bundled VC++/OpenMP redistributable DLLs beside `whisper-cli.exe` | The Vulkan build uses the dynamic MSVC runtime and OpenMP; a clean PC may not have `vcomp140.dll`. The DLLs live in the payload, not next to the outer exe. |
+| Diarization runs in a child process of the same exe | Stop is a process kill, a crash cannot take the UI down, and long recordings free their memory when the worker exits. A Windows job object kills workers if the app is killed. |
 | sherpa-onnx **1.12.9** static libs | `sherpa-rs` 0.6.8 binds the 1.12.9 C API; 1.13.x added struct fields and is ABI-incompatible. |
 | Static MSVC runtime | The 1.12.9 static libraries are `/MT`; the workflow sets `+crt-static` and `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`. |
 | Explicit `advapi32.lib` on Windows | onnxruntime's ETW/telemetry and espeak-ng's registry calls leave six undefined imports in `sherpa-rs`'s cdylib link. The build adds `-C link-arg=advapi32.lib` alongside the static CRT flags. |
 | Naming panel takes over at 820 pt and below | Python clips Save/Skip at the default height; the Rust build hides the Files/Record content while naming so both actions stay reachable. Intentional usability deviation. |
-| In-process engines | Stop is cooperative; diarization has a cancellation callback. Crash isolation remains optional future hardening. |
+| In-process fallback + child engines | File transcription prefers the `whisper-cli` child and falls back to in-process `whisper-rs` when only the GGUF model exists; diarization is always a child process. |
 | Privacy as an in-app modal | Same content/actions as the Python window; documented visual deviation. |
+| Flash attention on | Matches whisper-cli's default and the Python release; smaller encode buffer and faster CPU decode. |
+| VAD gate on every file | Short files still decode whole when speech exists, preserving the golden transcript; a file with no speech returns an empty transcript instead of "Thank you." |
+| Real 23.3 s speech selftest with a golden text and a time budget | The old 5 s silence input was the decoder's worst case and hid the actual cause of the 655 s CI time. |
 
 ## Audit dispositions
 
@@ -113,6 +137,44 @@ final validation gate.
   workflow file from `main`, so the AVX2 pin/assert, GGUF hash check and trace
   environment did not execute; `main` now carries those changes and
   `v3.2.3-rust.5` is rebuilding with an asserted AVX2 CMake cache.
+- **`v3.2.3-rust.5` — workflow gate confirmed.** The run was dispatched from
+  `main` but used the updated workflow file (GGUF hash, AVX2 pins and CMake
+  assertions all ran). It still took 661.2 s cold and 635.8 s after sherpa for
+  5 s of silence. The cause is **still unproven**: the local benchmark in audit 2
+  found OpenMP on/off made no difference (38.7 s vs 38.5 s encode), so the
+  earlier OpenMP explanation is not supported. `rust.6` was meant to compare the
+  independent `whisper-cli` control with the in-process engine on the same
+  runner, but it failed before building. `rust.7` now carries that comparison;
+  keep the cause open until both numbers exist.
+- **`v3.2.3-rust.6` failed before building.** `test-linux` could not link
+  `-lonnxruntime`/`-lsherpa-onnx-c-api` because `rust-cache` restored the
+  sherpa build-script output but not the download cache it points at.
+  `check-windows` failed on `CreateJobObjectW` because `windows-sys` needs
+  `Win32_Security`. The release job then failed at the control step with
+  `Cannot find path ... tests\data\selftest_speech.wav`, which `.gitignore`
+  excludes. All three are fixed in the follow-up commit.
+- **Audit 2 follow-up fixes.** Moved the generated fixture to tracked
+  `assets/selftest_speech.*` (payload copy is automatic); added
+  `Win32_Security`; cached `~/.cache/sherpa-rs` and forced a fresh
+  `sherpa-rs-sys` build script on Linux; moved `win_job` into a shared module
+  and assigned `whisper-cli` to it; removed `current_dir` so test/development
+  binary paths work; cached the Vulkan probe; made the progress regex tolerate
+  spaces; killed a worker on a malformed message; and shipped `vulkan-1.dll`
+  plus the VC++/Vulkan notices. The GPU path still retries `-ng`, and a CLI
+  spawn failure now falls back to the in-process engine instead of a hard file
+  error.
+- **Audit 2 actioned.** File transcription now runs the bundled Vulkan
+  `whisper-cli` as a child process (`whispercli.rs`), probing devices, choosing
+  a dedicated GPU, persisting the choice, and retrying `-ng` on failure; the
+  in-process engine remains the fallback. Diarization runs in a hidden child
+  (`--worker diarize`) with JSON-lines progress/turns, kill-based Stop and a
+  Windows kill-on-close job object. Flash attention is on, empty VAD bounds mean
+  "No speech found", short files still decode whole, and silence no longer
+  reaches the decoder. The selftest uses a 23.3 s real-speech fixture, checks
+  the golden text, prints system info/build profile/per-phase timings, and
+  enforces a speech budget derived from an independent whisper-cli control on
+  the same CI runner. `main`'s copy of the workflow is now a stub that refuses
+  to run without `--ref rune-rewrite`.
 - **UI audit** — all confirmed issues fixed: the real window height now reaches
   `AppState`; the 600–678 pt page scrolls so the utility row and tall results
   stay reachable; record tiles and microphone menu rows are keyboard-focusable
@@ -127,25 +189,40 @@ final validation gate.
 
 ## Known limitations / residual risk
 
-- Windows static link, Vulkan removal, DPI, native dialogs, drag/drop and a real
-  microphone can only be proven by Windows CI and a clean Windows VM.
-- The local 300 MB fake payload validates mechanics, not the real 1.7 GB
-  artifact or free-space behaviour.
-- CPU-only whisper.cpp is slower than the Python Vulkan path; functionality and
-  transcript output are unchanged. The 5 s silence selftest is a worst case
-  (the decoder keeps generating), so it takes minutes on a CI CPU; ordinary
-  speech files are much faster. The Windows build requires AVX2, matching the
-  reference's non-native whisper.cpp CPU build.
-- In-process diarization can use substantial memory on very long recordings;
-  crash isolation is not implemented.
+- Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
+  drag/drop and a real microphone can only be proven on a real Windows PC or VM.
+  `v3.2.3-rust.7` exercises the CPU path on CI (the runner has no GPU), but not
+  a dedicated/integrated GPU or a crashing driver.
+- The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
+  file on v3.2.3 GPU, v3.2.3 CPU and rust.7, then record wall times in this
+  file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
+- The 655 s CI decode cause is unproven. The OpenMP hypothesis was not supported
+  by the local benchmark; rust.7's same-runner control measurement is the next
+  datapoint.
+- The in-process fallback is slower than `whisper-cli` on Windows; it is used
+  when the payload has no `whisper-cli` or when the CLI cannot start. The
+  shipping primary path is the child process.
+- The download is about 1.8 GB and every update is full-size; after first launch
+  the extracted runtime takes about another 1.7 GB (roughly 2x the exe).
+- A real ~1.8 GB payload unpack on a nearly full disk still needs a clean-PC
+  test; the local fake-payload smoke validates mechanics only.
 - Authenticode signing is not enabled. The footer parser tolerates a certificate
   appended after the footer, and the release publishes a SHA-256 file.
 
 ## Next actions
 
-1. Watch Windows run `42255592062` (`v3.2.3-rust.5`): asserted AVX2 build,
-   GGUF hash gate, cold/post-sherpa trace, selftest, cached launch and draft
-   upload.
-2. Verify the draft `EasyScribe.exe` and `.sha256`; remove the slower
-   `v3.2.3-rust.4` draft once `rust.5` is good.
-3. Hand over for real-device testing (microphone, DPI, dialogs, drag/drop).
+1. Commit and push these fixes, then dispatch `v3.2.3-rust.7` from
+   `rune-rewrite`.
+2. Confirm `rune-release.yml@refs/heads/rune-rewrite`, the whisper-cli control
+   time, system-info features, golden text, speech budget, both selftest
+   engines, the child diarization, imports/subsystem, cached launch and draft
+   assets. Record the result (pass or fail) here.
+3. Run an independent code audit over the finished Rust/Rune product and fix
+   confirmed findings.
+4. Verify the draft `EasyScribe-v3.2.3-rust.7.exe` and `.sha256`; delete the
+   superseded `rust.4`, `rust.5` and `rust.6` drafts if present.
+5. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
+   microphone, DPI, dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the
+   real-PC speed comparison; record results here.
+6. Hand over for the decision on replacing v3.2.3. Do not publish rust.7 as
+   Latest until the real-PC speed and clean-PC checks pass.

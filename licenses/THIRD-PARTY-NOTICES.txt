@@ -29,6 +29,29 @@ whisper.cpp 1.8.3 and ggml (compiled into EasyScribe.exe through whisper-rs)
   License:  MIT - licenses/whisper.cpp-MIT.txt
   Source:   https://github.com/ggml-org/whisper.cpp
 
+whisper.cpp 1.8.6 Vulkan command-line build
+  Files:    whispercpp/whisper-cli.exe, whispercpp/whisper.dll,
+            whispercpp/ggml.dll, whispercpp/ggml-base.dll,
+            whispercpp/ggml-cpu.dll, whispercpp/ggml-vulkan.dll
+  License:  MIT - licenses/whisper.cpp-MIT.txt
+  Source:   https://github.com/ggml-org/whisper.cpp
+  Build:    v1.8.6, MSVC x64, BUILD_SHARED_LIBS=ON, GGML_VULKAN=ON,
+            no source changes.
+
+Vulkan Loader 1.4.313.2
+  File:     whispercpp/vulkan-1.dll
+  License:  Apache License 2.0 - licenses/Vulkan-Loader-Apache-2.0.txt
+  Source:   https://github.com/KhronosGroup/Vulkan-Loader
+  Shipped unmodified from the LunarG Vulkan SDK so whisper-cli can start on
+  PCs without a graphics driver and fall back to the CPU.
+
+Microsoft Visual C++ 2022 Redistributable (14.x)
+  Files:    whispercpp/vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll,
+            vcomp140.dll
+  License:  Microsoft Visual Studio license terms
+            licenses/Microsoft-VC-Redistributable.txt
+  Source:   https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist
+
 sherpa-onnx 1.12.9 (compiled into EasyScribe.exe)
   License:  Apache License 2.0 - licenses/sherpa-onnx-Apache-2.0.txt
   Source:   https://github.com/k2-fsa/sherpa-onnx

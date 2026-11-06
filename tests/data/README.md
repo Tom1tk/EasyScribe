@@ -1,9 +1,11 @@
-# Selftest speech
+# Test audio
 
-`selftest_speech.wav` is the project's generated 23.3-second English test
-recording (mono, 16 kHz, 16-bit PCM), copied from the v3.2.3 test suite. It
-contains no personal data. `selftest_speech.txt` is the expected plain-text
-transcript produced by the v3.2.3 whisper-cli flags (beam size 5). The release
-payload includes both as `assets/selftest_speech.wav` and
-`assets/selftest_speech.txt` so the packed `--selftest` times a real speech
-decode and checks the golden text.
+Large and generated test recordings are not stored in `tests/data`.
+
+`selftest_speech.wav` (23.3 s, generated English speech, mono 16 kHz
+16-bit PCM) and its golden transcript `selftest_speech.txt` live in the
+tracked `assets/` folder instead. They contain no personal data, are copied
+into the release payload as `assets/selftest_speech.*`, and let the packed
+`--selftest` time a real speech decode against the expected v3.2.3 output.
+
+Other `tests/data/*.wav` files are local-only and ignored by git.
