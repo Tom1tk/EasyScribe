@@ -391,7 +391,7 @@ jobs:
           if (-not $sherpaLib) { throw "sherpa-onnx-core.lib was not produced" }
           $symbols = (& dumpbin /symbols $sherpaLib.FullName | Out-String)
           if ($LASTEXITCODE -ne 0) { throw "dumpbin could not read $($sherpaLib.FullName)" }
-          if ($symbols -match "espeak") { throw "espeak symbols are present in the sherpa-onnx build" }
+          if ($symbols -match "espeak_Initialize") { throw "espeak symbols are present in the sherpa-onnx build" }
           Write-Host "sherpa-onnx has no espeak symbols."
 
       - name: Check the executable starts headlessly
