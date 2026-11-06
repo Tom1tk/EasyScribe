@@ -55,22 +55,8 @@ Microsoft Visual C++ 2022 Redistributable (14.x)
 sherpa-onnx 1.12.9 (compiled into EasyScribe.exe)
   License:  Apache License 2.0 - licenses/sherpa-onnx-Apache-2.0.txt
   Source:   https://github.com/k2-fsa/sherpa-onnx
-
-espeak-ng (compiled into EasyScribe.exe through sherpa-onnx)
-  License:  GNU General Public License version 3 (GPL v3)
-            licenses/FFmpeg-GPL-3.0.txt (the GPL-3.0 text)
-  Source:   https://github.com/espeak-ng/espeak-ng
-  Note:     The sherpa-onnx static archive includes espeak-ng for its
-            text-to-speech frontend. EasyScribe does not call TTS, but the
-            Windows linker pulls the piper-phonemize object that references
-            espeak_Initialize, so espeak-ng is part of the linked binary.
-  Written offer: for three years after this release, we will give a copy of
-  the complete corresponding source code of espeak-ng to any person who asks.
-  Open an issue at https://github.com/Tom1tk/EasyScribe/issues.
-  Licensing decision: because GPL-3.0 code is statically linked, the combined
-  EasyScribe.exe must not be published as a stable release until the owner
-  decides between relicensing the combined work under GPL-3.0 and rebuilding
-  sherpa-onnx with TTS disabled. This draft pre-release is for testing only.
+  Build:    Built from source with text-to-speech disabled. The GPL-3.0
+            espeak-ng and piper components are not compiled into this build.
 
 ONNX Runtime (compiled into sherpa-onnx)
   License:  MIT - licenses/onnxruntime-MIT.txt

@@ -162,7 +162,7 @@ The sections below are for developers and IT staff.
 | Live transcription | sherpa-onnx, Silero VAD chunks | CPU |
 | Speaker diarization | sherpa-onnx: pyannote segmentation-3.0 + WeSpeaker ResNet34-LM | CPU |
 
-File transcription runs the bundled `whisper-cli` as a child process, exactly like v3.2.3. It probes Vulkan devices, prefers a dedicated GPU, remembers one that failed, and retries once on the CPU with `-ng`. A driver crash only kills the child, so the app and the CPU fallback survive. The linked `whisper-rs` engine remains as a fallback when the bundled CLI cannot start (development builds and damaged payloads), and is exercised by the selftest. **Show details** reports the engine and thread count.
+File transcription runs the bundled `whisper-cli` as a child process, exactly like v3.2.3. It probes Vulkan devices, prefers a dedicated GPU, remembers one that failed, and retries once on the CPU with `-ng`. A driver crash only kills the child, so the app and the CPU fallback survive. The linked `whisper-rs` engine remains as a fallback when the bundled CLI cannot start (development builds and damaged payloads), and is exercised by the selftest. When that much slower fallback is used, the UI changes to **Transcribing (slow fallback)** and explains that it can take many times longer. **Show details** reports the engine and thread count.
 
 Speaker diarization also runs in a child process of the same exe, so Stop is immediate and its memory is reclaimed when it exits.
 
@@ -227,7 +227,7 @@ The Python v3.2.3 tree remains the behavioural oracle; it is not part of the Rus
 Requirements for a Windows build:
 
 - Windows 10/11 x64 and Rust stable with the MSVC toolchain.
-- Static sherpa-onnx **1.12.9** MSVC libraries (`sherpa-onnx-v1.12.9-win-x64-static`) with `SHERPA_LIB_PATH` pointing at the extracted folder that contains `lib`. The 1.12.9 version matches the C API that `sherpa-rs` 0.6.8 binds; 1.13.x changed that struct layout.
+- CMake and the Visual Studio C++ toolchain. `sherpa-rs-sys` builds the vendored sherpa-onnx **1.12.9** from source with text-to-speech disabled, so the GPL-3.0 `espeak-ng`/`piper` components are not compiled in. 1.12.9 matches the C API that `sherpa-rs` 0.6.8 binds; 1.13.x changed that struct layout.
 - `models/`, `ffmpeg/` (or `tools/ffmpeg/`) and `whispercpp/` with `ggml-large-v3-turbo-q5_0.bin` plus the Vulkan `whisper-cli.exe` and its DLLs. The release workflow builds these from whisper.cpp v1.8.6; to use an existing build, copy `whisper.cpp\build\bin\Release\*` into `whispercpp\`.
 
 ```powershell
@@ -235,7 +235,7 @@ pwsh -File scripts/build-windows.ps1
 # -> dist\EasyScribe.exe
 ```
 
-The script builds the app and packer together with the `release-static` feature (static sherpa libraries, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a draft pre-release tagged with a hyphenated version such as `v3.2.3-rust.10`.
+The script builds the app and packer together with the `release-static` feature (sherpa-onnx built from source with TTS disabled, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a draft pre-release tagged with a hyphenated version such as `v3.2.3-rust.14`.
 
 Local checks:
 

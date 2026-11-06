@@ -2,10 +2,10 @@
 #
 # Prerequisites:
 #   * Rust MSVC toolchain (rustup default stable-x86_64-pc-windows-msvc)
-#   * sherpa-onnx 1.12.9 Win x64 static libraries:
-#       sherpa-onnx-v1.12.9-win-x64-static.tar.bz2
-#     Set SHERPA_LIB_PATH to the extracted folder that contains lib/.
-#     (1.13.x changed the C API; sherpa-rs 0.6.8 binds 1.12.9.)
+#   * CMake and the Visual Studio C++ toolchain. sherpa-onnx 1.12.9 is built
+#     from the source vendored by sherpa-rs-sys with TTS disabled, so the
+#     GPL-3.0 espeak-ng/piper components are not compiled in. (1.13.x changed
+#     the C API; sherpa-rs 0.6.8 binds 1.12.9.)
 #   * models/, ffmpeg/ (or tools/ffmpeg/) and
 #     whispercpp/ggml-large-v3-turbo-q5_0.bin populated, plus assets/,
 #     licenses/ and LICENSE
@@ -15,14 +15,10 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-if (-not $env:SHERPA_LIB_PATH) {
-    throw "SHERPA_LIB_PATH must point at the extracted sherpa-onnx 1.12.9 static folder (the one containing lib/)."
-}
-
 # The official 1.12.9 static libraries use the static MSVC runtime. Match it
 # for Rust and for the whisper.cpp CMake build, otherwise the link fails.
-# advapi32 supplies the ETW and registry imports that onnxruntime and
-# espeak-ng use; their static libs do not always carry the defaultlib.
+# advapi32 supplies the ETW and registry imports that onnxruntime's static
+# library does not always carry.
 $env:RUSTFLAGS = (($env:RUSTFLAGS, "-C target-feature=+crt-static", "-C link-arg=advapi32.lib") -join " ").Trim()
 $env:CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
 $env:CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
@@ -92,6 +88,14 @@ $target = if ($env:CARGO_TARGET_DIR) {
 } else {
     Join-Path $root "target"
 }
+
+$sherpaCache = Get-ChildItem (Join-Path $target "release\build") -Recurse -Filter CMakeCache.txt -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match "sherpa-rs-sys" } | Select-Object -First 1
+if (-not $sherpaCache) { throw "sherpa-onnx CMakeCache.txt was not produced" }
+if (-not (Select-String -Path $sherpaCache.FullName -Pattern '^SHERPA_ONNX_ENABLE_TTS:BOOL=OFF$')) {
+    throw "sherpa-onnx was not built with text-to-speech disabled"
+}
+Write-Host "sherpa-onnx TTS disabled (espeak-ng/piper not linked)."
 
 $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 if (-not $version) { throw "Could not read the workspace version from Cargo.toml" }

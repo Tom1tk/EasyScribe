@@ -81,43 +81,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: rune-windows-release-2
+          key: rune-windows-release-3
 
-      # sherpa-rs-sys 0.6.8 vendors sherpa-onnx 1.12.9. The C API gained fields
-      # in 1.13.x, so using those libraries with these bindings is undefined
-      # behaviour. The 1.12.9 static archive is built with the static CRT.
-      - name: Cache sherpa-onnx static libraries
-        id: sherpa-cache
-        uses: actions/cache@v4
-        with:
-          path: sherpa-static
-          key: sherpa-onnx-1.12.9-win-x64-static-v1
-
-      - name: Download sherpa-onnx static libraries
-        if: steps.sherpa-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          $url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.9/sherpa-onnx-v1.12.9-win-x64-static.tar.bz2"
-          $expected = "4f3ada021afc97497f7570db622370a43c9b44d47d3dfb649aa0a7133a7afe58"
-          Invoke-WebRequest -Uri $url -OutFile sherpa-static.tar.bz2
-          $actual = (Get-FileHash sherpa-static.tar.bz2 -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "sherpa archive checksum mismatch: $actual" }
-          New-Item -ItemType Directory -Force sherpa-static | Out-Null
-          tar xjf sherpa-static.tar.bz2 -C sherpa-static
-          Remove-Item sherpa-static.tar.bz2
-          $libs = Get-ChildItem sherpa-static -Recurse -Filter sherpa-onnx-c-api.lib | Select-Object -First 1
-          if (-not $libs) { throw "sherpa-onnx-c-api.lib not found in the downloaded archive" }
-          Write-Host "Static sherpa libraries ready."
-
-      - name: Point Cargo at the static sherpa libraries
-        shell: pwsh
-        run: |
-          $capi = Get-ChildItem sherpa-static -Recurse -Filter sherpa-onnx-c-api.lib | Select-Object -First 1
-          if (-not $capi) { throw "sherpa-onnx-c-api.lib not found" }
-          $root = $capi.Directory.Parent.FullName
-          Add-Content $env:GITHUB_ENV "SHERPA_LIB_PATH=$root"
-          Write-Host "SHERPA_LIB_PATH=$root"
+      # sherpa-rs-sys 0.6.8 vendors sherpa-onnx 1.12.9 and builds it from
+      # source when SHERPA_LIB_PATH is not set. Its source build sets
+      # SHERPA_ONNX_ENABLE_TTS=OFF, so espeak-ng and piper are not compiled in:
+      # the prebuilt archive used before rust.14 contained both under GPL-3.0.
+      # The Rust target cache keeps the CMake build for later runs; the build
+      # step asserts the TTS-off configuration.
 
       # ffmpeg (GyanD 7.1.1 essentials, pinned). Kept as a cache so release
       # rebuilds do not download 150 MB each time.
@@ -371,6 +342,22 @@ jobs:
           if (-not ($lines | Where-Object { $_ -match '^CMAKE_BUILD_TYPE:(STRING|UNINITIALIZED)=Release$' })) {
             throw "whisper.cpp was not configured with CMAKE_BUILD_TYPE=Release"
           }
+          $sherpaCache = Get-ChildItem target\release\build -Recurse -Filter CMakeCache.txt -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "sherpa-rs-sys" } | Select-Object -First 1
+          if (-not $sherpaCache) { throw "sherpa-onnx CMakeCache.txt was not produced" }
+          $sherpaLines = Get-Content $sherpaCache.FullName
+          $sherpaLines | Where-Object { $_ -match "^SHERPA_ONNX_ENABLE_TTS:|^BUILD_SHARED_LIBS:|^CMAKE_MSVC_RUNTIME_LIBRARY:" } |
+            ForEach-Object { Write-Host $_ }
+          foreach ($entry in @("SHERPA_ONNX_ENABLE_TTS:BOOL=OFF", "BUILD_SHARED_LIBS:BOOL=OFF")) {
+            if (-not ($sherpaLines -contains $entry)) { throw "sherpa-onnx was not built with $entry" }
+          }
+          $sherpaLib = Get-ChildItem target\release\build -Recurse -Filter "sherpa-onnx-core.lib" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $sherpaLib) { throw "sherpa-onnx-core.lib was not produced" }
+          $symbols = (& dumpbin /symbols $sherpaLib.FullName | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin could not read $($sherpaLib.FullName)" }
+          if ($symbols -match "espeak") { throw "espeak symbols are present in the sherpa-onnx build" }
+          Write-Host "sherpa-onnx has no espeak symbols."
 
       - name: Check the executable starts headlessly
         shell: pwsh
@@ -474,7 +461,7 @@ jobs:
       - name: Free the model staging folders
         shell: pwsh
         run: |
-          Remove-Item models, tools\ffmpeg, whispercpp, sherpa-static -Recurse -Force
+          Remove-Item models, tools\ffmpeg, whispercpp -Recurse -Force
           # Keep only the built whisper-cli binaries for the cache; the source
           # tree and CMake objects are no longer needed.
           if (Test-Path whisper.cpp) {
@@ -498,6 +485,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "easyscribe-pack failed" }
           Remove-Item payload, dist\easyscribe-raw.exe, dist\easyscribe-pack.exe -Recurse -Force
           $size = (Get-Item $out).Length / 1MB
+          # GitHub caps a release asset at 2 GiB. Keep a safety margin for the
+          # release metadata and future model growth.
           if ($size -gt 1900) { throw "The release exe is too large for a GitHub release asset: $size MB" }
           Write-Host ("Release exe: {0} ({1:N1} MB)" -f $out, $size)
 
@@ -588,14 +577,14 @@ jobs:
             `%LOCALAPPDATA%\EasyScribe\runtime`; later launches reuse that cache.
             Nothing is installed system-wide, and no account or network connection is used.
 
-            **Size and disk:** the download is about **1.86 GB** and every update is a
-            full download of the same size. After the first launch the extracted
-            runtime takes about another **1.7 GB**, so a fresh install uses about
-            **3.6 GB** in total. Updating an existing copy needs up to about
-            **5.3 GB free** temporarily while the old and new runtimes coexist;
-            the old runtime is removed after the new version starts. The app
-            checks free space before unpacking and shows a clear message instead
-            of failing halfway.
+            **Size and disk:** the download is about **1.92 GB (1.79 GiB)** and
+            every update is a full download of the same size. After the first
+            launch the extracted runtime takes about another **1.7 GB**, so a
+            fresh install uses about **3.7 GB** in total. Updating an existing
+            copy needs up to about **5.4 GB free** temporarily while the old and
+            new runtimes coexist; the old runtime is removed after the new
+            version starts. The app checks free space before unpacking and shows
+            a clear message instead of failing halfway.
 
             **Requirements:** 64-bit Windows 10 or 11 on an x86-64 CPU with
             **AVX2, FMA, F16C and BMI2**. File transcription uses the bundled
@@ -614,9 +603,9 @@ jobs:
               **More info → Run anyway**.
             - The app is fully offline. ffmpeg is restricted to local files.
             - Temporary audio is deleted after each file and again on exit.
-            - **Licensing:** EasyScribe is MIT, but the bundled sherpa-onnx
-              static build includes GPL-3.0 `espeak-ng`. This draft is for
-              testing; the combined-work license decision is pending. See
+            - **Licensing:** EasyScribe is MIT. sherpa-onnx is built from
+              source with text-to-speech disabled, so the GPL-3.0 `espeak-ng`
+              and `piper` components are not included. See
               `licenses/THIRD-PARTY-NOTICES.txt` in the runtime.
 
             Windows build: ${{ steps.revision.outputs.sha }}

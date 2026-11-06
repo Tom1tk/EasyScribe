@@ -170,6 +170,12 @@ impl Activity {
             Status::LoadingModel => ("Getting ready", Tone::Ink, BarMode::Busy, t.teal),
             Status::ExtractingAudio => ("Reading the audio", Tone::Ink, BarMode::Busy, t.teal),
             Status::Transcribing => ("Transcribing", Tone::Teal, BarMode::Determinate, t.teal),
+            Status::SlowFallback => (
+                "Transcribing (slow fallback)",
+                Tone::Amber,
+                BarMode::Determinate,
+                t.amber,
+            ),
             Status::IdentifyingSpeakers => {
                 ("Finding the speakers", Tone::Amber, BarMode::Busy, t.amber)
             }
@@ -213,6 +219,10 @@ impl Activity {
             self.progress = 0.0;
         }
         self.message = match status {
+            Status::SlowFallback => Some((
+                "The bundled whisper-cli could not start, so EasyScribe is using its built-in engine. This can take many times longer.".into(),
+                MessageKind::Info,
+            )),
             Status::LoadingModel if running => Some((
                 "Loading the speech model. This can take a minute.".into(),
                 MessageKind::Info,

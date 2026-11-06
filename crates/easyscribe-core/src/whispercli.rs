@@ -439,7 +439,7 @@ fn fallback_in_process(
         return Err(error);
     }
     reporter.log(&format!(
-        "[whisper.cpp] The bundled whisper-cli could not start ({error}). Using the in-process engine."
+        "[Warning] The bundled whisper-cli could not start ({error}). Using the slower in-process engine."
     ));
     log::warn!("whisper-cli could not start, using the in-process engine: {error}");
     crate::whispercpp::transcribe_in_process(paths, audio_path, cancel, reporter)

@@ -3,6 +3,7 @@
 //! Ported from `src/live_transcriber.py`.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -11,11 +12,28 @@ use crate::mic::AudioQueue;
 use crate::report::CancelToken;
 use crate::sherpa_engine::{self, TranscriptionEngine};
 use crate::vad::pad_live_segment;
-use crate::{Paths, Result};
+use crate::{Error, Paths, Result};
 
 pub const DECODE_QUEUE_MAX: usize = 8;
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 const HISTORY_SAMPLES: usize = crate::vad::PAD_SAMPLES + 16 * crate::config::VAD_CHUNK_SAMPLES;
+
+/// sherpa-onnx is not safe to call from two native sessions at once. The old
+/// per-session lock allowed a detached decoder from a timed-out Stop to run
+/// concurrently with the next recording's VAD and recognizer. One process-wide
+/// lock serialises every live VAD/recognizer call instead.
+static ONNX_LOCK: Mutex<()> = Mutex::new(());
+/// True from the moment a decoder thread starts until it exits. A new live
+/// session must wait, so a detached decoder cannot race a fresh engine.
+static DECODER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Acquire the live ONNX lock, recovering from a panic in a previous native
+/// call instead of poisoning every later session.
+fn onnx_guard() -> std::sync::MutexGuard<'static, ()> {
+    ONNX_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Debug, Clone)]
 pub enum LiveEvent {
@@ -48,43 +66,66 @@ impl LiveTranscriber {
         cancel: CancelToken,
         events: mpsc::Sender<LiveEvent>,
     ) -> Result<()> {
-        engine.ensure_loaded(&crate::report::SilentReporter)?;
+        if DECODER_ACTIVE.swap(true, Ordering::SeqCst) {
+            return Err(Error::Transcription(
+                "The previous live transcript is still finishing. Wait a moment and try again."
+                    .into(),
+            ));
+        }
+        if let Err(error) = engine.ensure_loaded(&crate::report::SilentReporter) {
+            DECODER_ACTIVE.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
         let decode = Arc::new(DecodeQueue::new(DECODE_QUEUE_MAX));
         let vad_done = Arc::new(Mutex::new(false));
-        let onnx_lock = Arc::new(Mutex::new(()));
 
         let (decode_done_tx, decode_done_rx) = mpsc::channel();
         let decode_handle = {
             let engine = engine.clone();
             let vad_done = vad_done.clone();
-            let onnx_lock = onnx_lock.clone();
             let decode = decode.clone();
             let events = events.clone();
-            std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .name("LiveDecoder".into())
                 .spawn(move || {
-                    decode_loop(engine, decode, vad_done, events, onnx_lock);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        decode_loop(engine, decode, vad_done, events);
+                    }));
+                    DECODER_ACTIVE.store(false, Ordering::SeqCst);
                     let _ = decode_done_tx.send(());
-                })
-                .map_err(|e| {
-                    crate::Error::Transcription(format!("Could not start live decoder: {e}"))
-                })?
+                    if result.is_err() {
+                        log::error!("Live decoder thread panicked");
+                    }
+                }) {
+                Ok(handle) => handle,
+                Err(e) => {
+                    DECODER_ACTIVE.store(false, Ordering::SeqCst);
+                    return Err(Error::Transcription(format!(
+                        "Could not start live decoder: {e}"
+                    )));
+                }
+            }
         };
 
         let vad_handle = {
             let paths = engine.paths().clone();
-            let vad_done = vad_done.clone();
-            let onnx_lock = onnx_lock.clone();
-            std::thread::Builder::new()
+            let vad_done_thread = vad_done.clone();
+            match std::thread::Builder::new()
                 .name("LiveVAD".into())
-                .spawn(move || {
-                    vad_loop(
-                        paths, mic_queue, decode, cancel, vad_done, onnx_lock, events,
-                    )
-                })
-                .map_err(|e| {
-                    crate::Error::Transcription(format!("Could not start live VAD: {e}"))
-                })?
+                .spawn(move || vad_loop(paths, mic_queue, decode, cancel, vad_done_thread, events))
+            {
+                Ok(handle) => handle,
+                Err(e) => {
+                    // Let the decoder observe vad_done and exit instead of
+                    // waiting forever for a VAD thread that never started.
+                    *vad_done.lock().expect("vad_done poisoned") = true;
+                    let _ = decode_handle.join();
+                    DECODER_ACTIVE.store(false, Ordering::SeqCst);
+                    return Err(Error::Transcription(format!(
+                        "Could not start live VAD: {e}"
+                    )));
+                }
+            }
         };
 
         self.decode_thread = Some(decode_handle);
@@ -94,13 +135,12 @@ impl LiveTranscriber {
         Ok(())
     }
 
-    /// The caller must have cancelled the token first. Joins VAD, then decoder.
+    /// The caller must have cancelled the token first. Wait for the decoder
+    /// first: the VAD's final flush needs the same ONNX lock, so joining VAD
+    /// before the decoder could block forever. If the native decode ignores
+    /// the deadline, detach both threads; the process-wide lock and
+    /// `DECODER_ACTIVE` keep the next session from racing them.
     pub fn stop(&mut self) {
-        if let Some(thread) = self.vad_thread.take()
-            && thread.join().is_err()
-        {
-            log::warn!("Live VAD thread panicked");
-        }
         let timed_out = if let Some(done) = self.decode_done.take() {
             done.recv_timeout(STOP_TIMEOUT).is_err()
         } else {
@@ -108,14 +148,24 @@ impl LiveTranscriber {
         };
         if let Some(thread) = self.decode_thread.take() {
             if timed_out {
-                // The native recognizer can block past cancellation. Detach
-                // the decoder so the recording still gets saved.
                 log::warn!(
                     "Live decoder did not stop within {} s; detaching it",
                     STOP_TIMEOUT.as_secs()
                 );
+                drop(thread);
             } else if thread.join().is_err() {
                 log::warn!("Live decoder thread panicked");
+            }
+        }
+        if let Some(thread) = self.vad_thread.take() {
+            if timed_out {
+                // The VAD thread may be waiting for the ONNX lock held by the
+                // detached decoder. Drop the handle; it exits once the
+                // decoder releases the lock.
+                log::warn!("Live VAD thread did not finish; detaching it");
+                drop(thread);
+            } else if thread.join().is_err() {
+                log::warn!("Live VAD thread panicked");
             }
         }
         log::info!("LiveTranscriber stopped");
@@ -175,7 +225,6 @@ fn vad_loop(
     decode: Arc<DecodeQueue>,
     cancel: CancelToken,
     vad_done: Arc<Mutex<bool>>,
-    onnx_lock: Arc<Mutex<()>>,
     events: mpsc::Sender<LiveEvent>,
 ) {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -189,14 +238,14 @@ fn vad_loop(
         let mut state = LiveState::default();
         while !cancel.is_cancelled() {
             if let Some(chunk) = mic_queue.pop_timeout(Duration::from_millis(100)) {
-                state.feed(&mut detector, chunk, &decode, &onnx_lock, &events);
+                state.feed(&mut detector, chunk, &decode, &events);
             }
         }
         while let Some(chunk) = mic_queue.try_pop() {
-            state.feed(&mut detector, chunk, &decode, &onnx_lock, &events);
+            state.feed(&mut detector, chunk, &decode, &events);
         }
         {
-            let _guard = onnx_lock.lock().expect("onnx lock poisoned");
+            let _guard = onnx_guard();
             detector.flush();
         }
         state.drain(&mut detector, &decode, &events);
@@ -221,7 +270,6 @@ impl LiveState {
         detector: &mut sherpa_rs::silero_vad::SileroVad,
         chunk: Vec<f32>,
         decode: &DecodeQueue,
-        onnx_lock: &Mutex<()>,
         events: &mpsc::Sender<LiveEvent>,
     ) {
         self.history.extend_from_slice(&chunk);
@@ -231,7 +279,7 @@ impl LiveState {
             self.history_start += trim;
         }
         {
-            let _guard = onnx_lock.lock().expect("onnx lock poisoned");
+            let _guard = onnx_guard();
             detector.accept_waveform(chunk);
         }
         self.drain(detector, decode, events);
@@ -269,11 +317,10 @@ fn decode_loop(
     decode: Arc<DecodeQueue>,
     vad_done: Arc<Mutex<bool>>,
     events: mpsc::Sender<LiveEvent>,
-    onnx_lock: Arc<Mutex<()>>,
 ) {
     loop {
         if let Some(samples) = decode.pop_timeout(Duration::from_millis(100)) {
-            let _guard = onnx_lock.lock().expect("onnx lock poisoned");
+            let _guard = onnx_guard();
             match engine.recognize(&samples) {
                 Ok(text) if !text.is_empty() => {
                     let _ = events.send(LiveEvent::Text(text));

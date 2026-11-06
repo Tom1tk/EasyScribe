@@ -114,6 +114,10 @@ pub fn transcribe_in_process(
 ) -> Result<Vec<Segment>> {
     cancel.check()?;
     validate(paths)?;
+    reporter.status(crate::Status::SlowFallback);
+    reporter.log(
+        "[Warning] Using the built-in whisper.cpp engine. It has no GPU and is much slower than the bundled whisper-cli; this can take many times the audio length.",
+    );
 
     reporter.log(&format!(
         "[whisper.cpp] Transcribing with beam_size={BEAM_SIZE}: {}",

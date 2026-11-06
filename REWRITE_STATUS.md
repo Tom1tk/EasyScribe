@@ -287,9 +287,9 @@ recorded below.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
   shipping primary path is the child process.
-- The download is about 1.86 GB and every update is full-size. A fresh install
-  uses about 3.6 GB (exe plus ~1.7 GB runtime); an update needs up to about
-  5.3 GB free temporarily while the old and new runtimes coexist.
+- The download is about 1.92 GB and every update is full-size. A fresh install
+  uses about 3.7 GB (exe plus ~1.7 GB runtime); an update needs up to about
+  5.4 GB free temporarily while the old and new runtimes coexist.
 - A real ~1.8 GB payload unpack on a nearly full disk still needs a clean-PC
   test; the local fake-payload smoke validates mechanics only.
 - Authenticode signing is not enabled. The footer parser tolerates a certificate
