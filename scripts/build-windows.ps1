@@ -27,6 +27,8 @@ $env:RUSTFLAGS = (($env:RUSTFLAGS, "-C target-feature=+crt-static", "-C link-arg
 $env:CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
 $env:CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
 $env:GGML_NATIVE = "OFF"
+$env:GGML_AVX = "ON"
+$env:GGML_AVX2 = "ON"
 
 $payload = Join-Path $root "payload"
 if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
@@ -46,14 +48,17 @@ foreach ($name in @("models", "whispercpp", "assets", "licenses")) {
 }
 Copy-Item $ffmpegSrc (Join-Path $payload "ffmpeg") -Recurse
 
-# The app only needs the GGUF weights; it runs whisper.cpp in-process.
+# The app needs the GGUF weights and the bundled whisper-cli (Vulkan when a
+# driver exists, CPU otherwise) plus its DLLs.
 $whisperDir = Join-Path $payload "whispercpp"
-Get-ChildItem $whisperDir -File | Where-Object {
-    $_.Name -ne "ggml-large-v3-turbo-q5_0.bin"
-} | Remove-Item -Force
 if (-not (Test-Path (Join-Path $whisperDir "ggml-large-v3-turbo-q5_0.bin"))) {
     throw "missing whispercpp/ggml-large-v3-turbo-q5_0.bin"
 }
+if (-not (Test-Path (Join-Path $whisperDir "whisper-cli.exe"))) {
+    throw "missing whispercpp/whisper-cli.exe (build it with the Vulkan workflow)"
+}
+Copy-Item (Join-Path $root "tests\data\selftest_speech.wav") (Join-Path $payload "assets\selftest_speech.wav")
+Copy-Item (Join-Path $root "tests\data\selftest_speech.txt") (Join-Path $payload "assets\selftest_speech.txt")
 Copy-Item (Join-Path $root "LICENSE") (Join-Path $payload "LICENSE")
 
 # Build the app and packer in one cargo invocation so the static sherpa

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::audio::{load_wav_float32, wav_duration};
-use crate::diarizer::{DiarizationEngine, SpeakerNaming, SpeakerPreview};
+use crate::diarizer::{DiarizationEngine, SpeakerNaming, SpeakerPreview, diarize_in_child};
 use crate::ffmpeg::fmt_duration;
 use crate::model::{Segment, Status, Turn};
 use crate::report::CancelToken;
@@ -56,7 +56,8 @@ pub fn transcribe(
     let started = Instant::now();
     let (raw_segments, engine_name) = if whispercpp::is_available(paths) {
         reporter.log(&format!(
-            "[Transcribe] engine: whisper.cpp (beam_size={}), timestamps: {}, speakers: {}",
+            "[Transcribe] engine: {} (beam_size={}), timestamps: {}, speakers: {}",
+            whispercpp::engine_label(paths),
             whispercpp::BEAM_SIZE,
             on_off(request.add_timestamps),
             on_off(request.diarize)
@@ -185,7 +186,7 @@ pub fn speaker_transcript(
     reporter.status(Status::IdentifyingSpeakers);
     let started = Instant::now();
     let engine = DiarizationEngine::new(paths.clone());
-    let turns: Vec<Turn> = engine.diarize(audio_path, cancel, reporter.clone())?;
+    let turns: Vec<Turn> = diarize_in_child(paths, audio_path, cancel, reporter.clone())?;
     engine.save_measured_speed(audio_path, raw_segments, started.elapsed().as_secs_f64());
     let assigned = assign_speakers(raw_segments, &turns);
 

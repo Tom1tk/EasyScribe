@@ -215,6 +215,74 @@ jobs:
           if ($actual -ne $expected) { throw "GGUF checksum mismatch: $actual" }
           Write-Host "GGUF sha256 verified: $actual"
 
+      # whisper-cli is the proven file-transcription engine from v3.2.3. It is
+      # built with Vulkan so the GPU is used when a driver exists, and it runs
+      # as a child process so a driver crash cannot take the app down. The
+      # build is cached with the same key the Python release uses.
+      - name: Cache whisper.cpp Vulkan build
+        id: whispercpp-cache
+        uses: actions/cache@v4
+        with:
+          path: whisper.cpp\build\bin\Release
+          key: whispercpp-vulkan-v1.8.6-vksdk1.4.313.2-v1
+
+      - name: Install Vulkan SDK
+        if: steps.whispercpp-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $ver = "1.4.313.2"
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkansdk-windows-X64-$ver.exe" -OutFile VulkanSDK.exe
+          & .\VulkanSDK.exe --accept-licenses --default-answer --confirm-command install
+          Remove-Item VulkanSDK.exe
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
+
+      - name: Build whisper-cli.exe (Vulkan)
+        if: steps.whispercpp-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --branch v1.8.6 --depth 1 https://github.com/ggml-org/whisper.cpp.git
+          cmake -S whisper.cpp -B whisper.cpp\build -A x64 `
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DWHISPER_SDL2=OFF
+          if ($LASTEXITCODE -ne 0) { throw "whisper.cpp configure failed" }
+          cmake --build whisper.cpp\build --config Release --target whisper-cli --parallel
+          if ($LASTEXITCODE -ne 0) { throw "whisper.cpp build failed" }
+
+      - name: Verify whisper-cli.exe runs
+        shell: pwsh
+        run: |
+          $bin = "whisper.cpp\build\bin\Release\whisper-cli.exe"
+          if (-not (Test-Path $bin)) { throw "whisper-cli.exe was not built" }
+          & $bin --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "whisper-cli.exe failed to run" }
+
+      # Control measurement for finding 1: the same model and speech clip,
+      # same 4 threads and beam size, on the same runner, with the independent
+      # whisper-cli binary and no GPU. If this is also slow, the runner is the
+      # limit; if it is fast, the in-process engine is the problem.
+      - name: Measure the whisper-cli CPU control
+        shell: pwsh
+        run: |
+          $bin = "whisper.cpp\build\bin\Release\whisper-cli.exe"
+          $wav = (Resolve-Path "tests\data\selftest_speech.wav").Path
+          $model = (Resolve-Path "whispercpp\ggml-large-v3-turbo-q5_0.bin").Path
+          $out = Join-Path $PWD "control-whisper"
+          $watch = [System.Diagnostics.Stopwatch]::StartNew()
+          & $bin -m $model -f $wav -bs 5 -t 4 -ng -pp --output-json --output-file $out 2> control.err
+          $code = $LASTEXITCODE
+          $watch.Stop()
+          if ($code -ne 0) {
+            Get-Content control.err -Tail 20
+            throw "The whisper-cli control decode failed (exit $code)"
+          }
+          $seconds = $watch.Elapsed.TotalSeconds
+          Write-Host ("Control whisper-cli CPU decode: {0:N1}s for {1:N1}s of speech" -f $seconds, 23.3)
+          Get-Content control.err -Tail 6 | ForEach-Object { Write-Host $_ }
+          $budget = [Math]::Max(60.0, [Math]::Round($seconds * 2.0, 0))
+          Write-Host ("Selftest speech budget: {0:N0}s (2x the control, minimum 60s)" -f $budget)
+          Add-Content $env:GITHUB_ENV "EASYSCRIBE_SELFTEST_BUDGET_SEC=$budget"
+
       # Build the app and packer together so both see the static sherpa
       # feature. Linux CI runs the test suite; this job validates the Windows
       # static link and packaging.
@@ -238,9 +306,9 @@ jobs:
             Where-Object { $_.FullName -match "whisper-rs-sys" } | Select-Object -First 1
           if (-not $cache) { throw "whisper.cpp CMakeCache.txt was not produced" }
           $lines = Get-Content $cache.FullName
-          $lines | Where-Object { $_ -match "^GGML_(NATIVE|AVX|AVX2|FMA|SSE42|OPENMP):" } |
+          $lines | Where-Object { $_ -match "^GGML_(NATIVE|AVX|AVX2|FMA|SSE42|OPENMP):|^CMAKE_BUILD_TYPE:" } |
             ForEach-Object { Write-Host $_ }
-          foreach ($entry in @("GGML_NATIVE:BOOL=OFF", "GGML_AVX:BOOL=ON", "GGML_AVX2:BOOL=ON")) {
+          foreach ($entry in @("GGML_NATIVE:BOOL=OFF", "GGML_AVX:BOOL=ON", "GGML_AVX2:BOOL=ON", "CMAKE_BUILD_TYPE:STRING=Release")) {
             if (-not ($lines -contains $entry)) { throw "whisper.cpp was not built with $entry" }
           }
 
@@ -266,8 +334,9 @@ jobs:
           Remove-Item target -Recurse -Force
           Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free | Format-Table
 
-      # Assemble exactly what ships inside the single exe. whisper-cli.exe and
-      # its DLLs are not needed: file transcription is in-process via whisper-rs.
+      # Assemble exactly what ships inside the single exe. whisper-cli and its
+      # DLLs are the primary file-transcription engine (Vulkan when available,
+      # CPU otherwise); the app itself also contains the in-process fallback.
       - name: Assemble the payload
         shell: pwsh
         run: |
@@ -277,11 +346,54 @@ jobs:
           Copy-Item tools\ffmpeg payload\ffmpeg -Recurse
           New-Item -ItemType Directory payload\whispercpp | Out-Null
           Copy-Item whispercpp\ggml-large-v3-turbo-q5_0.bin payload\whispercpp\
+          Copy-Item whisper.cpp\build\bin\Release\whisper-cli.exe payload\whispercpp\
+          Copy-Item whisper.cpp\build\bin\Release\*.dll payload\whispercpp\
+          # whisper-cli is built with the dynamic MSVC runtime and OpenMP. Put
+          # the redistributable DLLs beside it so a clean PC without the VC++
+          # redistributable can still run the child process.
+          $redist = $env:VCToolsRedistDir
+          if (-not $redist) { throw "VCToolsRedistDir is not set" }
+          $crt = Get-ChildItem "$redist\x64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($crt) { Copy-Item "$($crt.FullName)\*.dll" payload\whispercpp\ -Force }
+          $openmp = Get-ChildItem "$redist\x64\Microsoft.VC*.OpenMP" -Directory -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($openmp) { Copy-Item "$($openmp.FullName)\vcomp140.dll" payload\whispercpp\ -Force }
+          foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "vcomp140.dll")) {
+            if (-not (Test-Path (Join-Path "payload\whispercpp" $dll))) {
+              $system = Join-Path $env:SystemRoot "System32\$dll"
+              if (Test-Path $system) { Copy-Item $system "payload\whispercpp\$dll" -Force }
+            }
+          }
           Copy-Item assets payload\assets -Recurse
+          Copy-Item tests\data\selftest_speech.wav payload\assets\selftest_speech.wav
+          Copy-Item tests\data\selftest_speech.txt payload\assets\selftest_speech.txt
           Copy-Item licenses payload\licenses -Recurse
           Copy-Item LICENSE payload\LICENSE
+          Get-ChildItem payload\whispercpp | Select-Object Name, Length | Format-Table
           $mb = (Get-ChildItem payload -Recurse | Measure-Object Length -Sum).Sum / 1MB
           Write-Host ("Payload: {0:N0} MB" -f $mb)
+
+      - name: Verify the whisper-cli payload
+        shell: pwsh
+        run: |
+          $dir = "payload\whispercpp"
+          $bin = Join-Path $dir "whisper-cli.exe"
+          if (-not (Test-Path $bin)) { throw "whisper-cli.exe is missing from the payload" }
+          foreach ($name in @("whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")) {
+            if (-not (Test-Path (Join-Path $dir $name))) { throw "Missing whisper-cli dependency: $name" }
+          }
+          $deps = (& dumpbin /dependents $bin | Out-String)
+          Write-Host $deps
+          foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "vcomp140.dll")) {
+            if ($deps -match [regex]::Escape($dll) -and -not (Test-Path (Join-Path $dir $dll))) {
+              throw "whisper-cli imports $dll but it is not in the payload"
+            }
+          }
+          # Run it from its payload folder with an empty model; a missing
+          # runtime DLL fails here, before the 1.8 GB exe is assembled.
+          & $bin -m "" -f "" 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq -1073741515) { throw "whisper-cli could not load a runtime DLL" }
 
       # The models and ffmpeg now live in payload\. Delete the originals so the
       # runner has room for the 1.7 GB archive temp file and the final exe.
@@ -289,6 +401,14 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item models, tools\ffmpeg, whispercpp, sherpa-static -Recurse -Force
+          # Keep only the built whisper-cli binaries for the cache; the source
+          # tree and CMake objects are no longer needed.
+          if (Test-Path whisper.cpp) {
+            Get-ChildItem whisper.cpp -Force | Where-Object { $_.Name -ne "build" } |
+              Remove-Item -Recurse -Force
+            Get-ChildItem whisper.cpp\build -Force | Where-Object { $_.Name -ne "bin" } |
+              Remove-Item -Recurse -Force
+          }
           Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free | Format-Table
 
       - name: Append the payload to the executable
@@ -357,7 +477,11 @@ jobs:
             "ffmpeg\ffmpeg.exe",
             "ffmpeg\ffprobe.exe",
             "whispercpp\ggml-large-v3-turbo-q5_0.bin",
+            "whispercpp\whisper-cli.exe",
+            "whispercpp\ggml-vulkan.dll",
             "assets\EasyScribe.ico",
+            "assets\selftest_speech.wav",
+            "assets\selftest_speech.txt",
             "licenses\THIRD-PARTY-NOTICES.txt",
             "LICENSE"
           )) {
@@ -388,6 +512,17 @@ jobs:
             The first launch unpacks the speech models and ffmpeg into
             `%LOCALAPPDATA%\EasyScribe\runtime`; later launches reuse that cache.
             Nothing is installed system-wide, and no account or network connection is used.
+
+            **Size and disk:** the download is about **1.8 GB** and every update is a
+            full download of the same size. After the first launch the extracted
+            runtime takes about another **1.7 GB**, so allow roughly **2x the exe
+            size** on disk (about 3.6 GB total).
+
+            **Requirements:** 64-bit Windows 10 or 11 on an x86-64 CPU with
+            **AVX2, FMA, F16C and BMI2**. File transcription uses the bundled
+            whisper.cpp Vulkan build when a GPU driver is available, and retries
+            on the CPU automatically when it is not. The CPU path is slower than
+            the Python release's GPU path but produces the same transcript.
 
             ### What to test
             - Transcribe audio/video files, including drag and drop and Stop.

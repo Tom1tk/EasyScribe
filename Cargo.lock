@@ -1070,6 +1070,7 @@ dependencies = [
  "thiserror 2.0.21",
  "uuid",
  "whisper-rs",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

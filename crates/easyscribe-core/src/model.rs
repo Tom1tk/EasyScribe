@@ -28,7 +28,7 @@ pub struct AssignedSegment {
 }
 
 /// One diarization turn.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Turn {
     pub start: f64,
     pub end: f64,

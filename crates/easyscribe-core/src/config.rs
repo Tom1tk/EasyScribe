@@ -63,8 +63,15 @@ pub struct Paths {
 impl Paths {
     /// Resolve paths for the running app and create the runtime directories.
     pub fn discover() -> Result<Self> {
-        if std::env::var_os("EASYSCRIBE_BASE_DIR").is_some() {
-            return Self::at(discover_base_dir());
+        if let Some(base) = std::env::var_os("EASYSCRIBE_BASE_DIR") {
+            let base = PathBuf::from(base);
+            // Worker processes inherit both so they read the same extracted
+            // runtime while writing settings/temp files to the parent's data
+            // directory instead of a second copy beside the models.
+            if let Some(data) = std::env::var_os("EASYSCRIBE_DATA_DIR") {
+                return Self::for_runtime(base, PathBuf::from(data));
+            }
+            return Self::at(base);
         }
         let prepared = crate::payload::prepare()?;
         Self::for_runtime(prepared.runtime_dir, prepared.data_dir)

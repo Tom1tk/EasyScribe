@@ -33,6 +33,9 @@ static WINDOW_HEIGHT_BITS: AtomicU32 = AtomicU32::new(0);
 
 fn main() {
     easyscribe_core::offline::install();
+    if let Some(code) = worker_mode() {
+        std::process::exit(code);
+    }
     let headless = std::env::args().any(|a| {
         matches!(
             a.as_str(),
@@ -110,6 +113,43 @@ fn main() {
     rune::App::new(spec).on_close(on_close).run();
 }
 
+/// Hidden child-process entry points. The main window is never created.
+fn worker_mode() -> Option<i32> {
+    let mut args = std::env::args().skip(1);
+    let mut mode = None;
+    let mut wav = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--worker" => mode = args.next(),
+            "--wav" => wav = args.next(),
+            "--threads" => {
+                let _ = args.next();
+            }
+            _ => {}
+        }
+    }
+    let mode = mode?;
+    if mode != "diarize" {
+        eprintln!("Unknown worker mode: {mode}");
+        return Some(2);
+    }
+    let Some(wav) = wav else {
+        eprintln!("--worker diarize needs --wav <path>");
+        return Some(2);
+    };
+    let paths = match Paths::discover() {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("The diarization worker could not prepare its files: {error}");
+            return Some(1);
+        }
+    };
+    Some(easyscribe_core::diarizer::run_diarize_worker(
+        &paths,
+        std::path::Path::new(&wav),
+    ))
+}
+
 /// Load every native model once and decode a short local WAV. The release
 /// workflow runs this on the packed executable; `--list-scenes` alone never
 /// touches sherpa-onnx or whisper.cpp.
@@ -120,44 +160,35 @@ fn run_selftest(paths: &Paths) -> i32 {
     };
     use std::sync::Arc;
 
+    let budget = std::env::var("EASYSCRIBE_SELFTEST_BUDGET_SEC")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(180.0);
+
     let mut failures: Vec<String> = Vec::new();
-    let mut note =
-        |name: &str, started: std::time::Instant, result: easyscribe_core::Result<()>| {
-            let seconds = started.elapsed().as_secs_f64();
-            match result {
-                Ok(()) => println!("ok: {name} ({seconds:.1}s)"),
-                Err(error) => {
-                    println!("FAILED: {name} ({seconds:.1}s): {error}");
-                    failures.push(format!("{name}: {error}"));
-                }
-            }
-        };
-
-    let wav = paths.temp_dir.join("selftest.wav");
-    let started = std::time::Instant::now();
-    let write = (|| -> easyscribe_core::Result<()> {
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 16_000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::create(&wav, spec)
-            .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
-        // Five seconds of silence loads and runs every decoder without
-        // depending on a bundled speech sample.
-        for _ in 0..80_000 {
-            writer
-                .write_sample(0_i16)
-                .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+    println!(
+        "info: build profile: debug_assertions={}, cargo={}, whisper.cpp CMake={}",
+        cfg!(debug_assertions),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        if cfg!(debug_assertions) {
+            "RelWithDebInfo"
+        } else {
+            "Release"
         }
-        writer
-            .finalize()
-            .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))
-    })();
-    note("write test audio", started, write);
-
-    let reporter: Arc<dyn easyscribe_core::Reporter> = Arc::new(SilentReporter);
+    );
+    let info = whispercpp::system_info();
+    println!("info: whisper.cpp system info: {info}");
+    for feature in ["AVX2", "FMA", "F16C"] {
+        let needle = format!("{feature} = 1");
+        if !info.contains(&needle) {
+            failures.push(format!("whisper.cpp CPU feature missing: {needle}"));
+        }
+    }
     println!(
         "info: {} logical CPU(s), whisper.cpp uses {} thread(s)",
         std::thread::available_parallelism()
@@ -165,19 +196,85 @@ fn run_selftest(paths: &Paths) -> i32 {
             .unwrap_or(0),
         easyscribe_core::config::num_threads()
     );
+    println!(
+        "info: bundled whisper-cli: {}",
+        if paths.whispercpp_bin.is_file() {
+            paths.whispercpp_bin.display().to_string()
+        } else {
+            "no (in-process engine)".into()
+        }
+    );
 
-    // Decode before any ONNX Runtime model is loaded. If this passes and the
-    // decode after the sherpa loads fails, the two engines interfere on
-    // Windows; if it fails too, the bundled whisper.cpp build is at fault.
-    let started = std::time::Instant::now();
-    let cancel = CancelToken::new();
-    let result = whispercpp::transcribe_file(paths, &wav, &cancel, &reporter).map(|_| ());
-    note("whisper.cpp cold decode", started, result);
+    let fixture = std::env::var_os("EASYSCRIBE_SELFTEST_WAV")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            let path = paths.assets_dir.join("selftest_speech.wav");
+            path.is_file().then_some(path)
+        });
+    let (wav, speech) = match fixture {
+        Some(path) => {
+            let seconds = wav_seconds(&path).unwrap_or(0.0);
+            println!("info: selftest speech: {} ({seconds:.1}s)", path.display());
+            (path, true)
+        }
+        None => {
+            let path = paths.temp_dir.join("selftest.wav");
+            let started = std::time::Instant::now();
+            let write = write_silence(&path, 5);
+            report_step(&mut failures, "write test audio", started, None, write);
+            (path, false)
+        }
+    };
+
+    let reporter: Arc<dyn easyscribe_core::Reporter> = Arc::new(SilentReporter);
+    if speech {
+        let expected = expected_transcript(paths);
+        // Decode before any ONNX Runtime model is loaded. If this passes and
+        // the decode after the sherpa loads fails, the two engines interfere
+        // on Windows; if it fails too, the bundled whisper.cpp build is at
+        // fault. The budget applies to the primary (whisper-cli) path.
+        let started = std::time::Instant::now();
+        let cancel = CancelToken::new();
+        let result = whispercpp::transcribe_file(paths, &wav, &cancel, &reporter)
+            .and_then(|segments| check_transcript(&segments, expected.as_deref()));
+        report_step(
+            &mut failures,
+            "whisper.cpp cold decode",
+            started,
+            Some(budget),
+            result,
+        );
+
+        // Keep one in-process decode so CI tests the linked whisper.cpp build
+        // too, not only the child process. It must reach the same transcript.
+        let started = std::time::Instant::now();
+        let cancel = CancelToken::new();
+        let result = whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
+            .and_then(|segments| check_transcript(&segments, expected.as_deref()));
+        report_step(
+            &mut failures,
+            "whisper.cpp in-process decode",
+            started,
+            // Diagnostic only: the fallback is not the shipping path. Its
+            // MSVC build has no OpenMP (whisper-rs-sys forces it off), so its
+            // timing is recorded but the primary whisper-cli budget is the
+            // gate.
+            None,
+            result,
+        );
+    }
 
     let started = std::time::Instant::now();
     let engine = TranscriptionEngine::new(paths.clone());
     let result = engine.ensure_loaded(&SilentReporter);
-    note("sherpa-onnx whisper model", started, result);
+    report_step(
+        &mut failures,
+        "sherpa-onnx whisper model",
+        started,
+        None,
+        result,
+    );
     // Load and drop the recognizer: the second whisper decode then tests
     // ONNX Runtime's global/thread-local side effects without also holding
     // the ~1 GB sherpa model in memory.
@@ -185,21 +282,86 @@ fn run_selftest(paths: &Paths) -> i32 {
 
     let started = std::time::Instant::now();
     let result = sherpa_engine::build_vad(paths, 5.0).map(|_| ());
-    note("silero VAD model", started, result);
+    report_step(&mut failures, "silero VAD model", started, None, result);
 
     let started = std::time::Instant::now();
     let cancel = CancelToken::new();
     let result = whispercpp::transcribe_file(paths, &wav, &cancel, &reporter).map(|_| ());
-    note("whisper.cpp decode after sherpa", started, result);
+    report_step(
+        &mut failures,
+        "whisper.cpp decode after sherpa",
+        started,
+        None,
+        result,
+    );
 
     let started = std::time::Instant::now();
     let engine = DiarizationEngine::new(paths.clone());
     let result = engine
         .diarize(&wav, &CancelToken::new(), Arc::new(SilentReporter))
         .map(|_| ());
-    note("speaker diarization models", started, result);
+    report_step(
+        &mut failures,
+        "speaker diarization (in-process)",
+        started,
+        None,
+        result,
+    );
 
-    let _ = std::fs::remove_file(&wav);
+    let started = std::time::Instant::now();
+    let result = easyscribe_core::diarizer::diarize_in_child(
+        paths,
+        &wav,
+        &CancelToken::new(),
+        Arc::new(SilentReporter),
+    )
+    .map(|_| ());
+    report_step(
+        &mut failures,
+        "speaker diarization (child process)",
+        started,
+        None,
+        result,
+    );
+
+    // Silence must produce an empty transcript and the clear "No speech
+    // found" log, never a hallucinated "Thank you." and a long decode.
+    let silence = paths.temp_dir.join("selftest_silence.wav");
+    let started = std::time::Instant::now();
+    let result = write_silence(&silence, 5).and_then(|()| {
+        let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture: Arc<dyn easyscribe_core::Reporter> =
+            std::sync::Arc::new(CaptureReporter { logs: logs.clone() });
+        let segments = whispercpp::transcribe_file(paths, &silence, &CancelToken::new(), &capture)?;
+        let found = logs
+            .lock()
+            .map(|lines| lines.iter().any(|line| line.contains("No speech found")))
+            .unwrap_or(false);
+        if !segments.is_empty() {
+            return Err(easyscribe_core::Error::Transcription(format!(
+                "silence produced {} segment(s)",
+                segments.len()
+            )));
+        }
+        if !found {
+            return Err(easyscribe_core::Error::Transcription(
+                "silence did not log \"No speech found\"".into(),
+            ));
+        }
+        Ok(())
+    });
+    let _ = std::fs::remove_file(&silence);
+    report_step(
+        &mut failures,
+        "silence produces no speech",
+        started,
+        None,
+        result,
+    );
+
+    if !speech {
+        let _ = std::fs::remove_file(&wav);
+    }
     let report = if failures.is_empty() {
         "EasyScribe selftest passed".to_owned()
     } else {
@@ -207,6 +369,103 @@ fn run_selftest(paths: &Paths) -> i32 {
     };
     let _ = std::fs::write(paths.logs_dir.join("selftest.txt"), &report);
     if failures.is_empty() { 0 } else { 1 }
+}
+
+struct CaptureReporter {
+    logs: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl easyscribe_core::Reporter for CaptureReporter {
+    fn log(&self, line: &str) {
+        if let Ok(mut logs) = self.logs.lock() {
+            logs.push(line.to_owned());
+        }
+    }
+}
+
+fn expected_transcript(paths: &Paths) -> Option<String> {
+    std::env::var_os("EASYSCRIBE_SELFTEST_TEXT")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            let path = paths.assets_dir.join("selftest_speech.txt");
+            path.is_file().then_some(path)
+        })
+        .and_then(|path| std::fs::read_to_string(path).ok())
+}
+
+fn check_transcript(
+    segments: &[easyscribe_core::Segment],
+    expected: Option<&str>,
+) -> easyscribe_core::Result<()> {
+    if segments.is_empty() {
+        return Err(easyscribe_core::Error::Transcription(
+            "the speech sample produced no segments".into(),
+        ));
+    }
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual = easyscribe_core::transcript::build_plain_transcript(segments, false);
+    if actual.trim_end() != expected.trim_end() {
+        return Err(easyscribe_core::Error::Transcription(format!(
+            "the transcript does not match the golden text\n--- expected ---\n{}\n--- actual ---\n{}",
+            expected.trim_end(),
+            actual.trim_end()
+        )));
+    }
+    Ok(())
+}
+
+fn report_step(
+    failures: &mut Vec<String>,
+    name: &str,
+    started: std::time::Instant,
+    budget: Option<f64>,
+    result: easyscribe_core::Result<()>,
+) {
+    let seconds = started.elapsed().as_secs_f64();
+    match result {
+        Ok(()) => {
+            println!("ok: {name} ({seconds:.1}s)");
+            if let Some(budget) = budget
+                && seconds > budget
+            {
+                let message = format!("{name} took {seconds:.1}s, over the {budget:.0}s budget");
+                println!("FAILED: {message}");
+                failures.push(message);
+            }
+        }
+        Err(error) => {
+            println!("FAILED: {name} ({seconds:.1}s): {error}");
+            failures.push(format!("{name}: {error}"));
+        }
+    }
+}
+
+fn write_silence(path: &std::path::Path, seconds: u32) -> easyscribe_core::Result<()> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec)
+        .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+    for _ in 0..seconds * 16_000 {
+        writer
+            .write_sample(0_i16)
+            .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+    }
+    writer
+        .finalize()
+        .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))
+}
+
+fn wav_seconds(path: &std::path::Path) -> Option<f64> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let spec = reader.spec();
+    let frames = reader.duration() as f64;
+    Some(frames / spec.sample_rate as f64 / spec.channels as f64)
 }
 
 fn init() -> AppState {

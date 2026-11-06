@@ -1,12 +1,11 @@
-//! File transcription through whisper.cpp, in-process via `whisper-rs`.
+//! File transcription through whisper.cpp. The bundled `whisper-cli` child
+//! process is the primary engine (see `whispercli`); this module owns the
+//! in-process `whisper-rs` fallback, which is used when the payload has only
+//! the GGUF weights and in Linux development/tests.
 //!
-//! The Python app drove the `whisper-cli` subprocess. Keeping the engine in
-//! process makes the single-exe payload smaller and gives the same beam-search
-//! results without writing JSON to a temporary file; the transcript shape and
-//! beam size (5) are unchanged.
-//!
-//! Stop is cooperative: whisper.cpp polls the shared cancel token at graph
-//! boundaries and while decoding, so a long file can be stopped without
+//! The in-process path keeps the same beam size (5) and transcript shape as
+//! the CLI. Stop is cooperative: whisper.cpp polls the shared cancel token at
+//! graph boundaries and while decoding, so a long file can be stopped without
 //! waiting for the whole decode to finish. A GPU decode failure is retried
 //! once on the CPU (see `REFERENCE_BACKEND.md` §10 and the plan's audit
 //! disposition).
@@ -25,6 +24,15 @@ pub const BEAM_SIZE: i32 = 5;
 
 pub fn is_available(paths: &Paths) -> bool {
     paths.whispercpp_model.is_file()
+}
+
+/// A short label for the log, matching the actual engine that will run.
+pub fn engine_label(paths: &Paths) -> &'static str {
+    if crate::whispercli::is_available(paths) {
+        "whisper-cli"
+    } else {
+        "whisper.cpp in-process"
+    }
 }
 
 pub fn validate(paths: &Paths) -> Result<()> {
@@ -78,8 +86,27 @@ pub fn selected_gpu(preferred: Option<i32>) -> Option<GpuInfo> {
     }
 }
 
-/// Transcribe a mono 16 kHz WAV with whisper.cpp beam search.
+/// Transcribe a mono 16 kHz WAV. The bundled whisper-cli is the primary path
+/// (the same Vulkan binary the Python release uses); the in-process engine is
+/// the fallback for development builds and tests that have no CLI.
 pub fn transcribe_file(
+    paths: &Paths,
+    audio_path: &Path,
+    cancel: &CancelToken,
+    reporter: &Arc<dyn Reporter>,
+) -> Result<Vec<Segment>> {
+    if crate::whispercli::is_available(paths) {
+        crate::whispercli::transcribe_file(paths, audio_path, cancel, reporter)
+    } else {
+        transcribe_in_process(paths, audio_path, cancel, reporter)
+    }
+}
+
+/// Transcribe with the whisper.cpp library linked into this executable.
+/// This path has no Vulkan and no child process; it exists so the app still
+/// works when the payload has only the GGUF weights, and so CI can test the
+/// engine independently of whisper-cli.
+pub fn transcribe_in_process(
     paths: &Paths,
     audio_path: &Path,
     cancel: &CancelToken,
@@ -112,7 +139,7 @@ pub fn transcribe_file(
     ));
 
     let mut settings = crate::settings::Settings::load(paths.settings_file.clone());
-    let regions = speech_regions(paths, &samples, cancel, reporter.as_ref())?;
+    let regions = speech_regions(paths, &samples, cancel, reporter.as_ref(), true)?;
     if std::env::var_os("EASYSCRIBE_WHISPER_TRACE").is_some() {
         eprintln!(
             "[whisper.cpp] {} samples at {rate} Hz, {} region(s) {regions:?}, threads={}",
@@ -120,6 +147,15 @@ pub fn transcribe_file(
             regions.len(),
             crate::config::num_threads()
         );
+    }
+    if regions.is_empty() {
+        reporter.progress(1.0);
+        reporter.log("[whisper.cpp] No speech found. Nothing to transcribe.");
+        log::info!(
+            "whisper.cpp: no speech detected in {}",
+            audio_path.display()
+        );
+        return Ok(Vec::new());
     }
     if regions.len() > 1
         || regions
@@ -188,17 +224,22 @@ pub fn transcribe_file(
 }
 
 /// Split a long file at very long silent gaps (30 s+) and trim silence at the
-/// edges, using the same Silero model as the sherpa path. Short files, files
-/// without a VAD model and files with little silence keep one whole-file decode,
-/// which preserves the byte-identical golden transcript.
-fn speech_regions(
+/// edges, using the same Silero model as the sherpa path. Short files and files
+/// without a VAD model keep one whole-file decode, which preserves the
+/// byte-identical golden transcript. An empty VAD result means the file has no
+/// speech at all: no regions, no hallucinated "Thank you." transcript.
+pub(crate) fn speech_regions(
     paths: &Paths,
     samples: &[f32],
     cancel: &CancelToken,
     _reporter: &dyn Reporter,
+    split_long: bool,
 ) -> Result<Vec<(usize, usize)>> {
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
     let whole = vec![(0, samples.len())];
-    if samples.len() < 30 * 16_000 || !paths.vad_model.is_file() {
+    if !paths.vad_model.is_file() {
         return Ok(whole);
     }
     // The pre-whisper gate is deliberately a little more sensitive than live
@@ -218,6 +259,19 @@ fn speech_regions(
             return Ok(whole);
         }
     };
+    if bounds.is_empty() {
+        return Ok(Vec::new());
+    }
+    // whisper-cli gets real speech as one whole file, exactly like the Python
+    // release. The gate is used only to answer "is there any speech at all?".
+    if !split_long {
+        return Ok(whole);
+    }
+    // Short files still run the gate so silence is recognised, but speech
+    // stays undivided: the golden transcript depends on one whole decode.
+    if samples.len() < 30 * 16_000 {
+        return Ok(whole);
+    }
     Ok(merge_gate_regions(&bounds, samples.len()))
 }
 
@@ -226,10 +280,10 @@ fn speech_regions(
 /// A file with little leading/trailing silence and no long gap stays whole,
 /// preserving the byte-identical golden transcript for ordinary recordings.
 fn merge_gate_regions(bounds: &[(usize, usize)], total: usize) -> Vec<(usize, usize)> {
-    let whole = vec![(0, total)];
     if bounds.is_empty() {
-        return whole;
+        return Vec::new();
     }
+    let whole = vec![(0, total)];
     let leading = bounds[0].0;
     let trailing = total.saturating_sub(bounds.last().map(|b| b.1).unwrap_or(0));
     let has_long_gap = bounds
@@ -332,6 +386,9 @@ fn decode_regions(
     let trace = std::env::var_os("EASYSCRIBE_WHISPER_TRACE").is_some();
     let mut context_params = WhisperContextParameters::default();
     context_params.use_gpu(use_gpu);
+    // whisper-cli (the Python app) enables flash attention by default. Match
+    // it: about 18% faster and a 4x smaller encode buffer.
+    context_params.flash_attn(true);
     if let Some(device) = device {
         context_params.gpu_device(device);
     }
@@ -417,6 +474,7 @@ fn decode_regions(
                     regions.len()
                 ),
             }
+            context.print_timings();
         }
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
@@ -446,6 +504,12 @@ fn decode_regions(
         regions.len()
     );
     Ok(segments)
+}
+
+/// whisper.cpp's own CPU feature line, e.g.
+/// `AVX = 1 | AVX2 = 1 | AVX512 = 0 | FMA = 1 | F16C = 1 ...`.
+pub fn system_info() -> &'static str {
+    whisper_rs::print_system_info()
 }
 
 /// Best-effort processor name for the log, matching the Python device lines.
@@ -484,6 +548,11 @@ mod tests {
     }
 
     #[test]
+    fn empty_gate_bounds_mean_no_speech() {
+        assert!(merge_gate_regions(&[], 60 * 16_000).is_empty());
+    }
+
+    #[test]
     #[ignore = "needs the development models and EasyScribe/tests/data/test_speech.wav"]
     fn long_silence_gate_preserves_the_transcript() {
         let base = Paths::at(crate::config::dev_base_dir()).expect("paths");
@@ -509,6 +578,7 @@ mod tests {
             &padded,
             &CancelToken::new(),
             &crate::report::SilentReporter,
+            true,
         )
         .unwrap();
         assert_eq!(regions.len(), 1);
@@ -531,13 +601,30 @@ mod tests {
         }
         writer.finalize().unwrap();
         let reporter: Arc<dyn Reporter> = Arc::new(crate::report::SilentReporter);
-        let segments = transcribe_file(&base, &wav, &CancelToken::new(), &reporter).unwrap();
+        let segments = transcribe_in_process(&base, &wav, &CancelToken::new(), &reporter).unwrap();
         let text = segments
             .iter()
             .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
         assert!(text.contains("quarterly results"), "{text}");
+    }
+
+    #[test]
+    #[ignore = "needs the development models and tests/data/selftest_speech.wav"]
+    fn golden_speech_text_matches_whisper_cli() {
+        let base = Paths::at(crate::config::dev_base_dir()).expect("paths");
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data");
+        let wav = data.join("selftest_speech.wav");
+        let expected = data.join("selftest_speech.txt");
+        if !wav.is_file() || !expected.is_file() || !base.whispercpp_model.is_file() {
+            return;
+        }
+        let expected = std::fs::read_to_string(expected).unwrap();
+        let reporter: Arc<dyn Reporter> = Arc::new(crate::report::SilentReporter);
+        let segments = transcribe_in_process(&base, &wav, &CancelToken::new(), &reporter).unwrap();
+        let text = crate::transcript::build_plain_transcript(&segments, false);
+        assert_eq!(text.trim_end(), expected.trim_end());
     }
 
     #[test]

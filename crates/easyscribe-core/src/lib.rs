@@ -20,6 +20,7 @@ pub mod sherpa_engine;
 pub mod transcriber;
 pub mod transcript;
 pub mod vad;
+pub mod whispercli;
 pub mod whispercpp;
 
 pub use config::{APP_NAME, APP_VERSION, Paths};

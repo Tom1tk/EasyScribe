@@ -1,9 +1,12 @@
 //! Speaker diarization and its time estimate, ported from `src/diarizer.py`.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use sherpa_rs::diarize::{Diarize, DiarizeConfig};
 
 use crate::audio::{load_wav_float32, wav_duration};
@@ -150,6 +153,267 @@ impl DiarizationEngine {
             turns.len()
         );
         Ok(turns)
+    }
+}
+
+/// Run diarization in a child process of the same executable. A crash or a
+/// Stop cannot take the UI down, and the child's memory is reclaimed when it
+/// exits. The worker protocol is newline-delimited JSON on stdout.
+pub fn diarize_in_child(
+    paths: &Paths,
+    audio_path: &Path,
+    cancel: &CancelToken,
+    reporter: Arc<dyn Reporter>,
+) -> Result<Vec<Turn>> {
+    let exe = std::env::current_exe().map_err(Error::Io)?;
+    let mut command = Command::new(&exe);
+    command
+        .arg("--worker")
+        .arg("diarize")
+        .arg("--wav")
+        .arg(audio_path)
+        .arg("--threads")
+        .arg(crate::config::num_threads().to_string())
+        .env("EASYSCRIBE_BASE_DIR", &paths.base_dir)
+        .env("EASYSCRIBE_DATA_DIR", &paths.data_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| Error::Diarization(format!("Could not start the diarization worker: {e}")))?;
+    #[cfg(windows)]
+    win_job::assign(&child);
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Diarization("The diarization worker has no stdout".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::Diarization("The diarization worker has no stderr".into()))?;
+    let (tx, rx) = std::sync::mpsc::channel::<WorkerMessage>();
+    let stdout_reader = {
+        let tx = tx.clone();
+        std::thread::Builder::new()
+            .name("DiarizeStdout".into())
+            .spawn(move || {
+                for line in BufReader::new(stdout)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    let message = match serde_json::from_str::<Value>(&line) {
+                        Ok(value) => WorkerMessage::parse(value),
+                        Err(error) => WorkerMessage::Malformed(format!(
+                            "The diarization worker sent invalid JSON ({error}): {line}"
+                        )),
+                    };
+                    if tx.send(message).is_err() {
+                        break;
+                    }
+                }
+            })
+    }
+    .map_err(|e| Error::Diarization(format!("Could not read the diarization worker: {e}")))?;
+    let stderr_reader = {
+        let tx = tx.clone();
+        let reporter = reporter.clone();
+        std::thread::Builder::new()
+            .name("DiarizeStderr".into())
+            .spawn(move || {
+                for line in BufReader::new(stderr)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    reporter.log(&line);
+                    let _ = tx.send(WorkerMessage::Log);
+                }
+            })
+    }
+    .map_err(|e| Error::Diarization(format!("Could not read the diarization log: {e}")))?;
+    drop(tx);
+
+    let mut turns: Option<Vec<Turn>> = None;
+    let mut error: Option<String> = None;
+    let status = loop {
+        if cancel.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            return Err(Error::Cancelled);
+        }
+        while let Ok(message) = rx.try_recv() {
+            match message {
+                WorkerMessage::Progress(fraction) => reporter.progress(fraction.clamp(0.0, 1.0)),
+                WorkerMessage::Turns(value) => turns = Some(value),
+                WorkerMessage::Error(message) => error = Some(message),
+                WorkerMessage::Malformed(message) => error = Some(message),
+                WorkerMessage::Log => {}
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(Error::Diarization(format!(
+                    "Could not wait for the diarization worker: {error}"
+                )));
+            }
+        }
+    };
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+    while let Ok(message) = rx.try_recv() {
+        match message {
+            WorkerMessage::Progress(fraction) => reporter.progress(fraction.clamp(0.0, 1.0)),
+            WorkerMessage::Turns(value) => turns = Some(value),
+            WorkerMessage::Error(message) => error = Some(message),
+            WorkerMessage::Malformed(message) => error = Some(message),
+            WorkerMessage::Log => {}
+        }
+    }
+
+    if let Some(message) = error {
+        return Err(Error::Diarization(message));
+    }
+    if !status.success() {
+        return Err(Error::Diarization(format!(
+            "The diarization worker stopped with exit code {:?}.",
+            status.code()
+        )));
+    }
+    turns.ok_or_else(|| {
+        Error::Diarization("The diarization worker finished without a result.".into())
+    })
+}
+
+enum WorkerMessage {
+    Progress(f64),
+    Turns(Vec<Turn>),
+    Error(String),
+    Malformed(String),
+    Log,
+}
+
+impl WorkerMessage {
+    fn parse(value: Value) -> Self {
+        if let Some(progress) = value.get("progress").and_then(Value::as_f64) {
+            return Self::Progress(progress);
+        }
+        if let Some(turns) = value.get("turns") {
+            return match serde_json::from_value::<Vec<Turn>>(turns.clone()) {
+                Ok(turns) => Self::Turns(turns),
+                Err(error) => {
+                    Self::Malformed(format!("The diarization worker sent bad turns: {error}"))
+                }
+            };
+        }
+        if let Some(message) = value.get("error").and_then(Value::as_str) {
+            return Self::Error(message.to_owned());
+        }
+        Self::Malformed("The diarization worker sent an unknown message.".into())
+    }
+}
+
+/// The hidden worker entry point (`easyscribe.exe --worker diarize --wav …`).
+/// It writes only JSON lines to stdout; diagnostics go to stderr.
+pub fn run_diarize_worker(paths: &Paths, wav: &Path) -> i32 {
+    struct JsonReporter;
+    impl Reporter for JsonReporter {
+        fn progress(&self, fraction: f64) {
+            write_worker_line(&serde_json::json!({
+                "progress": fraction.clamp(0.0, 1.0)
+            }));
+        }
+        fn log(&self, line: &str) {
+            eprintln!("{line}");
+        }
+    }
+
+    let result = DiarizationEngine::new(paths.clone()).diarize(
+        wav,
+        &CancelToken::new(),
+        Arc::new(JsonReporter),
+    );
+    match result {
+        Ok(turns) => {
+            write_worker_line(&serde_json::json!({ "turns": turns }));
+            0
+        }
+        Err(error) => {
+            write_worker_line(&serde_json::json!({ "error": error.to_string() }));
+            1
+        }
+    }
+}
+
+fn write_worker_line(value: &Value) {
+    let mut stdout = std::io::stdout().lock();
+    let _ = serde_json::to_writer(&mut stdout, value);
+    let _ = stdout.write_all(b"\n");
+    let _ = stdout.flush();
+}
+
+#[cfg(windows)]
+mod win_job {
+    use std::ffi::c_void;
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+
+    static JOB: OnceLock<usize> = OnceLock::new();
+
+    fn job() -> Option<HANDLE> {
+        let stored = *JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast::<c_void>(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                return 0;
+            }
+            job as usize
+        });
+        (stored != 0).then_some(stored as HANDLE)
+    }
+
+    /// Assign the child to a kill-on-close job. If EasyScribe is killed, the
+    /// OS closes the job handle and terminates the worker with it.
+    pub fn assign(child: &std::process::Child) {
+        use std::os::windows::io::AsRawHandle;
+
+        let Some(job) = job() else { return };
+        let process = child.as_raw_handle() as HANDLE;
+        unsafe {
+            AssignProcessToJobObject(job, process);
+        }
     }
 }
 
