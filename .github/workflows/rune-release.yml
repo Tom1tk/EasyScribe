@@ -443,6 +443,12 @@ jobs:
               throw "The payload is missing the whisper-cli runtime DLL: $dll"
             }
           }
+          foreach ($exe in @("ffmpeg.exe", "ffprobe.exe")) {
+            $path = "payload\ffmpeg\$exe"
+            if (-not (Test-Path $path)) { throw "The payload is missing ffmpeg/$exe" }
+            & $path -version | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "$exe failed to run from the payload" }
+          }
           # Run it from its payload folder with an empty model; a missing
           # runtime DLL fails here, before the 1.8 GB exe is assembled.
           & $bin -m "" -f "" 2>&1 | Out-Null
@@ -569,8 +575,12 @@ jobs:
 
             **Size and disk:** the download is about **1.86 GB** and every update is a
             full download of the same size. After the first launch the extracted
-            runtime takes about another **1.7 GB**, so allow roughly **2x the exe
-            size** on disk (about 3.6 GB total).
+            runtime takes about another **1.7 GB**, so a fresh install uses about
+            **3.6 GB** in total. Updating an existing copy needs up to about
+            **5.3 GB free** temporarily while the old and new runtimes coexist;
+            the old runtime is removed after the new version starts. The app
+            checks free space before unpacking and shows a clear message instead
+            of failing halfway.
 
             **Requirements:** 64-bit Windows 10 or 11 on an x86-64 CPU with
             **AVX2, FMA, F16C and BMI2**. File transcription uses the bundled

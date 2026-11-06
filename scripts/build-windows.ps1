@@ -59,6 +59,16 @@ if (-not (Test-Path (Join-Path $whisperDir "ggml-large-v3-turbo-q5_0.bin"))) {
 if (-not (Test-Path (Join-Path $whisperDir "whisper-cli.exe"))) {
     throw "missing whispercpp/whisper-cli.exe (build it with the Vulkan workflow)"
 }
+# Copy the VC++ runtime beside the CLI, matching the release workflow, so a
+# clean PC does not need the redistributable installed system-wide.
+if ($env:VCToolsRedistDir) {
+    $crt = Get-ChildItem "$env:VCToolsRedistDir\x64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($crt) { Copy-Item "$($crt.FullName)\*.dll" $whisperDir -Force }
+    $openmp = Get-ChildItem "$env:VCToolsRedistDir\x64\Microsoft.VC*.OpenMP" -Directory -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($openmp) { Copy-Item "$($openmp.FullName)\vcomp140.dll" $whisperDir -Force }
+}
 foreach ($dll in @(
     "whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll",
     "ggml-vulkan.dll", "vulkan-1.dll",

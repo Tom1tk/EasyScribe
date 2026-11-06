@@ -12,16 +12,19 @@ and timings in `REWRITE_STATUS.md`. Use invented/public-domain audio only.
 
 ## 1. Unpack
 
-- [ ] Start with about 2 GB free. The first launch shows the preparing screen,
-      then the main window; the runtime appears under
+- [ ] Start with about 3 GB free (the 1.86 GB exe plus ~1.7 GB of extracted
+      files). The first launch shows the preparing screen, then the main
+      window; the runtime appears under
       `%LOCALAPPDATA%\EasyScribe\runtime\v1-<hash>`.
 - [ ] Close and start again: the cached launch skips preparation and does not
       rewrite the `.complete` marker.
-- [ ] Repeat from the snapshot with about 1 GB free: expect a clear
-      "not enough space" message and no half-unpacked runtime that breaks the
-      next start.
-- [ ] Start a newer exe: the old runtime is replaced or cleaned, and the new one
-      works.
+- [ ] Repeat from the snapshot with about 1.5 GB free: expect a clear
+      "Not enough free disk space" message and no half-unpacked runtime that
+      breaks the next start.
+- [ ] Start a newer exe while the old runtime still exists: extraction needs up
+      to about 5.3 GB free at peak (exe, old runtime and staging copy), and the
+      old runtime is removed after the new one launches. Test with about 4 GB
+      free to see the clear message instead of a partial unpack.
 
 ## 2. Microphone
 
