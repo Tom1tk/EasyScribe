@@ -106,6 +106,13 @@ final validation gate.
   `whisper_full_with_state: failed to encode`. `whispercpp::decode_regions` now
   installs a plain C abort callback with a live `AbortProbe`, restoring
   cooperative Stop and removing the undefined read.
+- **`v3.2.3-rust.4` draft passed the native selftest.** The cold whisper decode
+  completed in 655.4 s and the post-sherpa decode in 633.6 s — the same ~650 s
+  encode that used to fail, now succeeding. That confirms the whisper-rs
+  abort-callback read as the Windows-only failure. The run used the older
+  workflow file from `main`, so the AVX2 pin/assert, GGUF hash check and trace
+  environment did not execute; `main` now carries those changes and
+  `v3.2.3-rust.5` is rebuilding with an asserted AVX2 CMake cache.
 - **UI audit** — all confirmed issues fixed: the real window height now reaches
   `AppState`; the 600–678 pt page scrolls so the utility row and tall results
   stay reachable; record tiles and microphone menu rows are keyboard-focusable
@@ -125,7 +132,10 @@ final validation gate.
 - The local 300 MB fake payload validates mechanics, not the real 1.7 GB
   artifact or free-space behaviour.
 - CPU-only whisper.cpp is slower than the Python Vulkan path; functionality and
-  transcript output are unchanged.
+  transcript output are unchanged. The 5 s silence selftest is a worst case
+  (the decoder keeps generating), so it takes minutes on a CI CPU; ordinary
+  speech files are much faster. The Windows build requires AVX2, matching the
+  reference's non-native whisper.cpp CPU build.
 - In-process diarization can use substantial memory on very long recordings;
   crash isolation is not implemented.
 - Authenticode signing is not enabled. The footer parser tolerates a certificate
@@ -133,10 +143,9 @@ final validation gate.
 
 ## Next actions
 
-1. Dispatch Windows run `v3.2.3-rust.4` with the cold/after-sherpa selftest
-   split, pinned AVX2 build and GGUF hash gate. If both whisper decodes fail,
-   treat it as a Windows whisper.cpp build defect; if only the second fails,
-   isolate ONNX Runtime interference.
-2. Fix any remaining Windows-only failure and re-run with the next tag.
-3. Verify the draft `EasyScribe.exe` and `.sha256`, then hand over for
-   real-device testing (microphone, DPI, dialogs, drag/drop).
+1. Watch Windows run `42255592062` (`v3.2.3-rust.5`): asserted AVX2 build,
+   GGUF hash gate, cold/post-sherpa trace, selftest, cached launch and draft
+   upload.
+2. Verify the draft `EasyScribe.exe` and `.sha256`; remove the slower
+   `v3.2.3-rust.4` draft once `rust.5` is good.
+3. Hand over for real-device testing (microphone, DPI, dialogs, drag/drop).

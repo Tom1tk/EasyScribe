@@ -201,3 +201,12 @@ the narrative history.
   (`394221…a7e2`), and uses a fresh Rust cache key. The selftest step logs the
   runner's CPU and memory. Local verification: fmt, clippy and all 59 tests
   pass; the traced selftest passes cold and after sherpa.
+- **rust.4 confirmation.** `gh workflow run` without `--ref` used the workflow
+  file from `main`, so the run built the new `rune-rewrite` code with the old
+  CI recipe. It still proved the fix: the cold decode passed in 655.4 s and the
+  post-sherpa decode in 633.6 s, where rust.3 failed at 649 s. Sherpa loaded in
+  8.1 s, VAD in 0.0 s and diarization in 0.6 s. The draft
+  `v3.2.3-rust.4.exe` (1,773.7 MB) and its SHA-256 were uploaded and the
+  import/subsystem and cached-launch checks passed. The 655 s also showed the
+  cached build was still scalar, so the workflow changes were copied to `main`
+  (7f3e964) and `v3.2.3-rust.5` was dispatched with the asserted AVX2 build.
