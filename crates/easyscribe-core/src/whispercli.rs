@@ -274,13 +274,6 @@ pub fn transcribe_file(
             let _ = std::fs::remove_file(&output);
             return Err(Error::Cancelled);
         }
-        Err(error) if is_start_failure(&error) => {
-            let _ = std::fs::remove_file(&output);
-            reporter.log(&format!(
-                "[whisper.cpp] The bundled whisper-cli could not start ({error}). Using the in-process engine."
-            ));
-            return crate::whispercpp::transcribe_file(paths, audio_path, cancel, reporter);
-        }
         Err(error) if gpu_usable.is_some() => {
             let gpu = gpu_usable.expect("checked above");
             reporter.log(&format!(
@@ -315,13 +308,6 @@ pub fn transcribe_file(
         segments.len()
     ));
     Ok(segments)
-}
-
-/// A spawn failure means the bundled CLI (or one of its DLLs) could not be
-/// loaded. Unlike a decode failure, this is safe to retry with the in-process
-/// engine, which is linked into the app and needs no child DLLs.
-fn is_start_failure(error: &Error) -> bool {
-    matches!(error, Error::WhisperCpp(message) if message.starts_with("Could not start "))
 }
 
 fn run_cli(

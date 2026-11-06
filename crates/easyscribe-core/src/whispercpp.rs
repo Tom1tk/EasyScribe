@@ -232,7 +232,7 @@ pub(crate) fn speech_regions(
     paths: &Paths,
     samples: &[f32],
     cancel: &CancelToken,
-    _reporter: &dyn Reporter,
+    reporter: &dyn Reporter,
     split_long: bool,
 ) -> Result<Vec<(usize, usize)>> {
     if samples.is_empty() {
@@ -248,6 +248,9 @@ pub(crate) fn speech_regions(
         Ok(detector) => detector,
         Err(error) => {
             log::warn!("Speech gate unavailable, decoding the whole file: {error}");
+            reporter.log(
+                "[whisper.cpp] Warning: speech detection is unavailable; decoding the whole file.",
+            );
             return Ok(whole);
         }
     };
@@ -256,6 +259,8 @@ pub(crate) fn speech_regions(
         Err(Error::Cancelled) => return Err(Error::Cancelled),
         Err(error) => {
             log::warn!("Speech gate failed, decoding the whole file: {error}");
+            reporter
+                .log("[whisper.cpp] Warning: speech detection failed; decoding the whole file.");
             return Ok(whole);
         }
     };
@@ -294,18 +299,25 @@ fn merge_gate_regions(bounds: &[(usize, usize)], total: usize) -> Vec<(usize, us
     }
 
     let pad = (crate::vad::VAD_PAD_SEC * 16_000.0) as usize;
-    let mut regions: Vec<(usize, usize)> = Vec::new();
+    // Merge unpadded bounds first, then pad. Padding before the gap test would
+    // make a 30.0–30.4 s pause lose 2 * pad and be merged again.
+    let mut merged: Vec<(usize, usize)> = Vec::new();
     for &(start, end) in bounds {
-        let start = start.saturating_sub(pad);
-        let end = (end + pad).min(total);
-        match regions.last_mut() {
+        match merged.last_mut() {
             Some(last) if start.saturating_sub(last.1) < 30 * 16_000 => {
                 last.1 = last.1.max(end);
             }
-            _ => regions.push((start, end)),
+            _ => merged.push((start, end)),
         }
     }
-    if regions.is_empty() { whole } else { regions }
+    if merged.is_empty() {
+        whole
+    } else {
+        merged
+            .into_iter()
+            .map(|(start, end)| (start.saturating_sub(pad), (end + pad).min(total)))
+            .collect()
+    }
 }
 
 /// Run whisper.cpp on a fresh thread. ONNX Runtime leaves thread-local state
@@ -617,9 +629,21 @@ mod tests {
         let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let wav = data.join("selftest_speech.wav");
         let expected = data.join("selftest_speech.txt");
-        if !wav.is_file() || !expected.is_file() || !base.whispercpp_model.is_file() {
-            return;
-        }
+        assert!(
+            wav.is_file(),
+            "missing test fixture: {} (run with the development models and assets/)",
+            wav.display()
+        );
+        assert!(
+            expected.is_file(),
+            "missing golden transcript: {}",
+            expected.display()
+        );
+        assert!(
+            base.whispercpp_model.is_file(),
+            "missing development model: {}",
+            base.whispercpp_model.display()
+        );
         let expected = std::fs::read_to_string(expected).unwrap();
         let reporter: Arc<dyn Reporter> = Arc::new(crate::report::SilentReporter);
         let segments = transcribe_in_process(&base, &wav, &CancelToken::new(), &reporter).unwrap();

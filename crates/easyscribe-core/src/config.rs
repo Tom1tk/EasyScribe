@@ -24,6 +24,14 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
 
 /// One thread per physical core, clamped to 4..=8, as the Python app does.
 pub fn num_threads() -> usize {
+    // A hidden diarization worker receives the parent's thread count. Honor it
+    // so the child uses the same budget as the process that spawned it.
+    if let Some(value) = std::env::var_os("EASYSCRIBE_NUM_THREADS")
+        && let Some(threads) = value.to_str().and_then(|value| value.parse::<usize>().ok())
+        && threads > 0
+    {
+        return threads.min(64);
+    }
     let logical = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);

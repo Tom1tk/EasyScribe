@@ -116,19 +116,30 @@ fn main() {
 /// Hidden child-process entry points. The main window is never created.
 fn worker_mode() -> Option<i32> {
     let mut args = std::env::args().skip(1);
+    let mut worker = false;
     let mut mode = None;
     let mut wav = None;
+    let mut threads = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--worker" => mode = args.next(),
+            "--worker" => {
+                worker = true;
+                mode = args.next();
+            }
             "--wav" => wav = args.next(),
             "--threads" => {
-                let _ = args.next();
+                threads = args.next().and_then(|value| value.parse::<usize>().ok());
             }
             _ => {}
         }
     }
-    let mode = mode?;
+    if !worker {
+        return None;
+    }
+    let Some(mode) = mode else {
+        eprintln!("--worker needs a mode");
+        return Some(2);
+    };
     if mode != "diarize" {
         eprintln!("Unknown worker mode: {mode}");
         return Some(2);
@@ -137,6 +148,12 @@ fn worker_mode() -> Option<i32> {
         eprintln!("--worker diarize needs --wav <path>");
         return Some(2);
     };
+    if let Some(threads) = threads
+        && threads > 0
+    {
+        // SAFETY: single-threaded startup, before any worker or UI thread exists.
+        unsafe { std::env::set_var("EASYSCRIBE_NUM_THREADS", threads.to_string()) };
+    }
     let paths = match Paths::discover() {
         Ok(paths) => paths,
         Err(error) => {
@@ -156,7 +173,7 @@ fn worker_mode() -> Option<i32> {
 fn run_selftest(paths: &Paths) -> i32 {
     use easyscribe_core::diarizer::DiarizationEngine;
     use easyscribe_core::{
-        CancelToken, SilentReporter, TranscriptionEngine, sherpa_engine, whispercpp,
+        CancelToken, SilentReporter, TranscriptionEngine, sherpa_engine, whispercli, whispercpp,
     };
     use std::sync::Arc;
 
@@ -205,65 +222,81 @@ fn run_selftest(paths: &Paths) -> i32 {
         }
     );
 
-    let fixture = std::env::var_os("EASYSCRIBE_SELFTEST_WAV")
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_file())
-        .or_else(|| {
-            let path = paths.assets_dir.join("selftest_speech.wav");
-            path.is_file().then_some(path)
-        });
-    let (wav, speech) = match fixture {
-        Some(path) => {
-            let seconds = wav_seconds(&path).unwrap_or(0.0);
-            println!("info: selftest speech: {} ({seconds:.1}s)", path.display());
-            (path, true)
+    let fixture = match std::env::var_os("EASYSCRIBE_SELFTEST_WAV") {
+        Some(value) => {
+            let path = PathBuf::from(value);
+            if !path.is_file() {
+                println!(
+                    "FAILED: EASYSCRIBE_SELFTEST_WAV is not a file: {}",
+                    path.display()
+                );
+                return 1;
+            }
+            path
         }
         None => {
-            let path = paths.temp_dir.join("selftest.wav");
-            let started = std::time::Instant::now();
-            let write = write_silence(&path, 5);
-            report_step(&mut failures, "write test audio", started, None, write);
-            (path, false)
+            let path = paths.assets_dir.join("selftest_speech.wav");
+            if !path.is_file() {
+                println!(
+                    "FAILED: the selftest speech fixture is missing: {}",
+                    path.display()
+                );
+                return 1;
+            }
+            path
         }
     };
+    let seconds = wav_seconds(&fixture).unwrap_or(0.0);
+    println!(
+        "info: selftest speech: {} ({seconds:.1}s)",
+        fixture.display()
+    );
+    let Some(expected) = expected_transcript(paths) else {
+        println!("FAILED: the selftest golden transcript is missing or unreadable");
+        return 1;
+    };
+    let wav = fixture;
+
+    let have_cli = paths.whispercpp_bin.is_file() && paths.whispercpp_model.is_file();
+    if cfg!(not(debug_assertions)) && !have_cli {
+        failures.push("the bundled whisper-cli is missing from the release".into());
+    }
 
     let reporter: Arc<dyn easyscribe_core::Reporter> = Arc::new(SilentReporter);
-    if speech {
-        let expected = expected_transcript(paths);
-        // Decode before any ONNX Runtime model is loaded. If this passes and
-        // the decode after the sherpa loads fails, the two engines interfere
-        // on Windows; if it fails too, the bundled whisper.cpp build is at
-        // fault. The budget applies to the primary (whisper-cli) path.
-        let started = std::time::Instant::now();
-        let cancel = CancelToken::new();
-        let result = whispercpp::transcribe_file(paths, &wav, &cancel, &reporter)
-            .and_then(|segments| check_transcript(&segments, expected.as_deref()));
-        report_step(
-            &mut failures,
-            "whisper.cpp cold decode",
-            started,
-            Some(budget),
-            result,
-        );
-
-        // Keep one in-process decode so CI tests the linked whisper.cpp build
-        // too, not only the child process. It must reach the same transcript.
-        let started = std::time::Instant::now();
-        let cancel = CancelToken::new();
-        let result = whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
-            .and_then(|segments| check_transcript(&segments, expected.as_deref()));
-        report_step(
-            &mut failures,
-            "whisper.cpp in-process decode",
-            started,
-            // Diagnostic only: the fallback is not the shipping path. Its
-            // MSVC build has no OpenMP (whisper-rs-sys forces it off), so its
-            // timing is recorded but the primary whisper-cli budget is the
-            // gate.
-            None,
-            result,
-        );
+    // Decode before any ONNX Runtime model is loaded. The primary path must be
+    // the bundled whisper-cli when it exists, so a spawn or DLL failure is a
+    // selftest failure rather than a silent in-process decode. Debug builds
+    // without a CLI still exercise the linked engine.
+    let started = std::time::Instant::now();
+    let cancel = CancelToken::new();
+    let result = if have_cli {
+        whispercli::transcribe_file(paths, &wav, &cancel, &reporter)
+    } else {
+        whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
     }
+    .and_then(|segments| check_transcript(&segments, Some(&expected)));
+    report_step(
+        &mut failures,
+        "whisper.cpp cold decode",
+        started,
+        Some(budget),
+        result,
+    );
+
+    // Keep one in-process decode so CI tests the linked whisper.cpp build too,
+    // not only the child process. It must reach the same transcript.
+    let started = std::time::Instant::now();
+    let cancel = CancelToken::new();
+    let result = whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
+        .and_then(|segments| check_transcript(&segments, Some(&expected)));
+    report_step(
+        &mut failures,
+        "whisper.cpp in-process decode",
+        started,
+        // Diagnostic only: the fallback is not the shipping path.
+        None,
+        result,
+    );
 
     let started = std::time::Instant::now();
     let engine = TranscriptionEngine::new(paths.clone());
@@ -286,7 +319,10 @@ fn run_selftest(paths: &Paths) -> i32 {
 
     let started = std::time::Instant::now();
     let cancel = CancelToken::new();
-    let result = whispercpp::transcribe_file(paths, &wav, &cancel, &reporter).map(|_| ());
+    // This step must stay in-process: it is the diagnostic that catches ONNX
+    // Runtime's thread-local state poisoning a later whisper.cpp encode.
+    let result = whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
+        .and_then(|segments| check_transcript(&segments, Some(&expected)));
     report_step(
         &mut failures,
         "whisper.cpp decode after sherpa",
@@ -297,9 +333,7 @@ fn run_selftest(paths: &Paths) -> i32 {
 
     let started = std::time::Instant::now();
     let engine = DiarizationEngine::new(paths.clone());
-    let result = engine
-        .diarize(&wav, &CancelToken::new(), Arc::new(SilentReporter))
-        .map(|_| ());
+    let result = require_turns(engine.diarize(&wav, &CancelToken::new(), Arc::new(SilentReporter)));
     report_step(
         &mut failures,
         "speaker diarization (in-process)",
@@ -309,13 +343,12 @@ fn run_selftest(paths: &Paths) -> i32 {
     );
 
     let started = std::time::Instant::now();
-    let result = easyscribe_core::diarizer::diarize_in_child(
+    let result = require_turns(easyscribe_core::diarizer::diarize_in_child(
         paths,
         &wav,
         &CancelToken::new(),
         Arc::new(SilentReporter),
-    )
-    .map(|_| ());
+    ));
     report_step(
         &mut failures,
         "speaker diarization (child process)",
@@ -359,14 +392,12 @@ fn run_selftest(paths: &Paths) -> i32 {
         result,
     );
 
-    if !speech {
-        let _ = std::fs::remove_file(&wav);
-    }
     let report = if failures.is_empty() {
         "EasyScribe selftest passed".to_owned()
     } else {
         format!("EasyScribe selftest failed:\n{}", failures.join("\n"))
     };
+    println!("{report}");
     let _ = std::fs::write(paths.logs_dir.join("selftest.txt"), &report);
     if failures.is_empty() { 0 } else { 1 }
 }
@@ -414,6 +445,20 @@ fn check_transcript(
         )));
     }
     Ok(())
+}
+
+fn require_turns(
+    result: easyscribe_core::Result<Vec<easyscribe_core::Turn>>,
+) -> easyscribe_core::Result<()> {
+    result.and_then(|turns| {
+        if turns.is_empty() {
+            Err(easyscribe_core::Error::Diarization(
+                "no speaker segments were found".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    })
 }
 
 fn report_step(
@@ -465,7 +510,7 @@ fn wav_seconds(path: &std::path::Path) -> Option<f64> {
     let reader = hound::WavReader::open(path).ok()?;
     let spec = reader.spec();
     let frames = reader.duration() as f64;
-    Some(frames / spec.sample_rate as f64 / spec.channels as f64)
+    Some(frames / spec.sample_rate as f64)
 }
 
 fn init() -> AppState {

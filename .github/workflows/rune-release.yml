@@ -244,15 +244,28 @@ jobs:
         run: |
           git clone --branch v1.8.6 --depth 1 https://github.com/ggml-org/whisper.cpp.git
           cmake -S whisper.cpp -B whisper.cpp\build -A x64 `
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DWHISPER_SDL2=OFF
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DWHISPER_SDL2=OFF
           if ($LASTEXITCODE -ne 0) { throw "whisper.cpp configure failed" }
           cmake --build whisper.cpp\build --config Release --target whisper-cli --parallel
           if ($LASTEXITCODE -ne 0) { throw "whisper.cpp build failed" }
+          $cache = Get-Content "whisper.cpp\build\CMakeCache.txt"
+          foreach ($entry in @(
+            "CMAKE_BUILD_TYPE:STRING=Release",
+            "GGML_NATIVE:BOOL=OFF",
+            "GGML_AVX2:BOOL=ON",
+            "GGML_FMA:BOOL=ON",
+            "GGML_F16C:BOOL=ON"
+          )) {
+            if (-not ($cache -contains $entry)) { throw "whisper-cli was not built with $entry" }
+          }
           # ggml-vulkan.dll imports vulkan-1.dll at load time. Ship the Khronos
           # loader beside the CLI so a PC without a graphics driver can still
           # start whisper-cli and decode on the CPU instead of failing to load.
-          $loader = Join-Path $env:VULKAN_SDK "Bin\vulkan-1.dll"
-          if (-not (Test-Path $loader)) { throw "vulkan-1.dll not found in the Vulkan SDK" }
+          # The SDK installs the loader through VulkanRT into System32; older
+          # SDK layouts also keep a copy under Bin.
+          $loader = Join-Path $env:SystemRoot "System32\vulkan-1.dll"
+          if (-not (Test-Path $loader)) { $loader = Join-Path $env:VULKAN_SDK "Bin\vulkan-1.dll" }
+          if (-not (Test-Path $loader)) { throw "vulkan-1.dll was not installed by the Vulkan SDK" }
           Copy-Item $loader whisper.cpp\build\bin\Release\ -Force
 
       - name: Verify whisper-cli.exe runs
@@ -285,7 +298,7 @@ jobs:
           $seconds = $watch.Elapsed.TotalSeconds
           Write-Host ("Control whisper-cli CPU decode: {0:N1}s for {1:N1}s of speech" -f $seconds, 23.3)
           Get-Content control.err -Tail 6 | ForEach-Object { Write-Host $_ }
-          $budget = [Math]::Max(60.0, [Math]::Round($seconds * 2.0, 0))
+          $budget = [Math]::Min(180.0, [Math]::Max(60.0, [Math]::Round($seconds * 2.0, 0)))
           Write-Host ("Selftest speech budget: {0:N0}s (2x the control, minimum 60s)" -f $budget)
           Add-Content $env:GITHUB_ENV "EASYSCRIBE_SELFTEST_BUDGET_SEC=$budget"
 
@@ -518,7 +531,7 @@ jobs:
             `%LOCALAPPDATA%\EasyScribe\runtime`; later launches reuse that cache.
             Nothing is installed system-wide, and no account or network connection is used.
 
-            **Size and disk:** the download is about **1.8 GB** and every update is a
+            **Size and disk:** the download is about **1.86 GB** and every update is a
             full download of the same size. After the first launch the extracted
             runtime takes about another **1.7 GB**, so allow roughly **2x the exe
             size** on disk (about 3.6 GB total).
