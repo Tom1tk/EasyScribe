@@ -1,6 +1,6 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-06 (session 10 — audit 3 and rust.13)
+**Updated:** 2026-11-06 (session 11 — final audit and rust.14)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Phase:** 7 — speed, GPU, process isolation and final release
@@ -16,13 +16,17 @@ MSVC-only FMA assertion, `rust.10` on the app's own
 TTS-only sherpa libraries were removed, and `rust.12` because the payload's
 expected `whisper-cli` empty-path exit code failed the verification step. That
 last attempt proved espeak-ng is genuinely pulled by
-`piper-phonemize-lexicon.obj`; the libraries are restored, the GPL-3.0
-component is disclosed, and the combined-work licensing decision is a blocker
-for `Latest`. Six independent audits of the finished product are recorded in
-`docs/rewrite/AUDIT_3.md`; their confirmed data-loss, recovery, payload and
-release-gate fixes are in `d59b8f2`. `v3.2.3-rust.13` (run `42289270909`, from
-`b3c5112`) passed the full Windows pipeline and produced the draft assets
-recorded below.
+`piper-phonemize-lexicon.obj`. The final audit's remedy is now implemented:
+sherpa-onnx 1.12.9 is built from source with text-to-speech disabled, so the
+GPL-3.0 espeak-ng/piper components are no longer linked. Six independent audits
+of the finished product are recorded in `docs/rewrite/AUDIT_3.md`; their
+confirmed data-loss, recovery, payload and release-gate fixes are in `d59b8f2`.
+The remaining final-audit findings are also actioned: the slow in-process
+fallback shows a visible warning, the live-mode ONNX race is serialised
+process-wide, the asset-size guard is documented, and the release notes use the
+measured 1.92 GB. `v3.2.3-rust.14` (run `42309047043`, from `09761af`) passed
+the full Windows pipeline and produced the draft assets recorded below. The only
+open gate is real-PC verification; `v3.2.3` remains `Latest`.
 
 ## What is built
 
@@ -60,24 +64,32 @@ recorded below.
 - [x] `--selftest` prints `whisper_print_system_info()` (AVX2/FMA/F16C all 1),
       the Cargo/CMake profile, per-phase whisper timings, and loads the sherpa
       Whisper ONNX model, Silero VAD, whisper.cpp GGUF and diarization models.
-- [x] Local release selftest, 4 threads, 23.3 s speech:
-      `whisper-cli` cold **48.2 s**, in-process cold **67.9 s**, after sherpa
-      **65.7 s**, diarization in-process **10.4 s**, diarization child
-      **10.6 s**, silence check **0.1 s** (zero segments, "No speech found").
-- [x] Windows CI `v3.2.3-rust.13` (run `42289270909`, `b3c5112`, 4 vCPUs, no
+- [x] Local release selftest, 4 threads, 23.3 s speech, after the final-audit
+      changes: `whisper-cli` cold **48.6 s**, in-process cold **71.4 s**, after
+      sherpa **70.4 s**, diarization in-process **10.5 s**, diarization child
+      **10.8 s**, silence check **0.1 s** (zero segments, "No speech found").
+- [x] Windows CI `v3.2.3-rust.14` (run `42309047043`, `09761af`, 4 vCPUs, no
       GPU): the standalone `whisper-cli` control decoded the 23.3 s fixture in
-      **40.8 s** and set an **82 s** speech budget (2×, minimum 60 s). The
-      bundled CLI child decoded it in **37.5 s** (inside budget), the
-      in-process engine **551.0 s**, the sherpa Whisper ONNX model **6.1 s**,
-      Silero VAD **0.0 s**, the post-sherpa in-process decode **538.5 s**,
-      in-process diarization **6.2 s**, child diarization **6.3 s**, and the
-      silence check **0.0 s** with zero segments. System info reported
-      AVX2/FMA/F16C/BMI2; the golden text matched on every decode; imports,
+      **33.5 s** and set a **67 s** speech budget (2×, minimum 60 s). The
+      bundled CLI child decoded it in **37.6 s** (inside budget), the
+      in-process engine **551.0 s**, the sherpa Whisper ONNX model **42.6 s**,
+      Silero VAD **0.0 s**, the post-sherpa in-process decode **541.1 s**,
+      in-process diarization **8.5 s**, child diarization **8.6 s**, and the
+      silence check **0.1 s** with zero segments. System info reported
+      AVX2/FMA/F16C/BMI2; the golden text matched on every decode; the build log
+      asserted `SHERPA_ONNX_ENABLE_TTS:BOOL=OFF`,
+      `BUILD_SHARED_LIBS:BOOL=OFF` and no `espeak_Initialize` symbol; imports,
       subsystem, extraction, cached launch and the draft assets were verified.
-      The draft is `v3.2.3-rust.13` (draft, pre-release, not `Latest`):
-      `EasyScribe-v3.2.3-rust.13.exe` is 1,921,180,779 bytes, SHA-256
-      `69ee5c49b15501833699a73518ab9c8ec216f323f9b54035a9cae48ad4d4d991`,
-      with a 97-byte `.sha256` asset.
+      The draft is `v3.2.3-rust.14` (draft, pre-release, not `Latest`):
+      `EasyScribe-v3.2.3-rust.14.exe` is 1,921,914,713 bytes (1,832.9 MiB,
+      1.79 GiB), SHA-256
+      `f4e79cfb49a1755a4b362bd4467659c65ae553c309afc3f51d5f1c329bc6969c`,
+      with a 97-byte `.sha256` asset. The older `v3.2.3-rust.13` draft was
+      superseded and has been deleted.
+- [x] Final-audit fixes verified in the same run: TTS-off source build (no
+      espeak-ng/piper), the 1900 MiB size guard, the 1.92 GB release notes, the
+      `Transcribing (slow fallback)` warning, and the process-wide live ONNX
+      lock with decoder-first Stop.
 - [x] All 13 headless scenes render (`preparing` plus the 12 app states).
 - [x] UI click/state tests pass.
 - [x] Packed first-run smoke with a 300 MB fake payload: extraction, marker,
@@ -97,7 +109,8 @@ recorded below.
       staging validation and marker fsync, stale-staging age gate, newer-runtime
       protection, relative env paths, MSRV 1.89, version metadata derived from
       Cargo, the Rune-only GGUF cache save, the unconditional Vulkan loader, the
-      multi-config CMake gate, and the espeak-ng TTS-only link exclusion.
+      multi-config CMake gate, and (in `rust.14`) the TTS-off sherpa source
+      build that removes espeak-ng.
 - [x] Audit 3 residual risks are listed in `docs/rewrite/AUDIT_3.md`. The
       unverified Windows items (real-PC speed, microphone, DPI, dialogs,
       drag/drop, SmartScreen, low-disk unpack) remain gated by
@@ -114,9 +127,9 @@ recorded below.
 | Vulkan `whisper-cli` child process is the primary file engine | Reuses the proven v3.2.3 binary and flags, gives real GPU acceleration, and a driver crash only kills the child. The in-process `whisper-rs` build remains the fallback. |
 | Bundled VC++/OpenMP redistributable DLLs beside `whisper-cli.exe` | The Vulkan build uses the dynamic MSVC runtime and OpenMP; a clean PC may not have `vcomp140.dll`. The DLLs live in the payload, not next to the outer exe. |
 | Diarization runs in a child process of the same exe | Stop is a process kill, a crash cannot take the UI down, and long recordings free their memory when the worker exits. A Windows job object kills workers if the app is killed. |
-| sherpa-onnx **1.12.9** static libs | `sherpa-rs` 0.6.8 binds the 1.12.9 C API; 1.13.x added struct fields and is ABI-incompatible. |
-| Static MSVC runtime | The 1.12.9 static libraries are `/MT`; the workflow sets `+crt-static` and `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`. |
-| Explicit `advapi32.lib` on Windows | onnxruntime's ETW/telemetry and espeak-ng's registry calls leave six undefined imports in `sherpa-rs`'s cdylib link. The build adds `-C link-arg=advapi32.lib` alongside the static CRT flags. |
+| sherpa-onnx **1.12.9**, built from source with TTS off | `sherpa-rs` 0.6.8 binds the 1.12.9 C API; 1.13.x added struct fields and is ABI-incompatible. `SHERPA_ONNX_ENABLE_TTS=OFF` removes the GPL-3.0 espeak-ng/piper components. |
+| Static MSVC runtime | The workflow sets `+crt-static` and `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`; the build asserts `BUILD_SHARED_LIBS=OFF`. |
+| Explicit `advapi32.lib` on Windows | onnxruntime's ETW/telemetry calls leave undefined imports in `sherpa-rs`'s cdylib link. The build adds `-C link-arg=advapi32.lib` alongside the static CRT flags. |
 | Naming panel takes over at 820 pt and below | Python clips Save/Skip at the default height; the Rust build hides the Files/Record content while naming so both actions stay reachable. Intentional usability deviation. |
 | In-process fallback + child engines | File transcription prefers the `whisper-cli` child and falls back to in-process `whisper-rs` when only the GGUF model exists; diarization is always a child process. |
 | Privacy as an in-app modal | Same content/actions as the Python window; documented visual deviation. |
@@ -276,17 +289,19 @@ recorded below.
 
 - Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
   drag/drop and a real microphone can only be proven on a real Windows PC or VM.
-  `v3.2.3-rust.13` exercises the CPU path on CI (the runner has no GPU), but not
+  `v3.2.3-rust.14` exercises the CPU path on CI (the runner has no GPU), but not
   a dedicated/integrated GPU or a crashing driver.
 - The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
-  file on v3.2.3 GPU, v3.2.3 CPU and rust.13, then record wall times in this
+  file on v3.2.3 GPU, v3.2.3 CPU and rust.14, then record wall times in this
   file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
-- The 655 s CI decode cause is unproven. The OpenMP hypothesis was not supported
-  by the local benchmark; rust.13's same-runner control measurement is the next
-  datapoint.
+- The old 655 s CI decode was the in-process engine, not the shipped CLI path.
+  `rust.14` confirms the CLI child decodes the fixture in 37.6 s against a 33.5 s
+  control; the in-process fallback remains 551.0 s and its exact cause is still
+  unproven, so the UI now warns instead of running silently.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
-  shipping primary path is the child process.
+  shipping primary path is the child process. When it is active, the title reads
+  **Transcribing (slow fallback)** and the activity pane explains the delay.
 - The download is about 1.92 GB and every update is full-size. A fresh install
   uses about 3.7 GB (exe plus ~1.7 GB runtime); an update needs up to about
   5.4 GB free temporarily while the old and new runtimes coexist.
@@ -294,28 +309,29 @@ recorded below.
   test; the local fake-payload smoke validates mechanics only.
 - Authenticode signing is not enabled. The footer parser tolerates a certificate
   appended after the footer, and the release publishes a SHA-256 file.
-- Audit 3 lists the remaining live-mode, hot-unplug, non-ASCII path and UI
-  parity risks in `docs/rewrite/AUDIT_3.md`. The live decoder/VAD race and
-  hot-unplug reporting are the highest-risk items not fixed in this pass.
+- Audit 3 lists the remaining hot-unplug, live-error, non-ASCII path and UI
+  parity risks in `docs/rewrite/AUDIT_3.md`. The live decoder/VAD race is fixed
+  in rust.14; hot-unplug reporting is now the highest-risk item not fixed.
 
 ## Next actions
 
-1. **Done.** `v3.2.3-rust.13` from `b3c5112` passed the full Windows pipeline
-   (run `42289270909`): control 40.8 s, budget 82 s, CLI child 37.5 s,
-   in-process 551.0 s, after-sherpa 538.5 s, sherpa ONNX 6.1 s, VAD 0.0 s,
-   diarization 6.2/6.3 s, silence 0.0 s; AVX2/FMA/F16C/BMI2 and the golden text
-   were verified.
-2. **Done.** `EasyScribe-v3.2.3-rust.13.exe` (1,921,180,779 bytes) and its
+1. **Done.** `v3.2.3-rust.14` from `09761af` passed the full Windows pipeline
+   (run `42309047043`): control 33.5 s, budget 67 s, CLI child 37.6 s,
+   in-process 551.0 s, after-sherpa 541.1 s, sherpa ONNX 42.6 s, VAD 0.0 s,
+   diarization 8.5/8.6 s, silence 0.1 s; AVX2/FMA/F16C/BMI2, the golden text,
+   the TTS-off CMake cache and the no-espeak symbol check were verified.
+2. **Done.** `EasyScribe-v3.2.3-rust.14.exe` (1,921,914,713 bytes) and its
    97-byte `.sha256`
-   (`69ee5c49…d4d4d991`) are present on the draft pre-release; the superseded
-   `rust.4` and `rust.5` drafts were deleted. `v3.2.3` remains the stable
-   `Latest` release.
-3. Resolve the GPL-3.0 espeak-ng static-link decision before publishing
-   `Latest`: relicense the combined work under GPL-3.0 or rebuild sherpa-onnx
-   with TTS disabled.
+   (`f4e79cfb49a1755a4b362bd4467659c65ae553c309afc3f51d5f1c329bc6969c`) are
+   present on the draft pre-release. `v3.2.3` remains the stable `Latest`
+   release; the superseded `rust.13` draft has been deleted.
+3. **Done.** The GPL-3.0 espeak-ng question is resolved for the Rust build:
+   sherpa-onnx is compiled from source with `SHERPA_ONNX_ENABLE_TTS=OFF`, and
+   the workflow proves the library has no `espeak_Initialize` symbol. Main's
+   Python-release notice now discloses the component that remains in v3.2.3
+   (`a11ca32`).
 4. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
    microphone, DPI, dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the
    real-PC speed comparison; record results here.
-5. Hand over for the decision on replacing v3.2.3. Do not publish rust.13 as
-   Latest until the real-PC speed, clean-PC checks and the espeak licensing
-   decision are complete.
+5. Hand over for the decision on replacing v3.2.3. Do not publish rust.14 as
+   Latest until the real-PC speed, clean-PC checks and GPU checks pass.

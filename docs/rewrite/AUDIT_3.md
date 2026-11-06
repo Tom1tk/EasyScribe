@@ -110,9 +110,8 @@ end of this document. This file records what was fixed and what remains.
 - **The sherpa TTS/espeak link was investigated.** Removing `espeak-ng.lib` and
   `piper_phonemize.lib` made the Windows link fail on
   `piper-phonemize-lexicon.obj` (`espeak_Initialize`), which proves the linked
-  sherpa archive does pull espeak. The libraries are restored, the GPL-3.0
-  component is disclosed in `THIRD-PARTY-NOTICES.txt`, and the combined-work
-  licensing decision is recorded as a blocker for publishing `Latest`.
+  sherpa archive does pull espeak. This finding led to the `rust.14` TTS-off
+  source build described below; the prebuilt archive is no longer used.
 
 ### Version metadata and dependencies
 
@@ -122,10 +121,42 @@ end of this document. This file records what was fixed and what remains.
 - **The offline dependency test now resolves the Windows target** rather than
   the Linux host, so a Windows-only HTTP crate cannot pass unnoticed.
 
+## Final audit follow-up (rust.14)
+
+The final audit in `EasyScribe-rewrite-audit2.md` was actioned in commits
+`0a5db71`..`09761af` and validated by `v3.2.3-rust.14` (run `42309047043`, from
+`09761af`):
+
+1. **GPL-3.0 `espeak-ng` removed from the Rust build.** The prebuilt sherpa
+   archive and `SHERPA_LIB_PATH` are gone; `sherpa-rs-sys` builds vendored
+   sherpa-onnx 1.12.9 from source with `SHERPA_ONNX_ENABLE_TTS=OFF` and
+   `BUILD_SHARED_LIBS=OFF`. The Windows 11 runner has no `wmic`, so CI and
+   `scripts/build-windows.ps1` patch `cmake/show-info.cmake` after `cargo fetch`
+   for CMake 4. The build asserts the two cache entries and checks
+   `sherpa-onnx-core.lib` for `espeak_Initialize`; the log shows
+   `SHERPA_ONNX_ENABLE_TTS:BOOL=OFF`, `BUILD_SHARED_LIBS:BOOL=OFF` and
+   "sherpa-onnx has no espeak symbols." Main's Python-release notice now
+   discloses the component that remains in v3.2.3 (`a11ca32`).
+2. **The slow fallback warns.** `Status::SlowFallback` changes the activity
+   title to "Transcribing (slow fallback)" and explains that the built-in
+   engine can take many times longer; the log carries a warning. The engine
+   stays for damaged-payload resilience, which is the audit's accepted
+   "warn, don't run silently" option.
+3. **Asset-size guard.** The existing 1900 MiB check is stricter than the
+   suggested 2.05 GB and now documents the GitHub 2 GiB per-asset limit.
+4. **Live ONNX race fixed.** Every live VAD/recognizer call takes one
+   process-wide `ONNX_LOCK`. `stop()` waits for the decoder first with the 60 s
+   deadline and detaches both threads only on timeout; `DECODER_ACTIVE` rejects
+   a new session until a detached decoder exits. The lock also recovers from
+   poisoning.
+5. **Release notes and docs corrected.** They state 1.92 GB (1.79 GiB), about
+   3.7 GB fresh and about 5.4 GB peak update space.
+
 ## Residual risks (not fixed in this pass)
 
-These are confirmed or plausible but were not changed before `rust.11`. They
-must be decided before the Rune preview replaces v3.2.3.
+These were confirmed or plausible at the audit-3 pass. Items 3 and 17 were
+subsequently fixed in `rust.14` and are kept below with their disposition; the
+rest remain open.
 
 1. **Real-PC speed and GPU parity are still unmeasured.** CI has no GPU and four
    slow vCPUs. The branch now measures an independent whisper-cli control and
@@ -134,11 +165,12 @@ must be decided before the Rune preview replaces v3.2.3.
 2. **Windows-only behaviour is unverified**: microphone capture, hot-unplug,
    high-DPI scaling, native dialogs, drag/drop, SmartScreen, and the real
    1.7 GB unpack on a nearly full disk. See `CLEAN_PC_TEST.md`.
-3. **Live mode has a decoder/VAD shutdown race.** If a live decode is still
-   running when Stop times out, a later session can use the same sherpa
-   engine concurrently. The file and child-diarization paths are isolated, but
-   live sessions need a process-wide ONNX lock or a hard wait. This is the
-   highest-risk remaining recording issue.
+3. **Live mode had a decoder/VAD shutdown race — fixed in rust.14.** If a live
+   decode was still running when Stop timed out, a later session could use the
+   same sherpa engine concurrently. All live VAD/recognizer calls now share one
+   process-wide `ONNX_LOCK`, `stop()` waits for the decoder first, and
+   `DECODER_ACTIVE` blocks a new session until a detached decoder exits. The
+   file and child-diarization paths were already isolated.
 4. **Hot-unplug is logged but not surfaced.** A cpal stream error stops the
    samples reaching the file, yet the timer keeps running and Stop may report
    success for the audio captured before the unplug. The fix needs an error
@@ -183,14 +215,14 @@ must be decided before the Rune preview replaces v3.2.3.
 16. **Diarization remains single-threaded** in `sherpa-rs` 0.6.8, and the
     crate has unchecked null results and `to_str().unwrap()` on model paths.
     The child process isolates crashes, but the binding should be replaced.
-17. **GPL-3.0 `espeak-ng` is statically linked into the Windows exe.** The
-    attempt to remove the TTS-only libraries failed at link time because
-    `piper-phonemize-lexicon.obj` is pulled and references `espeak_Initialize`.
-    The library is restored and disclosed with a source offer. Before `Latest`,
-    the owner must choose between relicensing the combined work under GPL-3.0
-    and rebuilding sherpa-onnx from source with TTS disabled (or replacing the
-    binding). This is the main remaining release blocker besides real-PC
-    verification.
+17. **GPL-3.0 `espeak-ng` was statically linked into the Windows exe —
+    resolved in rust.14 for the Rust build.** The earlier attempt to remove the
+    TTS-only libraries failed at link time because `piper-phonemize-lexicon.obj`
+    was pulled and referenced `espeak_Initialize`. sherpa-onnx is now compiled
+    from source with `SHERPA_ONNX_ENABLE_TTS=OFF`, and CI asserts that
+    `sherpa-onnx-core.lib` has no `espeak_Initialize` symbol. The Python v3.2.3
+    release still ships the wheel's espeak-ng; main now discloses it and should
+    adopt the same TTS-off build when it is next released.
 18. **The release workflow does not reject a re-used existing tag.** It
     validates the tag against the workspace version, but a re-dispatch of an
     existing `rust.N` tag can still attach assets to the old tag. Use a new
@@ -202,11 +234,21 @@ must be decided before the Rune preview replaces v3.2.3.
   model-backed tests.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
-- Release selftest, 4 threads, 23.3 s real speech: whisper-cli cold 48.2 s,
-  in-process 67.9 s, after sherpa 65.7 s, diarization in-process 10.4 s,
-  diarization child 10.6 s, silence 0.1 s with zero segments.
+- Release selftest after the final-audit changes, 4 threads, 23.3 s real
+  speech: whisper-cli cold 48.6 s, in-process 71.4 s, after sherpa 70.4 s,
+  diarization in-process 10.5 s, diarization child 10.8 s, silence 0.1 s with
+  zero segments.
+- `v3.2.3-rust.14` (run `42309047043`, `09761af`, 4 vCPUs, no GPU) passed:
+  control 33.5 s, budget 67 s, CLI child 37.6 s, in-process 551.0 s, sherpa
+  ONNX 42.6 s, VAD 0.0 s, after-sherpa 541.1 s, diarization 8.5/8.6 s, silence
+  0.1 s. AVX2/FMA/F16C/BMI2 and the golden text were verified. The build proved
+  `SHERPA_ONNX_ENABLE_TTS:BOOL=OFF`, `BUILD_SHARED_LIBS:BOOL=OFF` and no
+  `espeak_Initialize` symbol. The draft asset is 1,921,914,713 bytes, SHA-256
+  `f4e79cfb49a1755a4b362bd4467659c65ae553c309afc3f51d5f1c329bc6969c`. It is a
+  draft pre-release, not `Latest`, and the superseded `rust.13` draft was
+  deleted.
 - `v3.2.3-rust.11` failed at the app link when the espeak exclusion was tried;
   the linker proved `piper-phonemize-lexicon.obj` references `espeak_Initialize`.
-  The libraries are restored and the GPL-3.0 component is disclosed.
-  `v3.2.3-rust.12` is the validation run for this pass. Its result, the control
-  timing and the draft assets are recorded in `REWRITE_STATUS.md`.
+  The TTS-off source build in `rust.14` supersedes that workaround. `rust.12`
+  and `rust.13` validated the payload and CPU paths recorded in
+  `REWRITE_STATUS.md`.

@@ -446,3 +446,48 @@ the narrative history.
 - Still open before `Latest`: the real-PC speed/GPU/microphone/DPI checks in
   `docs/rewrite/CLEAN_PC_TEST.md` and the GPL-3.0 espeak-ng combined-work
   licensing decision.
+
+## 2026-11-06 — Session 14: final audit and rust.14
+
+- **Final-audit finding 1, the GPL-3.0 espeak-ng link, is resolved for the Rust
+  build.** The prebuilt sherpa archive and `SHERPA_LIB_PATH` were removed;
+  `sherpa-rs-sys` now builds the vendored sherpa-onnx 1.12.9 from source with
+  `SHERPA_ONNX_ENABLE_TTS=OFF` and `BUILD_SHARED_LIBS=OFF`. `rust.14` failed
+  twice on the way: Windows 11 has no `wmic`, so `cmake/show-info.cmake` passed
+  an empty string to `string(REPLACE)` and then an empty list to `list(GET)`
+  under CMake 4. The workflow and `scripts/build-windows.ps1` patch both lines
+  after `cargo fetch`. The build now asserts the TTS-off cache entries and
+  checks `sherpa-onnx-core.lib` for `espeak_Initialize` (the first check was
+  too broad and matched WeSpeaker model names). Main's Python-release notice
+  now discloses the espeak-ng component that remains in v3.2.3 (`a11ca32`).
+- **Final-audit finding 2, the silent slow fallback.** `Status::SlowFallback`
+  makes the UI read **Transcribing (slow fallback)** with an explanation that
+  the built-in engine can take many times longer; the log carries the same
+  warning. The engine stays as a damaged-payload fallback, matching the audit's
+  accepted "warn, don't run silently" option.
+- **Final-audit finding 3, size headroom.** The existing 1900 MiB exe guard is
+  stricter than the suggested 2.05 GB and now documents the GitHub 2 GiB
+  release-asset limit.
+- **Final-audit finding 4, the live-mode ONNX race.** All live VAD and
+  recognizer calls now take one process-wide `ONNX_LOCK`. `stop()` waits for
+  the decoder first with the 60 s deadline, then detaches both threads only on
+  timeout; `DECODER_ACTIVE` rejects a new live session until a detached decoder
+  exits, and a poisoned lock is recovered so one native panic cannot disable
+  live mode.
+- **Release notes corrected** to 1.92 GB (1.79 GiB), about 3.7 GB fresh and
+  about 5.4 GB peak update space; `CLEAN_PC_TEST.md` and the README match.
+- **`v3.2.3-rust.14` (run `42309047043`, `09761af`) passed.** Control 33.5 s,
+  budget 67 s, CLI child 37.6 s, in-process 551.0 s, sherpa ONNX 42.6 s, VAD
+  0.0 s, after-sherpa 541.1 s, diarization 8.5/8.6 s, silence 0.1 s;
+  AVX2/FMA/F16C/BMI2 and the golden text verified. `EasyScribe-v3.2.3-rust.14.exe`
+  is 1,921,914,713 bytes, SHA-256
+  `f4e79cfb49a1755a4b362bd4467659c65ae553c309afc3f51d5f1c329bc6969c`, with a
+  97-byte `.sha256`. The draft is a pre-release, not `Latest`; the superseded
+  `v3.2.3-rust.13` draft was deleted.
+- Local verification after the changes: 68 tests pass (6 app, 60 core, 2
+  offline; 2 ignored), clippy and fmt clean, and the release selftest passed
+  (CLI 48.6 s, in-process 71.4 s, after-sherpa 70.4 s, diarization 10.5/10.8 s,
+  silence 0.1 s).
+- Remaining before `Latest`: the real-PC speed/GPU/microphone/DPI/dialog/
+  drag-drop/low-disk checks in `docs/rewrite/CLEAN_PC_TEST.md`. The espeak
+  licensing decision is no longer a blocker.
