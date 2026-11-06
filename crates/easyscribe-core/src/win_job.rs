@@ -7,7 +7,7 @@
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -20,6 +20,7 @@ fn job() -> Option<HANDLE> {
     let stored = *JOB.get_or_init(|| unsafe {
         let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if job.is_null() {
+            log::warn!("Could not create the child-process job object");
             return 0;
         }
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
@@ -31,6 +32,8 @@ fn job() -> Option<HANDLE> {
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         );
         if ok == 0 {
+            log::warn!("Could not make the child-process job kill on close");
+            CloseHandle(job);
             return 0;
         }
         job as usize
@@ -45,7 +48,11 @@ pub fn assign(child: &std::process::Child) {
 
     let Some(job) = job() else { return };
     let process = child.as_raw_handle() as HANDLE;
-    unsafe {
-        AssignProcessToJobObject(job, process);
+    let ok = unsafe { AssignProcessToJobObject(job, process) };
+    if ok == 0 {
+        log::warn!(
+            "Could not add child process {} to the kill-on-close job",
+            child.id()
+        );
     }
 }

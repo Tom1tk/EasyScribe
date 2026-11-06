@@ -16,6 +16,12 @@ pub enum Error {
     #[error("{0}")]
     WhisperCpp(String),
 
+    /// A Vulkan/whisper.cpp GPU failure. Kept separate so later runs remember
+    /// the failed GPU without treating a bad file, disk error or parse error
+    /// as a driver failure.
+    #[error("{0}")]
+    WhisperCppGpu(String),
+
     #[error("{0}")]
     Diarization(String),
 

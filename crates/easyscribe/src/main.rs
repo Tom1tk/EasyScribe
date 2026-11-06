@@ -270,7 +270,13 @@ fn run_selftest(paths: &Paths) -> i32 {
     let started = std::time::Instant::now();
     let cancel = CancelToken::new();
     let result = if have_cli {
-        whispercli::transcribe_file(paths, &wav, &cancel, &reporter)
+        // SAFETY: the selftest runs before the Rune window and its threads
+        // exist. The flag makes a CLI start failure a test failure rather
+        // than a silent in-process decode.
+        unsafe { std::env::set_var("EASYSCRIBE_SELFTEST_STRICT_CLI", "1") };
+        let result = whispercli::transcribe_file(paths, &wav, &cancel, &reporter);
+        unsafe { std::env::remove_var("EASYSCRIBE_SELFTEST_STRICT_CLI") };
+        result
     } else {
         whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
     }

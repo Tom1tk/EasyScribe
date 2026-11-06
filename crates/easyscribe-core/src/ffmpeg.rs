@@ -45,6 +45,8 @@ pub fn probe_audio(paths: &Paths, input: &Path) -> Option<AudioInfo> {
         .stderr(Stdio::null());
     hide_window(&mut command);
     let mut child = command.spawn().ok()?;
+    #[cfg(windows)]
+    crate::win_job::assign(&child);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match child.try_wait() {
@@ -210,6 +212,8 @@ pub fn extract_audio(
         let _ = std::fs::remove_file(&temp_wav);
         Error::FfmpegExtraction(format!("Could not start ffmpeg: {e}"))
     })?;
+    #[cfg(windows)]
+    crate::win_job::assign(&child);
     let stderr = child.stderr.take().expect("piped stderr");
 
     // One reader thread decodes stderr and sends complete lines; ffmpeg ends

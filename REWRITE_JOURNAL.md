@@ -306,3 +306,37 @@ the narrative history.
 - **Status honesty.** The status file now records rust.6 as a failure and keeps
   the 655 s cause open; the OpenMP explanation was not supported by the local
   benchmark. The rust.7 control step is the next measurement.
+
+## 2026-11-06 — Session 8: rust.8 CMake gate and the whisper-cli audit
+
+- **rust.8 failed on the CMake assertion, not the build.** The Visual Studio
+  generator is multi-config, so `CMAKE_BUILD_TYPE` is empty even when the
+  binary is built with `--config Release`. The assertion now checks
+  `GGML_NATIVE=OFF` and `GGML_AVX2`/`FMA`/`F16C=ON` in the cache, and the
+  Release binary path plus `--config Release` prove the configuration.
+- **CLI start/load failures now fall back correctly.** A spawn error or a
+  Windows loader exit (`0xC0000135`, `0139`, `007B`, `0142`) calls
+  `transcribe_in_process` directly, never the dispatcher that could recurse
+  back. The selftest sets `EASYSCRIBE_SELFTEST_STRICT_CLI` so a release build
+  still fails if the shipped CLI is unusable.
+- **GPU failure memory is narrower.** Every GPU error retries once on the CPU,
+  but only a Vulkan marker or a GPU crash code is stored in
+  `whisper_gpu_disabled_for`. CPU retries and forced-CPU runs set
+  `GGML_DISABLE_VULKAN=1` so a broken driver is not touched during backend
+  enumeration. A disabled device is filtered out of the picker, and the
+  preferred index is saved only after a successful decode.
+- **Probe and process robustness.** The probe distinguishes failure from “no
+  GPU”, drains stderr while polling, honours Cancel, and is skipped for forced
+  CPU. On probe failure whisper-cli chooses its own device instead of being
+  forced to `-ng`. The WAV buffer is dropped before the child starts, a
+  non-silent file with no VAD regions is decoded instead of becoming empty,
+  stderr reading survives invalid UTF-8, kill/wait is bounded, and all temp
+  JSON/stem files are removed. `ffmpeg`/`ffprobe` now join the job object.
+- **Payload completeness.** The runtime cache now requires the whisper-cli
+  DLLs, the Vulkan loader, the four VC++ runtime DLLs and the new notices; the
+  workflow copies those DLLs as required files instead of skipping missing
+  ones. `scripts/build-windows.ps1` checks the same set and pins FMA/F16C.
+- **Local verification after the changes:** 68 tests pass (6 app, 60 core,
+  2 offline; 2 ignored), clippy/fmt clean, release selftest passes (cold CLI
+  43.9 s, in-process 65.7 s, after-sherpa 65.9 s, diarization 10.6/10.5 s,
+  silence 0.1 s). `v3.2.3-rust.9` is dispatched from `rune-rewrite`.

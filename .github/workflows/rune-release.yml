@@ -249,8 +249,10 @@ jobs:
           cmake --build whisper.cpp\build --config Release --target whisper-cli --parallel
           if ($LASTEXITCODE -ne 0) { throw "whisper.cpp build failed" }
           $cache = Get-Content "whisper.cpp\build\CMakeCache.txt"
+          # This is a multi-config Visual Studio build: CMAKE_BUILD_TYPE is
+          # empty and the configuration is selected by --config Release, so the
+          # Release binary path is the build-type assertion here.
           foreach ($entry in @(
-            "CMAKE_BUILD_TYPE:STRING=Release",
             "GGML_NATIVE:BOOL=OFF",
             "GGML_AVX2:BOOL=ON",
             "GGML_FMA:BOOL=ON",
@@ -369,19 +371,24 @@ jobs:
           Copy-Item whisper.cpp\build\bin\Release\*.dll payload\whispercpp\
           # whisper-cli is built with the dynamic MSVC runtime and OpenMP. Put
           # the redistributable DLLs beside it so a clean PC without the VC++
-          # redistributable can still run the child process.
+          # redistributable can still run the child process. These four are
+          # required: the payload completeness check will reject a cache that
+          # lacks any of them and force a re-extract.
           $redist = $env:VCToolsRedistDir
           if (-not $redist) { throw "VCToolsRedistDir is not set" }
           $crt = Get-ChildItem "$redist\x64\Microsoft.VC*.CRT" -Directory -ErrorAction SilentlyContinue |
             Select-Object -First 1
-          if ($crt) { Copy-Item "$($crt.FullName)\*.dll" payload\whispercpp\ -Force }
+          if (-not $crt) { throw "The MSVC CRT redistributable folder was not found" }
+          Copy-Item "$($crt.FullName)\*.dll" payload\whispercpp\ -Force
           $openmp = Get-ChildItem "$redist\x64\Microsoft.VC*.OpenMP" -Directory -ErrorAction SilentlyContinue |
             Select-Object -First 1
-          if ($openmp) { Copy-Item "$($openmp.FullName)\vcomp140.dll" payload\whispercpp\ -Force }
+          if (-not $openmp) { throw "The MSVC OpenMP redistributable folder was not found" }
+          Copy-Item "$($openmp.FullName)\vcomp140.dll" payload\whispercpp\ -Force
           foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "vcomp140.dll")) {
             if (-not (Test-Path (Join-Path "payload\whispercpp" $dll))) {
               $system = Join-Path $env:SystemRoot "System32\$dll"
-              if (Test-Path $system) { Copy-Item $system "payload\whispercpp\$dll" -Force }
+              if (-not (Test-Path $system)) { throw "Missing whisper-cli runtime DLL: $dll" }
+              Copy-Item $system "payload\whispercpp\$dll" -Force
             }
           }
           Copy-Item assets payload\assets -Recurse
@@ -403,8 +410,8 @@ jobs:
           $deps = (& dumpbin /dependents $bin | Out-String)
           Write-Host $deps
           foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "vcomp140.dll")) {
-            if ($deps -match [regex]::Escape($dll) -and -not (Test-Path (Join-Path $dir $dll))) {
-              throw "whisper-cli imports $dll but it is not in the payload"
+            if (-not (Test-Path (Join-Path $dir $dll))) {
+              throw "The payload is missing the whisper-cli runtime DLL: $dll"
             }
           }
           # Run it from its payload folder with an empty model; a missing

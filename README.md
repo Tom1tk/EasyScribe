@@ -235,7 +235,7 @@ pwsh -File scripts/build-windows.ps1
 # -> dist\EasyScribe.exe
 ```
 
-The script builds the app and packer together with the `release-static` feature (static sherpa libraries, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a draft pre-release tagged with a hyphenated version such as `v3.2.3-rust.7`.
+The script builds the app and packer together with the `release-static` feature (static sherpa libraries, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a draft pre-release tagged with a hyphenated version such as `v3.2.3-rust.9`.
 
 Local checks:
 

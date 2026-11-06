@@ -29,6 +29,8 @@ $env:CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
 $env:GGML_NATIVE = "OFF"
 $env:GGML_AVX = "ON"
 $env:GGML_AVX2 = "ON"
+$env:GGML_FMA = "ON"
+$env:GGML_F16C = "ON"
 
 $payload = Join-Path $root "payload"
 if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
@@ -56,6 +58,15 @@ if (-not (Test-Path (Join-Path $whisperDir "ggml-large-v3-turbo-q5_0.bin"))) {
 }
 if (-not (Test-Path (Join-Path $whisperDir "whisper-cli.exe"))) {
     throw "missing whispercpp/whisper-cli.exe (build it with the Vulkan workflow)"
+}
+foreach ($dll in @(
+    "whisper.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll",
+    "ggml-vulkan.dll", "vulkan-1.dll",
+    "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "vcomp140.dll"
+)) {
+    if (-not (Test-Path (Join-Path $whisperDir $dll))) {
+        throw "missing whispercpp/$dll (copy the whisper-cli build folder and the VC++ runtime DLLs)"
+    }
 }
 Copy-Item (Join-Path $root "LICENSE") (Join-Path $payload "LICENSE")
 

@@ -9,8 +9,11 @@ Vulkan `whisper-cli` is back as a child process with CPU retry, diarization is
 isolated in a child, flash attention and the no-speech gate are in, and the
 selftest measures real speech. The audit-2 follow-up blockers (missing tracked
 speech fixture, `Win32_Security`, Linux sherpa link, `whisper-cli` job object,
-missing redistributable notices) are fixed. `v3.2.3-rust.7` is the current
-validation run; `rust.6` failed before it built anything.
+missing redistributable notices) are fixed. `rust.7` failed in the Vulkan loader
+copy and `rust.8` in a multi-config CMake assertion; both are fixed and
+`v3.2.3-rust.9` is the current validation run. The audit findings against the
+CLI engine (recursive fallback, DLL-load failures, GPU-disable semantics, probe
+failure, invalid UTF-8 stderr, temp cleanup) are also fixed.
 
 ## What is built
 
@@ -153,6 +156,41 @@ validation run; `rust.6` failed before it built anything.
   `Win32_Security`. The release job then failed at the control step with
   `Cannot find path ... tests\data\selftest_speech.wav`, which `.gitignore`
   excludes. All three are fixed in the follow-up commit.
+- **`v3.2.3-rust.7` failed at the standalone whisper-cli build.** The new
+  `vulkan-1.dll` copy expected the loader under `VULKAN_SDK\Bin`; the SDK
+  installs it through `VulkanRT.exe` into `System32`. The build step now copies
+  from `System32` first, falls back to `Bin`, and asserts the CLI's
+  `GGML_AVX2`/`GGML_FMA`/`GGML_F16C` cache entries. The budget is capped at
+  180 s.
+- **`v3.2.3-rust.8` failed the same build step on a bad assertion.** The CMake
+  generator is multi-config, so `CMAKE_BUILD_TYPE` is empty; asserting
+  `CMAKE_BUILD_TYPE=Release` could never pass. The Release configuration is now
+  proved by the `bin\Release` output and the `--config Release` build, while the
+  cache asserts `GGML_NATIVE=OFF` and `GGML_AVX2`/`FMA`/`F16C=ON`.
+- **Whisper-cli engine audit fixes.** A spawn or DLL-load failure
+  (`0xC0000135`/`0139`/`007B`/`0142`) now falls back directly to the linked
+  in-process engine instead of recursing through the dispatcher; the selftest
+  sets `EASYSCRIBE_SELFTEST_STRICT_CLI` so the release path still fails if the
+  shipped CLI cannot start. Any GPU failure retries the CPU once, but only a
+  Vulkan marker or GPU crash code (`0xC0000005`/`0409`/`001D`) is remembered as
+  a failed GPU; CPU runs set `GGML_DISABLE_VULKAN=1` so a broken driver cannot
+  crash during backend enumeration. The probe now distinguishes “failed” from
+  “no GPU”, lets whisper-cli choose on failure, drains stderr while polling,
+  honours Cancel, and is skipped when the CPU is forced. The disabled GPU is
+  filtered during selection, the preferred index is saved only after a
+  successful decode, the WAV buffer is dropped before the child starts, a
+  non-silent file with empty VAD bounds is decoded instead of returning an empty
+  transcript, stderr survives invalid UTF-8, and all temp JSON/stem files are
+  removed. Loader DLLs and notices are now part of the runtime completeness
+  check, and `ffmpeg`/`ffprobe` join the kill-on-close job object.
+- **Selftest audit fixes.** The CLI failure path no longer recurses through
+  `whispercpp::transcribe_file`; the selftest calls `whispercli::transcribe_file`
+  directly when the bundled CLI exists and now fails if the speech fixture or
+  golden text is missing. The post-sherpa step is back on
+  `transcribe_in_process` (the ONNX-interference diagnostic), empty diarization
+  turns are errors, VAD failure is reported to the user, the 30 s gap test no
+  longer loses its padding, `wav_seconds` no longer divides stereo frames twice,
+  and the failure summary is printed as well as logged.
 - **Audit 2 follow-up fixes.** Moved the generated fixture to tracked
   `assets/selftest_speech.*` (payload copy is automatic); added
   `Win32_Security`; cached `~/.cache/sherpa-rs` and forced a fresh
@@ -191,13 +229,13 @@ validation run; `rust.6` failed before it built anything.
 
 - Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
   drag/drop and a real microphone can only be proven on a real Windows PC or VM.
-  `v3.2.3-rust.7` exercises the CPU path on CI (the runner has no GPU), but not
+  `v3.2.3-rust.9` exercises the CPU path on CI (the runner has no GPU), but not
   a dedicated/integrated GPU or a crashing driver.
 - The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
-  file on v3.2.3 GPU, v3.2.3 CPU and rust.7, then record wall times in this
+  file on v3.2.3 GPU, v3.2.3 CPU and rust.9, then record wall times in this
   file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
 - The 655 s CI decode cause is unproven. The OpenMP hypothesis was not supported
-  by the local benchmark; rust.7's same-runner control measurement is the next
+  by the local benchmark; rust.9's same-runner control measurement is the next
   datapoint.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
@@ -211,7 +249,7 @@ validation run; `rust.6` failed before it built anything.
 
 ## Next actions
 
-1. Commit and push these fixes, then dispatch `v3.2.3-rust.7` from
+1. Commit and push these fixes, then dispatch `v3.2.3-rust.9` from
    `rune-rewrite`.
 2. Confirm `rune-release.yml@refs/heads/rune-rewrite`, the whisper-cli control
    time, system-info features, golden text, speech budget, both selftest
@@ -219,10 +257,10 @@ validation run; `rust.6` failed before it built anything.
    assets. Record the result (pass or fail) here.
 3. Run an independent code audit over the finished Rust/Rune product and fix
    confirmed findings.
-4. Verify the draft `EasyScribe-v3.2.3-rust.7.exe` and `.sha256`; delete the
-   superseded `rust.4`, `rust.5` and `rust.6` drafts if present.
+4. Verify the draft `EasyScribe-v3.2.3-rust.9.exe` and `.sha256`; delete the
+   superseded `rust.4`–`rust.8` drafts if present.
 5. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
    microphone, DPI, dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the
    real-PC speed comparison; record results here.
-6. Hand over for the decision on replacing v3.2.3. Do not publish rust.7 as
+6. Hand over for the decision on replacing v3.2.3. Do not publish rust.9 as
    Latest until the real-PC speed and clean-PC checks pass.
