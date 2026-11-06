@@ -33,6 +33,21 @@ sherpa-onnx 1.13.8
   License:  Apache License 2.0 - licenses/sherpa-onnx-Apache-2.0.txt
   Source:   https://github.com/k2-fsa/sherpa-onnx
 
+espeak-ng (bundled in the sherpa-onnx wheel)
+  License:  GNU General Public License version 3 (GPL v3)
+            licenses/FFmpeg-GPL-3.0.txt
+  Source:   https://github.com/espeak-ng/espeak-ng
+  Note:     The sherpa-onnx native module includes espeak-ng for its
+            text-to-speech frontend. EasyScribe does not call TTS, but the
+            component is present in the distributed application.
+  Written offer: for three years after this release, we will give a copy of
+  the complete corresponding source code of espeak-ng to any person who asks.
+  Open an issue at https://github.com/Tom1tk/EasyScribe/issues.
+  Licensing note: GPL-3.0 code is combined with EasyScribe's MIT code in the
+  distributed application. The combined-work license must be resolved before
+  the next stable release; this notice makes the current release explicit
+  about the component.
+
 ONNX Runtime (included in sherpa-onnx)
   License:  MIT - licenses/onnxruntime-MIT.txt
   Source:   https://github.com/microsoft/onnxruntime
