@@ -296,6 +296,9 @@ fn files_view(s: &AppState) -> El {
         .on_drop_files(|s: &mut AppState, paths: &[std::path::PathBuf], _tx| {
             s.add_files(paths.to_vec());
         })
+        .on_drop_rejected(|s: &mut AppState, paths: &[std::path::PathBuf], _tx| {
+            s.add_files(paths.to_vec());
+        })
         .on_drop_hover(|s: &mut AppState, over, _tx| {
             s.files_over = over && s.idle() && s.mode == Mode::Files;
         });
@@ -431,9 +434,13 @@ fn drop_zone(s: &AppState) -> El {
                 "choose-files"
             }),
         );
-    zone = zone.on_drop_files(|s: &mut AppState, paths: &[std::path::PathBuf], _tx| {
-        s.add_files(paths.to_vec());
-    });
+    zone = zone
+        .on_drop_files(|s: &mut AppState, paths: &[std::path::PathBuf], _tx| {
+            s.add_files(paths.to_vec());
+        })
+        .on_drop_rejected(|s: &mut AppState, paths: &[std::path::PathBuf], _tx| {
+            s.add_files(paths.to_vec());
+        });
     zone
 }
 
@@ -645,6 +652,19 @@ fn options_tiles(s: &AppState, busy: bool) -> El {
         .padding(18.0)
         .py(6.0)
         .gap(4.0);
+    let mut timestamp_label =
+        text("Add timestamps")
+            .font(type_::STRONG)
+            .color(if timestamp_enabled {
+                t.sky_ink
+            } else {
+                t.muted
+            });
+    if timestamp_enabled {
+        timestamp_label = timestamp_label
+            .cursor(Cursor::Pointer)
+            .on_press(|s: &mut AppState| s.timestamps = !s.timestamps);
+    }
     timestamp_tile = timestamp_tile.child(
         row()
             .key("timestamps-checkbox")
@@ -661,15 +681,7 @@ fn options_tiles(s: &AppState, busy: bool) -> El {
                 )
                 .key("timestamp-toggle"),
             )
-            .child(
-                text("Add timestamps")
-                    .font(type_::STRONG)
-                    .color(if timestamp_enabled {
-                        t.sky_ink
-                    } else {
-                        t.muted
-                    }),
-            ),
+            .child(timestamp_label),
     );
     timestamp_tile = timestamp_tile.child(
         text("Shows the time, like [00:01:23], at the start of each paragraph.")
@@ -694,6 +706,23 @@ fn options_tiles(s: &AppState, busy: bool) -> El {
         .padding(18.0)
         .py(6.0)
         .gap(4.0);
+    let mut speaker_label =
+        text("Name the speakers")
+            .font(type_::STRONG)
+            .color(if s.diarization_available {
+                t.amber_ink
+            } else {
+                t.muted
+            });
+    if speakers_enabled {
+        speaker_label = speaker_label
+            .cursor(Cursor::Pointer)
+            .on_press(|s: &mut AppState| {
+                if s.diarization_available {
+                    s.name_speakers = !s.name_speakers;
+                }
+            });
+    }
     speaker_tile = speaker_tile.child(
         row()
             .key("speakers-checkbox")
@@ -714,13 +743,7 @@ fn options_tiles(s: &AppState, busy: bool) -> El {
                 )
                 .key("speaker-toggle"),
             )
-            .child(text("Name the speakers").font(type_::STRONG).color(
-                if s.diarization_available {
-                    t.amber_ink
-                } else {
-                    t.muted
-                },
-            )),
+            .child(speaker_label),
     );
     let body = if s.diarization_available {
         "Finds who is talking. You hear a short sample of each voice and type their name. Takes longer."
@@ -902,6 +925,9 @@ fn mic_selector(s: &AppState) -> El {
         .px(12.0)
         .center_y()
         .gap(8.0)
+        .role("combobox")
+        .label("Microphone")
+        .expanded(s.mic_menu_open)
         .focusable(enabled);
     if enabled {
         selector = selector
@@ -933,7 +959,8 @@ fn mic_selector(s: &AppState) -> El {
         .fill(t.surface)
         .border(1.0, t.border)
         .shadow(6.0, 18.0, t.shadow)
-        .padding(4.0);
+        .padding(4.0)
+        .focus_group();
     for (index, choice) in s.mic_choices.iter().enumerate() {
         let label = easyscribe_core::outputs::shorten(&choice.label, 48);
         let selected = index == s.selected_mic;
@@ -944,12 +971,18 @@ fn mic_selector(s: &AppState) -> El {
                 .px(10.0)
                 .radius(metric::RADIUS_SM)
                 .center_y()
+                .role("option")
+                .label(label.clone())
+                .focusable(enabled)
+                .focus_selected(selected)
+                .position_in_set(index + 1, s.mic_choices.len())
                 .fill(if selected {
                     t.coral_soft
                 } else {
                     Color::TRANSPARENT
                 })
                 .hover(t.coral_soft)
+                .focus_ring(2.0, 1.0, t.coral)
                 .cursor(Cursor::Pointer)
                 .on_press(move |s: &mut AppState| {
                     s.selected_mic = index;
@@ -978,7 +1011,12 @@ fn chevron(_t: &Theme, color: Color) -> El {
 fn record_tiles(s: &AppState, busy: bool) -> El {
     let t = &s.theme;
     let enabled = !busy;
-    let mut tiles = row().key("record-mode").w_full().gap(12.0).items_stretch();
+    let mut tiles = row()
+        .key("record-mode")
+        .w_full()
+        .gap(12.0)
+        .items_stretch()
+        .focus_group();
 
     let best_selected = s.record_mode == RecordMode::Best;
     let mut best = col()
@@ -1001,6 +1039,11 @@ fn record_tiles(s: &AppState, busy: bool) -> El {
             .on_press(|s: &mut AppState| s.record_mode = RecordMode::Best);
     }
     best = best
+        .role("radio")
+        .label("Best quality transcript after recording")
+        .focusable(enabled)
+        .focus_selected(best_selected)
+        .focus_ring(2.0, 2.0, t.coral)
         .child(
             row()
                 .gap(12.0)
@@ -1044,6 +1087,11 @@ fn record_tiles(s: &AppState, busy: bool) -> El {
             .on_press(|s: &mut AppState| s.record_mode = RecordMode::Live);
     }
     live = live
+        .role("radio")
+        .label("Show words as I speak")
+        .focusable(enabled)
+        .focus_selected(live_selected)
+        .focus_ring(2.0, 2.0, t.coral)
         .child(
             row()
                 .gap(12.0)
@@ -1837,6 +1885,7 @@ fn privacy_overlay(s: &AppState) -> El {
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .fill(t.scrim)
         .center()
+        .modal(true, |s: &mut AppState| s.privacy_open = false)
         .on_press(|s: &mut AppState| s.privacy_open = false)
         .child(col().on_press(|_: &mut AppState| {}).child(card_body))
 }
