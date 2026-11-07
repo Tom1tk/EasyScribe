@@ -196,10 +196,10 @@ rest remain open.
 10. **Speaker-clip extraction still reads the file prefix** for each speaker
     (`.skip(offset)`), so a 3-hour recording costs one full prefix read per
     speaker even though memory is bounded. `WavReader::seek` should be used.
-11. **Checksums are pinned only for sherpa and the GGUF model.** ffmpeg, the
-    ONNX models, the Vulkan SDK and the whisper.cpp tag are not hash-pinned;
-    cache hits also bypass the two existing checks. This is supply-chain
-    hardening, not a functional bug.
+11. **Checksums are pinned only for the GGUF model and the Cargo-vendored
+    sherpa source.** ffmpeg, the ONNX models, the Vulkan SDK and the
+    whisper.cpp tag are not hash-pinned; cache hits also bypass the two existing
+    checks. This is supply-chain hardening, not a functional bug.
 12. **Cache-hit integrity is a marker plus non-zero sizes.** Per-file hashes in
     `manifest.json` are written but not verified on a hit. Bit rot or a partial
     external deletion can pass until a model/DLL fails to load.
