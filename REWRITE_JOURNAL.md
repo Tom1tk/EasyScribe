@@ -491,3 +491,26 @@ the narrative history.
 - Remaining before `Latest`: the real-PC speed/GPU/microphone/DPI/dialog/
   drag-drop/low-disk checks in `docs/rewrite/CLEAN_PC_TEST.md`. The espeak
   licensing decision is no longer a blocker.
+
+## 2026-11-07 — Session 15: the Rust line becomes v4.0.0 (still pre-release)
+
+- **Version 4.0.0.** The owner asked for the Rust build to carry the 4.0.0
+  version while staying a pre-release. The workspace version is now `4.0.0`,
+  the window title follows `CARGO_PKG_VERSION` (`EasyScribe 4.0.0`), and the
+  README and clean-PC checklist use `EasyScribe-v4.0.0.exe`.
+- **The release tag no longer needs a hyphen.** `v4.0.0` is accepted alongside
+  `v4.0.0-rc.1`; the workflow still creates the release with
+  `prerelease: true`, so `v4.0.0` does not become `Latest`. The tag must match
+  the workspace version exactly or start with `v4.0.0-`.
+- **`v4.0.0` (run `42356076024`, `f9e03a2`) passed the full Windows pipeline.**
+  Control 23.1 s, budget 60 s, CLI child 27.7 s, in-process 331.7 s, sherpa
+  ONNX 31.9 s, VAD 0.0 s, after-sherpa 315.8 s, diarization 4.7/4.8 s, silence
+  0.0 s. AVX2/FMA/F16C/BMI2 and the golden text verified; the build again
+  asserted TTS off and no `espeak_Initialize` symbol.
+- **Asset.** `EasyScribe-v4.0.0.exe` is 1,921,914,193 bytes, SHA-256
+  `0b0bc737ff822385b242230b822852fa0c910106cd5cca8960852c95503b4e62`, with an
+  89-byte `.sha256`. The release is a draft pre-release, not `Latest`;
+  `v3.2.3` remains `Latest`. The superseded `v3.2.3-rust.14` draft was deleted.
+- Local checks: 68 tests pass, clippy and fmt clean. The remaining gate is the
+  real-PC clean-PC/speed/GPU/microphone test; `v4.0.0` must not be promoted to
+  `Latest` before that passes.

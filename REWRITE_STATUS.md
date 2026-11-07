@@ -1,8 +1,9 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-07 (session 11 — final audit and rust.14)
+**Updated:** 2026-11-07 (session 12 — v4.0.0 pre-release)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
+**Version:** `4.0.0` · **Release:** `v4.0.0` (draft pre-release, not `Latest`)
 **Phase:** 7 — speed, GPU, process isolation and final release
 **Overall:** implementation complete. Audit 2's findings are actioned: the
 Vulkan `whisper-cli` is back as a child process with CPU retry, diarization is
@@ -24,9 +25,11 @@ confirmed data-loss, recovery, payload and release-gate fixes are in `d59b8f2`.
 The remaining final-audit findings are also actioned: the slow in-process
 fallback shows a visible warning, the live-mode ONNX race is serialised
 process-wide, the asset-size guard is documented, and the release notes use the
-measured 1.92 GB. `v3.2.3-rust.14` (run `42309047043`, from `09761af`) passed
-the full Windows pipeline and produced the draft assets recorded below. The only
-open gate is real-PC verification; `v3.2.3` remains `Latest`.
+measured 1.92 GB. The final-audit fixes passed as `v3.2.3-rust.14` (run
+`42309047043`), and the Rust line is now versioned `4.0.0`. `v4.0.0` (run
+`42356076024`, from `f9e03a2`) passed the full Windows pipeline and is the
+current draft asset recorded below. The only open gate is real-PC verification;
+`v3.2.3` remains `Latest`.
 
 ## What is built
 
@@ -68,25 +71,26 @@ open gate is real-PC verification; `v3.2.3` remains `Latest`.
       changes: `whisper-cli` cold **44.4 s**, in-process cold **65.3 s**, after
       sherpa **69.2 s**, diarization in-process **10.5 s**, diarization child
       **10.6 s**, silence check **0.1 s** (zero segments, "No speech found").
-- [x] Windows CI `v3.2.3-rust.14` (run `42309047043`, `09761af`, 4 vCPUs, no
-      GPU): the standalone `whisper-cli` control decoded the 23.3 s fixture in
-      **33.5 s** and set a **67 s** speech budget (2×, minimum 60 s). The
-      bundled CLI child decoded it in **37.6 s** (inside budget), the
-      in-process engine **551.0 s**, the sherpa Whisper ONNX model **42.6 s**,
-      Silero VAD **0.0 s**, the post-sherpa in-process decode **541.1 s**,
-      in-process diarization **8.5 s**, child diarization **8.6 s**, and the
-      silence check **0.1 s** with zero segments. System info reported
+- [x] Windows CI `v4.0.0` (run `42356076024`, `f9e03a2`, 4 vCPUs, no GPU):
+      the standalone `whisper-cli` control decoded the 23.3 s fixture in
+      **23.1 s** and set a **60 s** speech budget (2×, minimum 60 s). The
+      bundled CLI child decoded it in **27.7 s** (inside budget), the
+      in-process engine **331.7 s**, the sherpa Whisper ONNX model **31.9 s**,
+      Silero VAD **0.0 s**, the post-sherpa in-process decode **315.8 s**,
+      in-process diarization **4.7 s**, child diarization **4.8 s**, and the
+      silence check **0.0 s** with zero segments. System info reported
       AVX2/FMA/F16C/BMI2; the golden text matched on every decode; the build log
       asserted `SHERPA_ONNX_ENABLE_TTS:BOOL=OFF`,
       `BUILD_SHARED_LIBS:BOOL=OFF` and no `espeak_Initialize` symbol; imports,
       subsystem, extraction, cached launch and the draft assets were verified.
-      The draft is `v3.2.3-rust.14` (draft, pre-release, not `Latest`):
-      `EasyScribe-v3.2.3-rust.14.exe` is 1,921,914,713 bytes (1,832.9 MiB,
-      1.79 GiB), SHA-256
-      `f4e79cfb49a1755a4b362bd4467659c65ae553c309afc3f51d5f1c329bc6969c`,
-      with a 97-byte `.sha256` asset. The older `v3.2.3-rust.13` draft was
-      superseded and has been deleted.
-- [x] Final-audit fixes verified in the same run: TTS-off source build (no
+      The draft is `v4.0.0` (draft, pre-release, not `Latest`):
+      `EasyScribe-v4.0.0.exe` is 1,921,914,193 bytes (1,832.9 MiB, 1.79 GiB),
+      SHA-256
+      `0b0bc737ff822385b242230b822852fa0c910106cd5cca8960852c95503b4e62`,
+      with an 89-byte `.sha256` asset. The code had previously passed as
+      `v3.2.3-rust.14` (run `42309047043`, `09761af`); the `rust.13` and
+      `rust.14` drafts were superseded and deleted.
+- [x] Final-audit fixes verified in `v4.0.0`: TTS-off source build (no
       espeak-ng/piper), the 1900 MiB size guard, the 1.92 GB release notes, the
       `Transcribing (slow fallback)` warning, and the process-wide live ONNX
       lock with decoder-first Stop.
@@ -289,15 +293,16 @@ open gate is real-PC verification; `v3.2.3` remains `Latest`.
 
 - Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
   drag/drop and a real microphone can only be proven on a real Windows PC or VM.
-  `v3.2.3-rust.14` exercises the CPU path on CI (the runner has no GPU), but not
-  a dedicated/integrated GPU or a crashing driver.
+  `v4.0.0` exercises the CPU path on CI (the runner has no GPU), but not a
+  dedicated/integrated GPU or a crashing driver.
 - The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
-  file on v3.2.3 GPU, v3.2.3 CPU and rust.14, then record wall times in this
+  file on v3.2.3 GPU, v3.2.3 CPU and v4.0.0, then record wall times in this
   file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
 - The old 655 s CI decode was the in-process engine, not the shipped CLI path.
-  `rust.14` confirms the CLI child decodes the fixture in 37.6 s against a 33.5 s
-  control; the in-process fallback remains 551.0 s and its exact cause is still
-  unproven, so the UI now warns instead of running silently.
+  `v4.0.0` confirms the CLI child decodes the fixture in 27.7 s against a 23.1 s
+  control; the in-process fallback remains around 14× real time (331.7 s in
+  this run, 551.0 s in the prior run) and its exact cause is still unproven, so
+  the UI now warns instead of running silently.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
   shipping primary path is the child process. When it is active, the title reads
@@ -311,20 +316,20 @@ open gate is real-PC verification; `v3.2.3` remains `Latest`.
   appended after the footer, and the release publishes a SHA-256 file.
 - Audit 3 lists the remaining hot-unplug, live-error, non-ASCII path and UI
   parity risks in `docs/rewrite/AUDIT_3.md`. The live decoder/VAD race is fixed
-  in rust.14; hot-unplug reporting is now the highest-risk item not fixed.
+  in `v4.0.0`; hot-unplug reporting is now the highest-risk item not fixed.
 
 ## Next actions
 
-1. **Done.** `v3.2.3-rust.14` from `09761af` passed the full Windows pipeline
-   (run `42309047043`): control 33.5 s, budget 67 s, CLI child 37.6 s,
-   in-process 551.0 s, after-sherpa 541.1 s, sherpa ONNX 42.6 s, VAD 0.0 s,
-   diarization 8.5/8.6 s, silence 0.1 s; AVX2/FMA/F16C/BMI2, the golden text,
+1. **Done.** `v4.0.0` from `f9e03a2` passed the full Windows pipeline
+   (run `42356076024`): control 23.1 s, budget 60 s, CLI child 27.7 s,
+   in-process 331.7 s, after-sherpa 315.8 s, sherpa ONNX 31.9 s, VAD 0.0 s,
+   diarization 4.7/4.8 s, silence 0.0 s; AVX2/FMA/F16C/BMI2, the golden text,
    the TTS-off CMake cache and the no-espeak symbol check were verified.
-2. **Done.** `EasyScribe-v3.2.3-rust.14.exe` (1,921,914,713 bytes) and its
-   97-byte `.sha256`
-   (`f4e79cfb49a1755a4b362bd4467659c65ae553c309afc3f51d5f1c329bc6969c`) are
+2. **Done.** `EasyScribe-v4.0.0.exe` (1,921,914,193 bytes) and its 89-byte
+   `.sha256`
+   (`0b0bc737ff822385b242230b822852fa0c910106cd5cca8960852c95503b4e62`) are
    present on the draft pre-release. `v3.2.3` remains the stable `Latest`
-   release; the superseded `rust.13` draft has been deleted.
+   release; the superseded `rust.13` and `rust.14` drafts have been deleted.
 3. **Done.** The GPL-3.0 espeak-ng question is resolved for the Rust build:
    sherpa-onnx is compiled from source with `SHERPA_ONNX_ENABLE_TTS=OFF`, and
    the workflow proves the library has no `espeak_Initialize` symbol. Main's
@@ -333,5 +338,5 @@ open gate is real-PC verification; `v3.2.3` remains `Latest`.
 4. Run the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
    microphone, DPI, dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the
    real-PC speed comparison; record results here.
-5. Hand over for the decision on replacing v3.2.3. Do not publish rust.14 as
-   Latest until the real-PC speed, clean-PC checks and GPU checks pass.
+5. Hand over for the decision on replacing v3.2.3. Do not publish `v4.0.0` as
+   `Latest` until the real-PC speed, clean-PC checks and GPU checks pass.

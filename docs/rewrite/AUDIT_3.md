@@ -121,11 +121,14 @@ end of this document. This file records what was fixed and what remains.
 - **The offline dependency test now resolves the Windows target** rather than
   the Linux host, so a Windows-only HTTP crate cannot pass unnoticed.
 
-## Final audit follow-up (rust.14)
+## Final audit follow-up (rust.14 / v4.0.0)
 
 The final audit in `EasyScribe-rewrite-audit2.md` was actioned in commits
 `0a5db71`..`09761af` and validated by `v3.2.3-rust.14` (run `42309047043`, from
-`09761af`):
+`09761af`). The same code is now published as the `v4.0.0` pre-release (run
+`42356076024`, from `f9e03a2`); the version change only affects metadata and
+the window title. `v4.0.0` is a draft pre-release, and `v3.2.3` remains
+`Latest`.
 
 1. **GPL-3.0 `espeak-ng` removed from the Rust build.** The prebuilt sherpa
    archive and `SHERPA_LIB_PATH` are gone; `sherpa-rs-sys` builds vendored
@@ -247,6 +250,13 @@ rest remain open.
   `f4e79cfb49a1755a4b362bd4467659c65ae553c309afc3f51d5f1c329bc6969c`. It is a
   draft pre-release, not `Latest`, and the superseded `rust.13` draft was
   deleted.
+- `v4.0.0` (run `42356076024`, `f9e03a2`, 4 vCPUs, no GPU) passed with control
+  23.1 s, budget 60 s, CLI child 27.7 s, in-process 331.7 s, sherpa ONNX
+  31.9 s, VAD 0.0 s, after-sherpa 315.8 s, diarization 4.7/4.8 s and silence
+  0.0 s. The asset is 1,921,914,193 bytes, SHA-256
+  `0b0bc737ff822385b242230b822852fa0c910106cd5cca8960852c95503b4e62`, with an
+  89-byte `.sha256`. It is the current draft pre-release; `v3.2.3` remains
+  `Latest`, and the `rust.14` draft was deleted.
 - `v3.2.3-rust.11` failed at the app link when the espeak exclusion was tried;
   the linker proved `piper-phonemize-lexicon.obj` references `espeak_Initialize`.
   The TTS-off source build in `rust.14` supersedes that workaround. `rust.12`
