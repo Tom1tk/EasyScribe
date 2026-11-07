@@ -235,7 +235,7 @@ pwsh -File scripts/build-windows.ps1
 # -> dist\EasyScribe.exe
 ```
 
-The script builds the app and packer together with the `release-static` feature (sherpa-onnx built from source with TTS disabled, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a draft pre-release tagged with a hyphenated version such as `v3.2.3-rust.14`.
+The script builds the app and packer together with the `release-static` feature (sherpa-onnx built from source with TTS disabled, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a draft pre-release tagged `v4.0.0` (or another tag matching the workspace version). The release stays a pre-release until it is explicitly promoted.
 
 Local checks:
 
@@ -245,7 +245,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets
 ```
 
-The app version is the workspace version (`3.2.3`).
+The app version is the workspace version (`4.0.0`).
 
 ---
 

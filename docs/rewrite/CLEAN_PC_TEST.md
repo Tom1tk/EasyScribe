@@ -6,7 +6,7 @@ and timings in `REWRITE_STATUS.md`. Use invented/public-domain audio only.
 ## 0. Preconditions
 
 - 64-bit Windows 10/11, x86-64 CPU with AVX2, FMA, F16C and BMI2.
-- Download `EasyScribe-v3.2.3-rust.N.exe` and its `.sha256` from the draft
+- Download `EasyScribe-v4.0.0.exe` and its `.sha256` from the draft
   release; verify the hash with `Get-FileHash`.
 - Do not install anything system-wide. Keep a snapshot before the first run.
 

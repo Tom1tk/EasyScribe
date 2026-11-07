@@ -1,15 +1,16 @@
 name: Rune Windows Release
 
 # Builds the single-file Rust/Rune EasyScribe.exe and publishes it as a draft
-# pre-release. Manual dispatch only. The tag must contain a hyphen so GitHub
-# marks the release as a pre-release even if the draft is later published.
+# pre-release. Manual dispatch only. The release is created with
+# `prerelease: true`, so a tag like v4.0.0 stays a pre-release (and out of
+# `Latest`) until it is explicitly promoted.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (must contain a hyphen), e.g. v3.2.3-rust.1'
+        description: 'Release tag, e.g. v4.0.0 or v4.0.0-rc.1'
         required: true
-        default: 'v3.2.3-rust.1'
+        default: 'v4.0.0'
 
 permissions:
   contents: write
@@ -28,8 +29,8 @@ jobs:
       TAG: ${{ inputs.tag }}
       # The 1.12.9 Windows static libraries are built with the static MSVC
       # runtime. Match that for Rust and for the vendored whisper.cpp.
-      # advapi32 supplies the ETW and registry imports that onnxruntime and
-      # espeak-ng use; their static libs do not always carry the defaultlib.
+      # advapi32 supplies the ETW and registry imports that onnxruntime uses;
+      # its static lib does not always carry the defaultlib.
       RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=advapi32.lib"
       CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded"
       CMAKE_POLICY_DEFAULT_CMP0091: "NEW"
@@ -60,11 +61,11 @@ jobs:
           $versionLine = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
           if (-not $versionLine) { throw "Could not read the workspace version from Cargo.toml" }
           $version = $versionLine.Matches[0].Groups[1].Value
-          if (-not $env:TAG.StartsWith("v$version-")) {
-            throw "The tag must start with v$version-, matching the workspace version; got '$env:TAG'."
+          if ($env:TAG -ne "v$version" -and -not $env:TAG.StartsWith("v$version-")) {
+            throw "The tag must be v$version or start with v$version-, matching the workspace version; got '$env:TAG'."
           }
-          if ($env:TAG -notmatch '^v[0-9A-Za-z._-]+-[0-9A-Za-z._-]+$') {
-            throw "The tag must contain a hyphen (for a pre-release), e.g. v3.2.3-rust.1; got '$env:TAG'."
+          if ($env:TAG -notmatch '^v[0-9A-Za-z._-]+$') {
+            throw "The tag contains unsupported characters; use v4.0.0 or v4.0.0-rc.1; got '$env:TAG'."
           }
           Write-Host "Building draft pre-release $env:TAG"
           Add-Content $env:GITHUB_ENV "APP_VERSION=$version"
@@ -86,9 +87,9 @@ jobs:
       # sherpa-rs-sys 0.6.8 vendors sherpa-onnx 1.12.9 and builds it from
       # source when SHERPA_LIB_PATH is not set. Its source build sets
       # SHERPA_ONNX_ENABLE_TTS=OFF, so espeak-ng and piper are not compiled in:
-      # the prebuilt archive used before rust.14 contained both under GPL-3.0.
-      # The Rust target cache keeps the CMake build for later runs; the build
-      # step asserts the TTS-off configuration.
+      # the prebuilt archive used before the TTS-off source build contained both
+      # under GPL-3.0. The Rust target cache keeps the CMake build for later
+      # runs; the build step asserts the TTS-off configuration.
 
       # ffmpeg (GyanD 7.1.1 essentials, pinned). Kept as a cache so release
       # rebuilds do not download 150 MB each time.

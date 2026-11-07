@@ -1,6 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-//! EasyScribe 3.2.3 — Rune single-window app.
+//! EasyScribe 4.0.0 — Rune single-window app.
 //!
 //! Startup resolves the single-exe payload (or a development runtime), imports
 //! v3 settings, runs crash recovery and dependency checks, then hands the
@@ -113,7 +113,7 @@ fn main() {
     let height = initial_height();
     WINDOW_HEIGHT_BITS.store(height.to_bits(), Ordering::Relaxed);
     let spec = AppSpec {
-        title: "EasyScribe 3.2.3",
+        title: concat!("EasyScribe ", env!("CARGO_PKG_VERSION")),
         size: (900.0, height),
         min_size: Some((760.0, 600.0)),
         init,
