@@ -1,6 +1,6 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-06 (session 11 — final audit and rust.14)
+**Updated:** 2026-11-07 (session 11 — final audit and rust.14)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Phase:** 7 — speed, GPU, process isolation and final release
@@ -65,9 +65,9 @@ open gate is real-PC verification; `v3.2.3` remains `Latest`.
       the Cargo/CMake profile, per-phase whisper timings, and loads the sherpa
       Whisper ONNX model, Silero VAD, whisper.cpp GGUF and diarization models.
 - [x] Local release selftest, 4 threads, 23.3 s speech, after the final-audit
-      changes: `whisper-cli` cold **48.6 s**, in-process cold **71.4 s**, after
-      sherpa **70.4 s**, diarization in-process **10.5 s**, diarization child
-      **10.8 s**, silence check **0.1 s** (zero segments, "No speech found").
+      changes: `whisper-cli` cold **44.4 s**, in-process cold **65.3 s**, after
+      sherpa **69.2 s**, diarization in-process **10.5 s**, diarization child
+      **10.6 s**, silence check **0.1 s** (zero segments, "No speech found").
 - [x] Windows CI `v3.2.3-rust.14` (run `42309047043`, `09761af`, 4 vCPUs, no
       GPU): the standalone `whisper-cli` control decoded the 23.3 s fixture in
       **33.5 s** and set a **67 s** speech budget (2×, minimum 60 s). The

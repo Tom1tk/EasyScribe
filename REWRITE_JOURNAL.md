@@ -486,8 +486,8 @@ the narrative history.
   `v3.2.3-rust.13` draft was deleted.
 - Local verification after the changes: 68 tests pass (6 app, 60 core, 2
   offline; 2 ignored), clippy and fmt clean, and the release selftest passed
-  (CLI 48.6 s, in-process 71.4 s, after-sherpa 70.4 s, diarization 10.5/10.8 s,
-  silence 0.1 s).
+  (CLI 44.4 s, in-process 65.3 s, after-sherpa 69.2 s, diarization 10.5/10.6 s,
+  silence 0.1 s; the last full run before the documentation commit).
 - Remaining before `Latest`: the real-PC speed/GPU/microphone/DPI/dialog/
   drag-drop/low-disk checks in `docs/rewrite/CLEAN_PC_TEST.md`. The espeak
   licensing decision is no longer a blocker.

@@ -235,8 +235,8 @@ rest remain open.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
 - Release selftest after the final-audit changes, 4 threads, 23.3 s real
-  speech: whisper-cli cold 48.6 s, in-process 71.4 s, after sherpa 70.4 s,
-  diarization in-process 10.5 s, diarization child 10.8 s, silence 0.1 s with
+  speech: whisper-cli cold 44.4 s, in-process 65.3 s, after sherpa 69.2 s,
+  diarization in-process 10.5 s, diarization child 10.6 s, silence 0.1 s with
   zero segments.
 - `v3.2.3-rust.14` (run `42309047043`, `09761af`, 4 vCPUs, no GPU) passed:
   control 33.5 s, budget 67 s, CLI child 37.6 s, in-process 551.0 s, sherpa
