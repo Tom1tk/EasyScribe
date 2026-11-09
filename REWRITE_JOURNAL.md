@@ -514,3 +514,36 @@ the narrative history.
 - Local checks: 68 tests pass, clippy and fmt clean. The remaining gate is the
   real-PC clean-PC/speed/GPU/microphone test; `v4.0.0` must not be promoted to
   `Latest` before that passes.
+
+## 2026-11-09 — Session 16: first real-PC test fixes
+
+- **Recordings now save on Windows.** The owner's first v4.0.0 test reported
+  "Could not record / The recording was not saved" after Stop. Root cause:
+  `recover_pcm_to_wav` reopened the finished WAV read-only before
+  `File::sync_all`; Windows `FlushFileBuffers` requires `GENERIC_WRITE`, so
+  every conversion failed in both the chosen folder and the work folder. The
+  file is now reopened for writing. The conversion error is surfaced instead
+  of being swallowed, and the raw PCM/sidecar remain for crash recovery.
+- **Stop while "Getting ready" is a cancellation, not a failure.** The worker
+  checks the stop token before opening the microphone and reports
+  "Recording cancelled / Nothing was saved."; the UI no longer shows a save
+  error for a session that never captured audio.
+- **Record details no longer overlap.** The details card grew alongside the
+  record view, shrinking it below its content so the utility row covered Start
+  recording. On Record the details card now keeps its natural height and the
+  Record page scrolls when it needs more room; Files keeps the growing log.
+  `record-view` also no longer allows itself to shrink below its card.
+- **Microphone menu is a popup.** It is mounted at the root with
+  `El::anchored` under the selector, so it no longer pushes Step 2 down. An
+  outside-click scrim and Escape close it; the placement is unchanged.
+- **Regression coverage.** A new `mic::tests` case runs the full PCM→WAV stop
+  path into a destination folder (it would fail on Windows with the old
+  read-only sync). Four new headless scenes cover record-details,
+  record-live-details, recording-details and the open microphone menu.
+- **Rebuild.** `v4.0.0` from `17415fb` passed the full Windows pipeline (run
+  `42621260185`): control 23.8 s, budget 60 s, CLI child 26.9 s, in-process
+  338.7 s, after-sherpa 339.4 s, sherpa ONNX 33.9 s, VAD 0.0 s, diarization
+  5.1/5.2 s, silence 0.1 s. The old draft was deleted and recreated with the
+  new asset: 1,921,949,518 bytes, SHA-256
+  `d935714b4b3e09b5d8a3f0717276bdb3526c914734f91c93ed54d5fc79a1c28b`.
+  `v3.2.3` remains `Latest`; `v4.0.0` remains a draft pre-release.

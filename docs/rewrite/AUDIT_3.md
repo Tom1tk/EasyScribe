@@ -167,7 +167,9 @@ rest remain open.
    desktop speed proof.
 2. **Windows-only behaviour is unverified**: microphone capture, hot-unplug,
    high-DPI scaling, native dialogs, drag/drop, SmartScreen, and the real
-   1.7 GB unpack on a nearly full disk. See `CLEAN_PC_TEST.md`.
+   1.7 GB unpack on a nearly full disk. See `CLEAN_PC_TEST.md`. The first manual
+   run proved microphone capture and exposed the WAV-save bug, now fixed; the
+   rest of the matrix is still open.
 3. **Live mode had a decoder/VAD shutdown race — fixed in rust.14.** If a live
    decode was still running when Stop timed out, a later session could use the
    same sherpa engine concurrently. All live VAD/recognizer calls now share one
@@ -186,11 +188,11 @@ rest remain open.
    is not updated on resize, so the short-window scroll fallback can be wrong.
 8. **Minor UI parity gaps** from the UI audit: "Saved in" uses the last file's
    folder even when it failed; a saved live transcript is discarded if the WAV
-   conversion fails; Stop during model loading is visually undone; Best-quality
-   runs clear the log; the recordings-folder save error is silent; the
-   microphone menu can reopen after recording; speaker rows sort by raw ID
-   instead of speaking order; queued file sizes can be stale; legacy install
-   candidates are alphabetized. None are data-loss bugs.
+   conversion fails; Best-quality runs clear the log; speaker rows sort by raw
+   ID instead of speaking order; queued file sizes can be stale; legacy install
+   candidates are alphabetized. None are data-loss bugs. Stop during model
+   loading, the silent recordings-folder save error and the microphone menu
+   reopening after a recording were fixed in the 2026-11-09 rebuild.
 9. **Whisper-cli uses narrow `argv`.** A non-ASCII or CJK runtime path can still
    fail in the child's ANSI `main`, because the Windows CRT converts `argv`
    with the active code page. The app now falls back in-process only for a
@@ -231,10 +233,38 @@ rest remain open.
     existing `rust.N` tag can still attach assets to the old tag. Use a new
     tag for every attempt.
 
+## Real-PC test feedback (2026-11-09)
+
+The owner's first test of the `v4.0.0` preview found three user-visible bugs;
+all are fixed in `4bab66e`/`17415fb` and the draft was rebuilt.
+
+1. **Every recording reported "The recording was not saved."** `MicRecorder`
+   wrote the PCM correctly, but `recover_pcm_to_wav` reopened the final WAV
+   read-only and called `sync_all`. Windows `FlushFileBuffers` requires
+   `GENERIC_WRITE`, so the conversion failed in the chosen folder and in the
+   work folder; `stop` returned `Ok(None)` and the UI lost the reason. The WAV
+   is now reopened with write access. A conversion failure is returned with
+   the folder and OS error, and the raw PCM/sidecar stay in
+   `%LOCALAPPDATA%\EasyScribe\recordings` for recovery. The next launch converts
+   a recording left by the first build.
+2. **Show details covered Start recording.** The record view and details card
+   both grew, so the record view shrank below its card and the utility row was
+   drawn over the Start button. The details card no longer grows on the Record
+   tab (Files keeps the growing log), the record view cannot shrink below its
+   card, and the Record page scrolls when details need more room.
+3. **The microphone menu moved the form down.** It is now an `El::anchored`
+   popup at the root, under the unchanged selector placement, with an
+   outside-click scrim and Escape handling.
+
+Stop during "Getting ready" is also treated as a cancelled recording instead
+of a save error, because the worker now checks the stop token before opening
+the microphone.
+
 ## Verification
 
-- `cargo test --workspace`: 68 passed (6 app, 60 core, 2 offline), 2 ignored
-  model-backed tests.
+- `cargo test --workspace`: 70 passed (7 app, 61 core, 2 offline), 2 ignored
+  model-backed tests. The new `mic::tests` case runs the full PCM→WAV stop path
+  and would fail on Windows with the old read-only sync.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
 - Release selftest after the final-audit changes, 4 threads, 23.3 s real
@@ -250,13 +280,14 @@ rest remain open.
   `f4e79cfb49a1755a4b362bd4467659c65ae553c309afc3f51d5f1c329bc6969c`. It is a
   draft pre-release, not `Latest`, and the superseded `rust.13` draft was
   deleted.
-- `v4.0.0` (run `42356076024`, `f9e03a2`, 4 vCPUs, no GPU) passed with control
-  23.1 s, budget 60 s, CLI child 27.7 s, in-process 331.7 s, sherpa ONNX
-  31.9 s, VAD 0.0 s, after-sherpa 315.8 s, diarization 4.7/4.8 s and silence
-  0.0 s. The asset is 1,921,914,193 bytes, SHA-256
-  `0b0bc737ff822385b242230b822852fa0c910106cd5cca8960852c95503b4e62`, with an
+- `v4.0.0` (run `42621260185`, `17415fb`, 4 vCPUs, no GPU) passed with control
+  23.8 s, budget 60 s, CLI child 26.9 s, in-process 338.7 s, sherpa ONNX
+  33.9 s, VAD 0.0 s, after-sherpa 339.4 s, diarization 5.1/5.2 s and silence
+  0.1 s. The asset is 1,921,949,518 bytes, SHA-256
+  `d935714b4b3e09b5d8a3f0717276bdb3526c914734f91c93ed54d5fc79a1c28b`, with an
   89-byte `.sha256`. It is the current draft pre-release; `v3.2.3` remains
-  `Latest`, and the `rust.14` draft was deleted.
+  `Latest`. The first `v4.0.0` asset (run `42356076024`, `f9e03a2`, SHA-256
+  `0b0bc737...`) was replaced by this fixed build.
 - `v3.2.3-rust.11` failed at the app link when the espeak exclusion was tried;
   the linker proved `piper-phonemize-lexicon.obj` references `espeak_Initialize`.
   The TTS-off source build in `rust.14` supersedes that workaround. `rust.12`
