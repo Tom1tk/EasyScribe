@@ -1508,6 +1508,7 @@ impl AppState {
         if !self.idle() {
             return;
         }
+        self.mic_menu_open = false;
         if self.files.is_empty() {
             self.action_hint = Some(("Add at least one recording first.".into(), true));
             return;

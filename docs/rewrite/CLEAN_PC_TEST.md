@@ -29,7 +29,17 @@ and timings in `REWRITE_STATUS.md`. Use invented/public-domain audio only.
 ## 2. Microphone
 
 - [ ] Record 2 min with the default microphone; the WAV and transcript save.
+- [ ] After Stop, "Recording saved" appears and the WAV plays from the chosen
+      folder (or the default `Documents\EasyScribe`).
 - [ ] Record 2 min with a USB headset; select it in the microphone menu.
+- [ ] The microphone menu opens over Step 2 without moving it; clicking
+      elsewhere or pressing Escape closes it.
+- [ ] Show details on the Record tab: the log appears below Privacy and never
+      covers the Start/Stop button. Test this at 100% and 150% scaling and in
+      the 600–678 pt short-window layouts.
+- [ ] If an earlier build left `recording_*.pcm` and `.json` files in
+      `%LOCALAPPDATA%\EasyScribe\recordings`, the next launch offers to recover
+      them and writes a playable WAV.
 - [ ] Unplug the microphone mid-recording: expect a message and the recording
       kept so far.
 

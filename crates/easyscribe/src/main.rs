@@ -640,6 +640,7 @@ const SCENES: &[Scene] = &[
     ("record", scene_record),
     ("record-details", scene_record_details),
     ("record-live-details", scene_record_live_details),
+    ("recording-details", scene_recording_details),
     ("record-mic-menu", scene_record_mic_menu),
     ("recording", scene_recording),
     ("live", scene_live),
@@ -901,6 +902,12 @@ fn scene_record_details(s: &mut AppState) {
 
 fn scene_record_live_details(s: &mut AppState) {
     scene_live(s);
+    s.details_open = true;
+    sample_details_log(s);
+}
+
+fn scene_recording_details(s: &mut AppState) {
+    scene_recording(s);
     s.details_open = true;
     sample_details_log(s);
 }
