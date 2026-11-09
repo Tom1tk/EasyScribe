@@ -79,8 +79,8 @@ Use the same 5–10 min invented-content WAV on one real PC:
 
 - [ ] v3.2.3 with GPU (default).
 - [ ] v3.2.3 with CPU (`whisper_gpu_disabled_for` set, or no Vulkan driver).
-- [ ] rust.N with GPU (default).
-- [ ] rust.N with CPU (`EASYSCRIBE_WHISPER_CPU=1`).
+- [ ] v4.0.0 with GPU (default).
+- [ ] v4.0.0 with CPU (`EASYSCRIBE_WHISPER_CPU=1`).
 
 Record wall time and the timings block for each in `REWRITE_STATUS.md`.
 Pass: rust CPU is within 10% of v3.2.3 CPU, and rust GPU is within 10% of
