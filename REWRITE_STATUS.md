@@ -1,6 +1,6 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-09 (session 13 — first real-PC test fixes)
+**Updated:** 2026-11-09 (session 16 — first real-PC test fixes)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Version:** `4.0.0` · **Release:** `v4.0.0` draft pre-release (rebuilt 2026-11-09), not `Latest`
