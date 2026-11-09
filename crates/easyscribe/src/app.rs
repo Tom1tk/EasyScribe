@@ -1859,11 +1859,33 @@ mod tests {
     #[test]
     fn start_without_files_sets_the_hint() {
         let mut state = test_state();
+        state.mic_menu_open = true;
         state.start();
+        assert!(!state.mic_menu_open);
         assert_eq!(
             state.action_hint.as_ref().map(|h| h.0.as_str()),
             Some("Add at least one recording first.")
         );
+    }
+
+    #[test]
+    fn cancelled_recording_before_capture_is_not_an_error() {
+        let mut state = test_state();
+        state.ui = UiState::Recording;
+        state.record_saving = true;
+        state.activity = Some(Activity::new(&state.theme));
+        state.finish_recording(workers::RecordDone {
+            audio: None,
+            transcript: None,
+            error: None,
+            mic_error: false,
+            model_error: false,
+            cancelled: true,
+        });
+        assert_eq!(state.ui, UiState::Idle);
+        let activity = state.activity.expect("activity");
+        assert_eq!(activity.title, "Recording cancelled");
+        assert!(activity.message.is_none());
     }
 
     #[test]
