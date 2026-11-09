@@ -51,13 +51,18 @@ pub fn view(s: &AppState) -> El {
     main = main.child(utility_row(s));
 
     if s.details_open {
-        main = main.child(details_card(s));
+        // Only the Files tab lets the log fill the leftover height. On Record
+        // the record view owns that space; growing both made the record view
+        // shrink under its own content and the utility row cover the Start
+        // button.
+        main = main.child(details_card(s, s.mode == Mode::Files));
     }
 
     // The page has no scrollbar at normal heights. On the 600–678 pt windows
     // the reference allows a last-resort page scroll so the utility row and a
     // tall result stay reachable; without it they are clipped below the glass.
-    if s.window_height < 700.0 {
+    // The details panel on Record can also need more room than the window has.
+    if s.window_height < 700.0 || (s.details_open && s.mode == Mode::Record) {
         main = main
             .min_h(0.0)
             .scroll(ScrollSpec {
@@ -67,6 +72,17 @@ pub fn view(s: &AppState) -> El {
     }
 
     let mut root = el().key("root").w_full().h_full().child(main);
+    if s.mode == Mode::Record && s.mic_menu_open && s.idle() {
+        // A popup must not push the rest of the form down. Draw a dismiss
+        // scrim and the menu over the page, anchored under the selector.
+        root = root
+            .child(
+                el().key("mic-scrim")
+                    .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    .on_press(|s: &mut AppState| s.mic_menu_open = false),
+            )
+            .child(mic_menu(s));
+    }
     if s.privacy_open {
         root = root.child(privacy_overlay(s));
     }
@@ -922,7 +938,6 @@ fn record_view(s: &AppState) -> El {
         .key("record-view")
         .w_full()
         .grow(1.0)
-        .min_h(0.0)
         .child(record_card);
 
     if live_mode {
@@ -961,9 +976,17 @@ fn mic_selector(s: &AppState) -> El {
             .hover(t.secondary_hover)
             .cursor(Cursor::Pointer)
             .focus_ring(2.0, 2.0, t.coral)
-            .on_press(|s: &mut AppState| s.mic_menu_open = !s.mic_menu_open);
+            .on_press(|s: &mut AppState| s.mic_menu_open = !s.mic_menu_open)
+            .on_key(|s: &mut AppState, key: &rune::KeyEvent, _tx| {
+                if key.key == rune::Key::Escape && s.mic_menu_open {
+                    s.mic_menu_open = false;
+                    true
+                } else {
+                    false
+                }
+            });
     }
-    selector = selector
+    selector
         .child(
             text(selected)
                 .font(type_::BODY)
@@ -972,22 +995,29 @@ fn mic_selector(s: &AppState) -> El {
                 .max_lines(1)
                 .truncate_middle(),
         )
-        .child(chevron(t, if enabled { t.ink } else { t.faint }));
+        .child(chevron(t, if enabled { t.ink } else { t.faint }))
+}
 
-    if !s.mic_menu_open || !enabled {
-        return selector;
-    }
-
+fn mic_menu(s: &AppState) -> El {
+    let t = &s.theme;
     let mut menu = col()
         .key("mic-menu")
         .w(340.0)
-        .mt(4.0)
         .radius(metric::RADIUS_MD)
         .fill(t.surface)
         .border(1.0, t.border)
         .shadow(6.0, 18.0, t.shadow)
         .padding(4.0)
-        .focus_group();
+        .focus_group()
+        .on_key(|s: &mut AppState, key: &rune::KeyEvent, _tx| {
+            if key.key == rune::Key::Escape {
+                s.mic_menu_open = false;
+                true
+            } else {
+                false
+            }
+        })
+        .anchored("mic-select", rune::Side::Bottom, rune::Align::Start, 4.0);
     for (index, choice) in s.mic_choices.iter().enumerate() {
         let label = easyscribe_core::outputs::shorten(&choice.label, 48);
         let selected = index == s.selected_mic;
@@ -1000,7 +1030,7 @@ fn mic_selector(s: &AppState) -> El {
                 .center_y()
                 .role("option")
                 .label(label.clone())
-                .focusable(enabled)
+                .focusable(true)
                 .focus_selected(selected)
                 .position_in_set(index + 1, s.mic_choices.len())
                 .fill(if selected {
@@ -1024,7 +1054,7 @@ fn mic_selector(s: &AppState) -> El {
                 ),
         );
     }
-    col().w_full().gap(0.0).child(selector).child(menu)
+    menu
 }
 
 fn chevron(_t: &Theme, color: Color) -> El {
@@ -1767,34 +1797,36 @@ fn utility_row(s: &AppState) -> El {
         )
 }
 
-fn details_card(s: &AppState) -> El {
+fn details_card(s: &AppState, grow: bool) -> El {
     let t = &s.theme;
     let body = if s.log.is_empty() {
         String::new()
     } else {
         s.log.join("\n")
     };
-    col()
+    let mut card = col()
         .key("details-card")
         .w_full()
-        .grow(1.0)
         .min_h(140.0)
         .pb(16.0)
         .radius(metric::RADIUS_LG)
         .fill(t.surface)
         .border(1.0, t.border)
         .shadow(2.0, 10.0, t.shadow)
-        .padding(10.0)
-        .child(read_text(
-            "details-log",
-            body,
-            type_::MONO,
-            t.muted,
-            Color::TRANSPARENT,
-            0.0,
-            140.0,
-            true,
-        ))
+        .padding(10.0);
+    if grow {
+        card = card.grow(1.0);
+    }
+    card.child(read_text(
+        "details-log",
+        body,
+        type_::MONO,
+        t.muted,
+        Color::TRANSPARENT,
+        0.0,
+        140.0,
+        true,
+    ))
 }
 
 fn privacy_overlay(s: &AppState) -> El {

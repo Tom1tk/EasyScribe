@@ -638,6 +638,9 @@ const SCENES: &[Scene] = &[
     ("done", scene_done),
     ("error", scene_error),
     ("record", scene_record),
+    ("record-details", scene_record_details),
+    ("record-live-details", scene_record_live_details),
+    ("record-mic-menu", scene_record_mic_menu),
     ("recording", scene_recording),
     ("live", scene_live),
     ("naming", scene_naming),
@@ -866,9 +869,7 @@ fn scene_preparing(s: &mut AppState) {
     });
 }
 
-fn scene_details(s: &mut AppState) {
-    scene_done(s);
-    s.details_open = true;
+fn sample_details_log(s: &mut AppState) {
     s.log = vec![
         "".into(),
         "──────────────────────────────────────────────────".into(),
@@ -884,4 +885,27 @@ fn scene_details(s: &mut AppState) {
         "[File 2/3] Interview with Sam.mp3".into(),
         "[ffmpeg] Extracting audio to 16 kHz mono WAV".into(),
     ];
+}
+
+fn scene_details(s: &mut AppState) {
+    scene_done(s);
+    s.details_open = true;
+    sample_details_log(s);
+}
+
+fn scene_record_details(s: &mut AppState) {
+    scene_record(s);
+    s.details_open = true;
+    sample_details_log(s);
+}
+
+fn scene_record_live_details(s: &mut AppState) {
+    scene_live(s);
+    s.details_open = true;
+    sample_details_log(s);
+}
+
+fn scene_record_mic_menu(s: &mut AppState) {
+    scene_record(s);
+    s.mic_menu_open = true;
 }

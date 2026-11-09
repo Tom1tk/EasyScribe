@@ -140,7 +140,10 @@ pub fn recover_pcm_to_wav(
             writer.write_sample(i16::from_le_bytes([chunk[0], chunk[1]]))?;
         }
         writer.finalize()?;
-        let file = std::fs::File::open(&tmp)?;
+        // Reopen for writing: Windows `FlushFileBuffers` (Rust's `sync_all`)
+        // fails with access denied on a read-only handle, which made every
+        // recording fail to save on Windows.
+        let file = std::fs::OpenOptions::new().write(true).open(&tmp)?;
         file.sync_all()?;
         let _ = std::fs::remove_file(wav_path);
         std::fs::rename(&tmp, wav_path)?;

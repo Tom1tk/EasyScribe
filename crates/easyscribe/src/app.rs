@@ -820,6 +820,20 @@ impl AppState {
         activity.bar = BarMode::Idle;
         activity.progress = 0.0;
 
+        if done.cancelled {
+            activity.title = "Recording cancelled".into();
+            activity.tone = Tone::Muted;
+            activity.detail = "Nothing was saved.".into();
+            activity.bar_color = t.muted;
+            self.activity = Some(activity);
+            self.rename_visible = false;
+            self.find_card = None;
+            if !self.live_has_text {
+                self.live_text = IDLE_LIVE.into();
+            }
+            return;
+        }
+
         if let Some(error) = &done.error
             && (done.audio.is_none() || done.mic_error || done.model_error)
         {
@@ -1265,6 +1279,7 @@ impl AppState {
         }
         let t = self.theme.clone();
         self.ui = UiState::Recording;
+        self.mic_menu_open = false;
         self.log.clear();
         self.timer_seconds = 0.0;
         self.level = 0.0;

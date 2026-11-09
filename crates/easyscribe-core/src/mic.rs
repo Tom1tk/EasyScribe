@@ -392,9 +392,12 @@ impl MicRecorder {
             folders.push(dest.to_path_buf());
         }
         folders.push(pcm_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+        let mut last_error: Option<String> = None;
         for folder in folders {
             let wav_path = folder.join(&wav_name);
-            if std::fs::create_dir_all(&folder).is_err() {
+            if let Err(e) = std::fs::create_dir_all(&folder) {
+                log::error!("Recording folder {} is unusable: {e}", folder.display());
+                last_error = Some(format!("{}: {e}", folder.display()));
                 continue;
             }
             match recover_pcm_to_wav(&pcm_path, &metadata, &wav_path) {
@@ -406,10 +409,22 @@ impl MicRecorder {
                 }
                 Err(e) => {
                     log::error!("PCM→WAV conversion to {} failed: {e}", folder.display());
+                    last_error = Some(format!("{}: {e}", folder.display()));
                 }
             }
         }
-        Ok(None)
+        // Never swallow the reason: the UI shows it, and the PCM/sidecar pair
+        // stays in the recordings folder so crash recovery can retry it.
+        Err(Error::Recovery(format!(
+            "The recording could not be converted to WAV. The raw audio is kept in {}.{}",
+            pcm_path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            last_error
+                .map(|e| format!("\nLast error: {e}"))
+                .unwrap_or_default()
+        )))
     }
 }
 
@@ -754,5 +769,53 @@ mod tests {
         q.push_drop_newest(vec![2.0]);
         assert_eq!(q.try_pop(), Some(vec![1.0]));
         assert_eq!(q.try_pop(), None);
+    }
+
+    #[test]
+    fn stop_writes_the_recording_to_the_chosen_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let dest = dir.path().join("dest");
+        std::fs::create_dir_all(&work).unwrap();
+        let stem = "recording_20260101_000000";
+        let pcm_path = work.join(format!("{stem}.pcm"));
+        let json_path = work.join(format!("{stem}.json"));
+        let samples: Vec<i16> = (0..1600).map(|i| (i % 100) as i16).collect();
+        let mut raw = Vec::with_capacity(samples.len() * 2);
+        for sample in &samples {
+            raw.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(&pcm_path, raw).unwrap();
+        std::fs::write(
+            &json_path,
+            serde_json::to_string(&RecordingMetadata {
+                sample_rate: PCM_SAMPLE_RATE,
+                channels: 1,
+                bit_depth: 16,
+                samples_written: samples.len() as u64,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut recorder = MicRecorder::new();
+        recorder.pcm_path = Some(pcm_path.clone());
+        recorder.json_path = Some(json_path.clone());
+        recorder.samples_written = Arc::new(AtomicU64::new(samples.len() as u64));
+        recorder.session_stem = Some(stem.into());
+
+        // This also guards the Windows-only `sync_all` failure: the WAV must
+        // be reopened for writing before FlushFileBuffers.
+        let wav = recorder
+            .stop(true, Some(&dest))
+            .unwrap()
+            .expect("the recording should be converted");
+        assert_eq!(wav.parent(), Some(dest.as_path()));
+        assert!(!pcm_path.exists());
+        assert!(!json_path.exists());
+        let reader = hound::WavReader::open(&wav).unwrap();
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().sample_rate, PCM_SAMPLE_RATE);
+        assert_eq!(reader.duration() as usize, samples.len());
     }
 }

@@ -53,6 +53,8 @@ pub struct RecordDone {
     pub error: Option<String>,
     pub mic_error: bool,
     pub model_error: bool,
+    /// Stop was pressed before the microphone opened; nothing was captured.
+    pub cancelled: bool,
 }
 
 #[derive(Debug)]
@@ -304,6 +306,24 @@ pub fn spawn_recording(
                 }
             }
 
+            // Stop pressed while "Getting ready": do not open the microphone
+            // for a session that is already cancelled, and do not turn that
+            // into a "recording was not saved" error.
+            if stop.is_cancelled() {
+                let _ = tx.send(Event::RecordDone(RecordDone {
+                    audio: None,
+                    transcript: None,
+                    error: None,
+                    mic_error: false,
+                    model_error: false,
+                    cancelled: true,
+                }));
+                if let Some(waker) = waker {
+                    waker();
+                }
+                return;
+            }
+
             if let Err(error) = recorder.start(
                 request.mic.as_deref(),
                 &paths.recordings_work_dir,
@@ -464,6 +484,7 @@ pub fn spawn_recording(
                 error,
                 mic_error: false,
                 model_error: false,
+                cancelled: false,
             };
             let _ = tx.send(Event::RecordDone(done));
             if let Some(waker) = waker {
@@ -477,6 +498,7 @@ pub fn spawn_recording(
             error: Some(format!("Could not start recording: {error}")),
             mic_error: false,
             model_error: false,
+            cancelled: false,
         }));
         if let Some(waker) = error_waker {
             waker();
@@ -497,6 +519,7 @@ fn finish_error(
         error: Some(error),
         mic_error,
         model_error,
+        cancelled: false,
     }));
     if let Some(waker) = waker {
         waker();
