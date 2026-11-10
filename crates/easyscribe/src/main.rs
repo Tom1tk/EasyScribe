@@ -267,6 +267,39 @@ fn run_selftest(paths: &Paths) -> i32 {
     };
     let wav = fixture;
 
+    // The in-process fallback is not the shipping path, and a full-length
+    // decode is several minutes on a slow CI runner. CI shortens only these
+    // diagnostic decodes; the real fixture still goes through the bundled
+    // whisper-cli with the exact golden text. A local release selftest leaves
+    // this unset and keeps the full-length in-process coverage.
+    let inprocess_limit = std::env::var("EASYSCRIBE_SELFTEST_INPROCESS_SEC")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| *value >= 3.0)
+        .map(|value| value.min((seconds - 1.0).max(3.0)));
+    let (inprocess_wav, inprocess_is_short) = match inprocess_limit {
+        Some(limit) if seconds > limit + 0.5 => {
+            let path = paths.temp_dir.join("selftest_inprocess.wav");
+            if let Err(error) = write_wav_prefix(&wav, &path, limit) {
+                println!("FAILED: could not make the in-process selftest clip: {error}");
+                return 1;
+            }
+            println!(
+                "info: in-process selftest clip: {} ({limit:.1}s)",
+                path.display()
+            );
+            (path, true)
+        }
+        _ => (wav.clone(), false),
+    };
+    let check_inprocess = |segments: &[easyscribe_core::Segment]| {
+        if inprocess_is_short {
+            check_short_transcript(segments)
+        } else {
+            check_transcript(segments, Some(&expected))
+        }
+    };
+
     let have_cli = paths.whispercpp_bin.is_file() && paths.whispercpp_model.is_file();
     if cfg!(not(debug_assertions)) && !have_cli {
         failures.push("the bundled whisper-cli is missing from the release".into());
@@ -300,11 +333,12 @@ fn run_selftest(paths: &Paths) -> i32 {
     );
 
     // Keep one in-process decode so CI tests the linked whisper.cpp build too,
-    // not only the child process. It must reach the same transcript.
+    // not only the child process. In CI this uses a short excerpt; the full
+    // fixture and golden text are still checked through whisper-cli above.
     let started = std::time::Instant::now();
     let cancel = CancelToken::new();
-    let result = whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
-        .and_then(|segments| check_transcript(&segments, Some(&expected)));
+    let result = whispercpp::transcribe_in_process(paths, &inprocess_wav, &cancel, &reporter)
+        .and_then(|segments| check_inprocess(&segments));
     report_step(
         &mut failures,
         "whisper.cpp in-process decode",
@@ -337,8 +371,8 @@ fn run_selftest(paths: &Paths) -> i32 {
     let cancel = CancelToken::new();
     // This step must stay in-process: it is the diagnostic that catches ONNX
     // Runtime's thread-local state poisoning a later whisper.cpp encode.
-    let result = whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
-        .and_then(|segments| check_transcript(&segments, Some(&expected)));
+    let result = whispercpp::transcribe_in_process(paths, &inprocess_wav, &cancel, &reporter)
+        .and_then(|segments| check_inprocess(&segments));
     report_step(
         &mut failures,
         "whisper.cpp decode after sherpa",
@@ -413,6 +447,10 @@ fn run_selftest(paths: &Paths) -> i32 {
         result,
     );
 
+    if inprocess_is_short {
+        let _ = std::fs::remove_file(&inprocess_wav);
+    }
+
     let report = if failures.is_empty() {
         "EasyScribe selftest passed".to_owned()
     } else {
@@ -463,6 +501,27 @@ fn check_transcript(
             "the transcript does not match the golden text\n--- expected ---\n{}\n--- actual ---\n{}",
             expected.trim_end(),
             actual.trim_end()
+        )));
+    }
+    Ok(())
+}
+
+/// The CI excerpt is too short for the exact golden transcript. Require the
+/// words the excerpt actually contains, so a broken or silent decode still
+/// fails while a normal transcript passes.
+fn check_short_transcript(segments: &[easyscribe_core::Segment]) -> easyscribe_core::Result<()> {
+    if segments.is_empty() {
+        return Err(easyscribe_core::Error::Transcription(
+            "the short speech clip produced no segments".into(),
+        ));
+    }
+    let actual = easyscribe_core::transcript::build_plain_transcript(segments, false);
+    let lower = actual.to_lowercase();
+    if actual.split_whitespace().count() < 3
+        || !(lower.contains("john") || lower.contains("quarterly"))
+    {
+        return Err(easyscribe_core::Error::Transcription(format!(
+            "the short speech clip produced unexpected text: {actual}"
         )));
     }
     Ok(())
@@ -520,6 +579,34 @@ fn write_silence(path: &std::path::Path, seconds: u32) -> easyscribe_core::Resul
     for _ in 0..seconds * 16_000 {
         writer
             .write_sample(0_i16)
+            .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+    }
+    writer
+        .finalize()
+        .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))
+}
+
+fn write_wav_prefix(
+    source: &std::path::Path,
+    dest: &std::path::Path,
+    seconds: f64,
+) -> easyscribe_core::Result<()> {
+    let mut reader = hound::WavReader::open(source)
+        .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+    let spec = reader.spec();
+    if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
+        return Err(easyscribe_core::Error::Transcription(
+            "the selftest fixture must be 16-bit PCM".into(),
+        ));
+    }
+    let take = (seconds * spec.sample_rate as f64).round().max(1.0) as usize
+        * usize::from(spec.channels.max(1));
+    let mut writer = hound::WavWriter::create(dest, spec)
+        .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+    for sample in reader.samples::<i16>().take(take) {
+        let sample = sample.map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
+        writer
+            .write_sample(sample)
             .map_err(|e| easyscribe_core::Error::Transcription(e.to_string()))?;
     }
     writer
@@ -940,4 +1027,20 @@ fn scene_recording_details(s: &mut AppState) {
 fn scene_record_mic_menu(s: &mut AppState) {
     scene_record(s);
     s.mic_menu_open = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{wav_seconds, write_silence, write_wav_prefix};
+
+    #[test]
+    fn wav_prefix_copies_only_the_requested_span() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.wav");
+        let dest = dir.path().join("prefix.wav");
+        write_silence(&source, 2).expect("write source");
+        write_wav_prefix(&source, &dest, 0.5).expect("write prefix");
+        let seconds = wav_seconds(&dest).expect("read prefix");
+        assert!((seconds - 0.5).abs() < 0.01, "prefix was {seconds:.3}s");
+    }
 }

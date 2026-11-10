@@ -82,7 +82,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: rune-windows-release-3
+          # Bump when the cached target layout changes. Keep the target until
+          # the job ends so this saves compiled dependencies, not just the
+          # Cargo registry.
+          key: rune-windows-release-4
 
       # sherpa-rs-sys 0.6.8 vendors sherpa-onnx 1.12.9 and builds it from
       # source when SHERPA_LIB_PATH is not set. Its source build sets
@@ -408,13 +411,15 @@ jobs:
       # Keep only the two binaries the packaging steps still need. Removing the
       # multi-gigabyte target directory leaves room for the payload archive and
       # the 1.7 GB output on the runner's ~14 GB disk.
-      - name: Keep the built binaries and free the target directory
+      - name: Keep the built binaries
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target\release\easyscribe.exe dist\easyscribe-raw.exe
           Copy-Item target\release\easyscribe-pack.exe dist\easyscribe-pack.exe
-          Remove-Item target -Recurse -Force
+          # Keep target\ so Swatinem/rust-cache can save the compiled
+          # dependencies. The workspace drive has ample free space, and the
+          # payload assembly does not need it removed.
           Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free | Format-Table
 
       # Assemble exactly what ships inside the single exe. whisper-cli and its
@@ -550,6 +555,10 @@ jobs:
         shell: pwsh
         env:
           EASYSCRIBE_WHISPER_TRACE: "1"
+          # The two in-process fallback decodes are diagnostic, not the
+          # shipping path. Eight seconds is enough to prove the linked engine
+          # and the post-ONNX interaction without 14 minutes of CPU decode.
+          EASYSCRIBE_SELFTEST_INPROCESS_SEC: "8"
         run: |
           Get-CimInstance Win32_Processor |
             Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed | Format-List
