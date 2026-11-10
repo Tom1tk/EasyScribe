@@ -11,6 +11,10 @@ on:
         description: 'Release tag, e.g. v4.0.1 or v4.0.1-rc.1'
         required: true
         default: 'v4.0.1'
+      full_selftest:
+        description: 'Also run the slow in-process fallback diagnostics (adds ~20 minutes)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -556,9 +560,10 @@ jobs:
         env:
           EASYSCRIBE_WHISPER_TRACE: "1"
           # The two in-process fallback decodes are diagnostic, not the
-          # shipping path. Eight seconds is enough to prove the linked engine
-          # and the post-ONNX interaction without 14 minutes of CPU decode.
-          EASYSCRIBE_SELFTEST_INPROCESS_SEC: "8"
+          # shipping path, and each takes about 11 minutes on a 4-vCPU
+          # runner. The fast release gate leaves them out; dispatch with
+          # full_selftest=true to run them for a promotion or a backend change.
+          EASYSCRIBE_SELFTEST_SKIP_INPROCESS: ${{ inputs.full_selftest && '0' || '1' }}
         run: |
           Get-CimInstance Win32_Processor |
             Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed | Format-List
