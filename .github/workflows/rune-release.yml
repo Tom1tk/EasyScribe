@@ -360,17 +360,10 @@ jobs:
       - name: Build the app and packer
         shell: pwsh
         run: |
-          # The build scripts do not declare every input as rerun-if-env-changed,
-          # so a restored target directory could keep an older CMake
-          # configuration. Reconfigure whisper.cpp from scratch.
-          if (Test-Path target\release) {
-            foreach ($pattern in @("whisper-rs-sys-*", "whisper-rs-*", "sherpa-rs-sys-*")) {
-              Get-ChildItem target\release\build -Directory -Filter $pattern -ErrorAction SilentlyContinue |
-                Remove-Item -Recurse -Force
-              Get-ChildItem target\release\.fingerprint -Directory -Filter $pattern -ErrorAction SilentlyContinue |
-                Remove-Item -Recurse -Force
-            }
-          }
+          # Reuse the cached whisper.cpp/sherpa-onnx CMake outputs. The
+          # assertions below still verify the CMake configuration, so a stale
+          # or wrong cache fails the build instead of shipping. Bump the
+          # Swatinem cache key when changing GGML_* or CMAKE_* flags.
           cargo build --release -p easyscribe -p easyscribe-pack --no-default-features --features easyscribe/release-static
           if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
           $cache = Get-ChildItem target\release\build -Recurse -Filter CMakeCache.txt -ErrorAction SilentlyContinue |
