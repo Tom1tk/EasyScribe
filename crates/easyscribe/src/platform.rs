@@ -22,6 +22,80 @@ pub fn set_app_identity() {
     }
 }
 
+/// Give the window the EasyScribe logo in its title bar and on the taskbar.
+/// Winit leaves the class's generic icon in place; the icon itself is already
+/// embedded in the executable by `build.rs` as resource id 1.
+#[cfg(windows)]
+pub fn set_window_icon(window: &rune::WindowHandle) {
+    let _ = window.with_raw_handle(|handle| {
+        let rune::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = win32.hwnd.get() as *mut std::ffi::c_void;
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn LoadImageW(
+                instance: *mut std::ffi::c_void,
+                name: *const u16,
+                kind: u32,
+                cx: i32,
+                cy: i32,
+                flags: u32,
+            ) -> *mut std::ffi::c_void;
+            fn SendMessageW(
+                hwnd: *mut std::ffi::c_void,
+                message: u32,
+                wparam: usize,
+                lparam: isize,
+            ) -> isize;
+            fn GetSystemMetrics(index: i32) -> i32;
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetModuleHandleW(name: *const u16) -> *mut std::ffi::c_void;
+        }
+        const IMAGE_ICON: u32 = 1;
+        const LR_DEFAULTCOLOR: u32 = 0;
+        const LR_SHARED: u32 = 0x8000;
+        const WM_SETICON: u32 = 0x0080;
+        const ICON_SMALL: usize = 0;
+        const ICON_BIG: usize = 1;
+        const SM_CXICON: i32 = 11;
+        const SM_CYICON: i32 = 12;
+        const SM_CXSMICON: i32 = 49;
+        const SM_CYSMICON: i32 = 50;
+        unsafe {
+            let module = GetModuleHandleW(std::ptr::null());
+            let icon_id = 1usize as *const u16; // MAKEINTRESOURCEW(1)
+            let big = LoadImageW(
+                module,
+                icon_id,
+                IMAGE_ICON,
+                GetSystemMetrics(SM_CXICON),
+                GetSystemMetrics(SM_CYICON),
+                LR_DEFAULTCOLOR | LR_SHARED,
+            );
+            let small = LoadImageW(
+                module,
+                icon_id,
+                IMAGE_ICON,
+                GetSystemMetrics(SM_CXSMICON),
+                GetSystemMetrics(SM_CYSMICON),
+                LR_DEFAULTCOLOR | LR_SHARED,
+            );
+            if !big.is_null() {
+                SendMessageW(hwnd, WM_SETICON, ICON_BIG, big as isize);
+            }
+            if !small.is_null() {
+                SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small as isize);
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn set_window_icon(_window: &rune::WindowHandle) {}
+
 pub fn open_path(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {

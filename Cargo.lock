@@ -1033,7 +1033,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "easyscribe"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "dirs 6.0.0",
  "easyscribe-core",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "easyscribe-core"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "chrono",
  "cpal",
@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "easyscribe-pack"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "chrono",
  "easyscribe-core",

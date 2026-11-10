@@ -15,6 +15,7 @@ use serde::Serialize;
 use crate::audio::LinearResampler;
 use crate::config::VAD_SAMPLE_RATE;
 use crate::recovery::{RecordingMetadata, recover_pcm_to_wav};
+use crate::report::PauseToken;
 use crate::{Error, Result};
 
 pub const PCM_SAMPLE_RATE: u32 = 16_000;
@@ -153,6 +154,12 @@ impl MicRecorder {
         f32::from_bits(bits)
     }
 
+    /// Recorded duration in seconds. It follows the samples actually written,
+    /// so it stops while capture is paused and always matches the WAV length.
+    pub fn recorded_seconds(&self) -> f64 {
+        self.samples_written.load(Ordering::SeqCst) as f64 / PCM_SAMPLE_RATE as f64
+    }
+
     pub fn is_recording(&self) -> bool {
         self.stream.is_some()
     }
@@ -163,6 +170,7 @@ impl MicRecorder {
         device_name: Option<&str>,
         output_dir: &Path,
         feed_vad: bool,
+        pause: PauseToken,
     ) -> Result<()> {
         if self.stream.is_some() {
             return Err(Error::Transcription(
@@ -262,10 +270,17 @@ impl MicRecorder {
         let peak = self.peak.clone();
         let pcm_tx_for_callback = pcm_tx.clone();
         let vad_for_callback = vad_queue.clone();
+        let pause_for_callback = pause.clone();
 
         let mut resampler = (sample_rate != VAD_SAMPLE_RATE)
             .then(|| LinearResampler::new(sample_rate, VAD_SAMPLE_RATE));
         let stream = build_stream(&device, &config, move |data| {
+            // Keep the device stream open (closing and reopening it could
+            // change the format or fail), but append nothing while paused.
+            if pause_for_callback.is_paused() {
+                peak.store(0, Ordering::Relaxed);
+                return;
+            }
             let mut mono = Vec::with_capacity(data.len() / channels.max(1));
             for frame in data.chunks(channels.max(1)) {
                 // A stereo interface may put the only active mic on either
@@ -368,17 +383,26 @@ impl MicRecorder {
         if !convert_to_wav {
             return Ok(None);
         }
+        let written = self.samples_written.load(Ordering::SeqCst);
         let Some(pcm_path) = self.pcm_path.clone() else {
             return Ok(None);
         };
         let Some(json_path) = self.json_path.clone() else {
             return Ok(None);
         };
+        if written == 0 {
+            // Paused (or stopped) before a single sample was kept. There is
+            // nothing to convert, and an empty "recording" is not an error.
+            let _ = std::fs::remove_file(&pcm_path);
+            let _ = std::fs::remove_file(&json_path);
+            log::info!("Recording stopped before any audio was captured");
+            return Ok(None);
+        }
         let metadata = RecordingMetadata {
             sample_rate: PCM_SAMPLE_RATE,
             channels: 1,
             bit_depth: 16,
-            samples_written: self.samples_written.load(Ordering::SeqCst),
+            samples_written: written,
         };
         let wav_name = pcm_path
             .with_extension("wav")
@@ -817,5 +841,39 @@ mod tests {
         assert_eq!(reader.spec().channels, 1);
         assert_eq!(reader.spec().sample_rate, PCM_SAMPLE_RATE);
         assert_eq!(reader.duration() as usize, samples.len());
+    }
+
+    #[test]
+    fn stop_before_any_audio_discards_the_empty_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let dest = dir.path().join("dest");
+        std::fs::create_dir_all(&work).unwrap();
+        let stem = "recording_20260101_000000";
+        let pcm_path = work.join(format!("{stem}.pcm"));
+        let json_path = work.join(format!("{stem}.json"));
+        std::fs::write(&pcm_path, []).unwrap();
+        std::fs::write(
+            &json_path,
+            serde_json::to_string(&RecordingMetadata {
+                sample_rate: PCM_SAMPLE_RATE,
+                channels: 1,
+                bit_depth: 16,
+                samples_written: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut recorder = MicRecorder::new();
+        recorder.pcm_path = Some(pcm_path.clone());
+        recorder.json_path = Some(json_path.clone());
+        recorder.samples_written = Arc::new(AtomicU64::new(0));
+        recorder.session_stem = Some(stem.into());
+        let result = recorder.stop(true, Some(&dest)).unwrap();
+        assert!(result.is_none());
+        assert!(!pcm_path.exists());
+        assert!(!json_path.exists());
+        assert!(!dest.exists());
     }
 }

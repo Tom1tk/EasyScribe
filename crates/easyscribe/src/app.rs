@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use easyscribe_core::diarizer::{DiarizationEngine, SpeakerNaming, SpeakerPreview};
 use easyscribe_core::{
-    CancelToken, Error, Paths, Reporter, Segment, Status, TranscriptionEngine, audio, ffmpeg,
-    logger, mic, outputs, payload, recovery, rename, settings::Settings, transcriber,
+    CancelToken, Error, Paths, PauseToken, Reporter, Segment, Status, TranscriptionEngine, audio,
+    ffmpeg, logger, mic, outputs, payload, recovery, rename, settings::Settings, transcriber,
 };
 use rune::{TextEdit, Waker};
 
@@ -340,6 +340,10 @@ pub struct AppState {
     pub timer_seconds: f64,
     pub level: f32,
     pub record_saving: bool,
+    /// The microphone is open and samples are arriving (Pause can act).
+    pub record_capturing: bool,
+    pub record_paused: bool,
+    pub record_pause: Option<PauseToken>,
     pub live_text: String,
     pub live_has_text: bool,
 
@@ -426,6 +430,9 @@ impl AppState {
             timer_seconds: 0.0,
             level: 0.0,
             record_saving: false,
+            record_capturing: false,
+            record_paused: false,
+            record_pause: None,
             live_text: IDLE_LIVE.into(),
             live_has_text: false,
             activity: None,
@@ -628,7 +635,12 @@ impl AppState {
             Event::RecordStarted => {
                 self.ui = UiState::Recording;
                 self.record_saving = false;
+                self.record_capturing = true;
+                self.record_paused = false;
                 self.timer_seconds = 0.0;
+                if let Some(pause) = &self.record_pause {
+                    pause.resume();
+                }
                 if let Some(activity) = &mut self.activity {
                     activity.apply_status(Status::Recording, &t, false);
                 }
@@ -808,6 +820,11 @@ impl AppState {
         self.ui = UiState::Idle;
         self.record_stop = None;
         self.record_saving = false;
+        self.record_capturing = false;
+        self.record_paused = false;
+        if let Some(pause) = self.record_pause.take() {
+            pause.resume();
+        }
         self.level = 0.0;
         let mut activity = self.activity.take().unwrap_or_else(|| Activity::new(&t));
         activity.stop_visible = false;
@@ -1273,6 +1290,42 @@ impl AppState {
         }
     }
 
+    /// Pause or resume the microphone without ending the session. Paused time
+    /// is left out of the timer, the WAV and any live transcript.
+    pub fn toggle_pause(&mut self) {
+        if self.ui != UiState::Recording || !self.record_capturing || self.record_saving {
+            return;
+        }
+        let Some(pause) = self.record_pause.clone() else {
+            return;
+        };
+        let t = self.theme.clone();
+        self.record_paused = !self.record_paused;
+        if self.record_paused {
+            pause.pause();
+            self.level = 0.0;
+            if let Some(activity) = &mut self.activity {
+                activity.status = Status::Recording;
+                activity.title = "Recording paused".into();
+                activity.tone = Tone::Amber;
+                activity.bar = BarMode::Idle;
+                activity.bar_color = t.amber;
+                activity.message = Some((
+                    "Recording is paused. Select Resume to continue, or Stop recording to save what you have."
+                        .into(),
+                    MessageKind::Info,
+                ));
+            }
+            self.log.push("[Record] Paused".into());
+        } else {
+            pause.resume();
+            if let Some(activity) = &mut self.activity {
+                activity.apply_status(Status::Recording, &t, false);
+            }
+            self.log.push("[Record] Resumed".into());
+        }
+    }
+
     fn start_recording(&mut self) {
         if !self.idle() {
             return;
@@ -1284,6 +1337,8 @@ impl AppState {
         self.timer_seconds = 0.0;
         self.level = 0.0;
         self.record_saving = false;
+        self.record_capturing = false;
+        self.record_paused = false;
         self.live_has_text = false;
         self.live_text = LISTENING.into();
         self.last_transcript = None;
@@ -1300,10 +1355,13 @@ impl AppState {
         self.activity = Some(activity);
         let stop = CancelToken::new();
         self.record_stop = Some(stop.clone());
+        let pause = PauseToken::new();
+        self.record_pause = Some(pause.clone());
         let request = workers::RecordRequest {
             mic: self.selected_mic_device(),
             mode: self.record_mode,
             dest_dir: self.effective_recordings_dir(),
+            pause,
         };
         workers::spawn_recording(
             self.paths.clone(),
@@ -1866,6 +1924,61 @@ mod tests {
             state.action_hint.as_ref().map(|h| h.0.as_str()),
             Some("Add at least one recording first.")
         );
+    }
+
+    #[test]
+    fn pause_freezes_and_resumes_a_recording() {
+        let mut state = test_state();
+        state.ui = UiState::Recording;
+        state.record_capturing = true;
+        let pause = PauseToken::new();
+        state.record_pause = Some(pause.clone());
+        state.activity = Some(Activity::new(&state.theme));
+        state.timer_seconds = 12.0;
+
+        state.toggle_pause();
+        assert!(state.record_paused);
+        assert!(pause.is_paused());
+        let activity = state.activity.as_ref().expect("activity");
+        assert_eq!(activity.title, "Recording paused");
+        assert_eq!(state.level, 0.0);
+
+        state.toggle_pause();
+        assert!(!state.record_paused);
+        assert!(!pause.is_paused());
+        assert_eq!(
+            state.activity.as_ref().expect("activity").title,
+            "Recording"
+        );
+
+        // Stop has already begun: Pause must not change the session.
+        state.record_saving = true;
+        state.toggle_pause();
+        assert!(!state.record_paused);
+    }
+
+    #[test]
+    fn finished_recording_clears_pause_state() {
+        let mut state = test_state();
+        state.ui = UiState::Recording;
+        state.record_capturing = true;
+        state.record_paused = true;
+        let pause = PauseToken::new();
+        pause.pause();
+        state.record_pause = Some(pause.clone());
+        state.activity = Some(Activity::new(&state.theme));
+        state.finish_recording(workers::RecordDone {
+            audio: None,
+            transcript: None,
+            error: None,
+            mic_error: false,
+            model_error: false,
+            cancelled: true,
+        });
+        assert!(!state.record_paused);
+        assert!(!state.record_capturing);
+        assert!(state.record_pause.is_none());
+        assert!(!pause.is_paused());
     }
 
     #[test]

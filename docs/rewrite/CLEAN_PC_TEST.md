@@ -6,8 +6,8 @@ and timings in `REWRITE_STATUS.md`. Use invented/public-domain audio only.
 ## 0. Preconditions
 
 - 64-bit Windows 10/11, x86-64 CPU with AVX2, FMA, F16C and BMI2.
-- Download `EasyScribe-v4.0.0.exe` and its `.sha256` from the draft
-  release; verify the hash with `Get-FileHash`.
+- Download `EasyScribe-v4.0.1.exe` and its `.sha256` from the pre-release;
+  verify the hash with `Get-FileHash`.
 - Do not install anything system-wide. Keep a snapshot before the first run.
 
 ## 1. Unpack
@@ -29,6 +29,14 @@ and timings in `REWRITE_STATUS.md`. Use invented/public-domain audio only.
 ## 2. Microphone
 
 - [ ] Record 2 min with the default microphone; the WAV and transcript save.
+- [ ] During a recording, select **Pause**: the button becomes **Resume**, the
+      timer and level meter stop, and the activity says `Recording paused`.
+      Wait 10 s, select **Resume**, and finish. The saved WAV length excludes
+      the paused 10 s, and the live transcript contains no audio from it.
+- [ ] Stop while paused: the audio captured before the pause is saved and the
+      paused tail is absent.
+- [ ] Pause at 00:00 and stop immediately: the result is `Recording cancelled`
+      with `Nothing was saved.`, not a save error.
 - [ ] After Stop, "Recording saved" appears and the WAV plays from the chosen
       folder (or the default `Documents\EasyScribe`).
 - [ ] Record 2 min with a USB headset; select it in the microphone menu.
@@ -48,6 +56,10 @@ and timings in `REWRITE_STATUS.md`. Use invented/public-domain audio only.
 - [ ] Test at 100%, 150% and 200% scaling.
 - [ ] Drag the window between monitors with different scaling.
 - [ ] No clipped text, no blurry UI, and the naming panel is usable.
+- [ ] The EasyScribe logo appears in the window's top-left title-bar icon and
+      on the taskbar while the app is running.
+- [ ] Click the rename box: a thin caret blinks at the insertion point, and it
+      moves as you type or click elsewhere in the name.
 
 ## 4. Dialogs and drag and drop
 
@@ -79,8 +91,8 @@ Use the same 5–10 min invented-content WAV on one real PC:
 
 - [ ] v3.2.3 with GPU (default).
 - [ ] v3.2.3 with CPU (`whisper_gpu_disabled_for` set, or no Vulkan driver).
-- [ ] v4.0.0 with GPU (default).
-- [ ] v4.0.0 with CPU (`EASYSCRIBE_WHISPER_CPU=1`).
+- [ ] v4.0.1 with GPU (default).
+- [ ] v4.0.1 with CPU (`EASYSCRIBE_WHISPER_CPU=1`).
 
 Record wall time and the timings block for each in `REWRITE_STATUS.md`.
 Pass: rust CPU is within 10% of v3.2.3 CPU, and rust GPU is within 10% of

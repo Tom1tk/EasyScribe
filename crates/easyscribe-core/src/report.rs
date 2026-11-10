@@ -36,6 +36,30 @@ impl CancelToken {
     }
 }
 
+/// A shared pause switch for a live capture. Unlike [`CancelToken`], pausing
+/// keeps the session and its files; capture simply stops appending audio until
+/// it is resumed.
+#[derive(Clone, Debug, Default)]
+pub struct PauseToken(Arc<AtomicBool>);
+
+impl PauseToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn pause(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn resume(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 /// Everything a long job reports. Default methods make it easy for tests and
 /// for callers that only care about one channel.
 pub trait Reporter: Send + Sync {

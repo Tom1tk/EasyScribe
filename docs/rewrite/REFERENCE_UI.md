@@ -1024,6 +1024,14 @@ removed, leaving the flex blank space described in §6.1).
    status `Recording`, indeterminate coral progress, no percent; the batch line
    stays empty (no file is being processed); no activity Stop button.
 
+**v4.0.1 addition (not in v3.2.3):** once the microphone is open, a `Pause`
+button sits next to `Stop recording` and changes to `Resume` while paused.
+Pausing freezes the timer and level meter, stops appending PCM and stops feeding
+the live decoder; the activity title becomes `Recording paused` (amber, info
+banner) and the log records `[Record] Paused` / `[Record] Resumed`. Stop while
+paused saves the audio captured before the pause. Pausing at 00:00 and stopping
+reports `Recording cancelled`, not a save error.
+
 **Stop**
 
 - Clicking Stop sets the stop event and immediately changes the record button to
@@ -1222,6 +1230,9 @@ activity card and has an alt background:
   the current stem; placeholder (only visible if cleared):
   `Type a new name, for example Team meeting 21 Oct`.
 - `Rename` teal 100 × 36, 13 bold, right of the entry.
+- **v4.0.1:** a focused entry shows a thin ink caret that blinks about once a
+  second at the insertion point (Rune's built-in caret is solid and defaults to
+  white, which is invisible on the light field).
 - `Return` in the entry commits.
 - Note line 12 muted, wrap 620, under the entry: mode-specific text in §9.
 - The row does not appear for multi-file Files results, or when no target exists

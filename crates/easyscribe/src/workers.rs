@@ -11,8 +11,8 @@ use easyscribe_core::diarizer::SpeakerNaming;
 use easyscribe_core::live::{LiveEvent, LiveTranscriber};
 use easyscribe_core::mic::MicRecorder;
 use easyscribe_core::{
-    CancelToken, Error, Paths, Reporter, Segment, TranscriptionEngine, audio, ffmpeg, outputs,
-    transcriber,
+    CancelToken, Error, Paths, PauseToken, Reporter, Segment, TranscriptionEngine, audio, ffmpeg,
+    outputs, transcriber,
 };
 use rune::Waker;
 
@@ -44,6 +44,7 @@ pub struct RecordRequest {
     pub mic: Option<String>,
     pub mode: RecordMode,
     pub dest_dir: PathBuf,
+    pub pause: PauseToken,
 }
 
 #[derive(Debug)]
@@ -328,6 +329,7 @@ pub fn spawn_recording(
                 request.mic.as_deref(),
                 &paths.recordings_work_dir,
                 live_mode,
+                request.pause.clone(),
             ) {
                 finish_error(
                     &tx,
@@ -366,9 +368,7 @@ pub fn spawn_recording(
                     }
                 }
 
-            let started = Instant::now();
             let mut last_level = Instant::now();
-            let mut last_timer = Instant::now();
             while !stop.is_cancelled() {
                 if let Some(rx) = &live_rx {
                     while let Ok(event) = rx.try_recv() {
@@ -389,17 +389,9 @@ pub fn spawn_recording(
                 if last_level.elapsed() >= Duration::from_millis(100) {
                     last_level = Instant::now();
                     let _ = tx.send(Event::RecordTick {
-                        seconds: started.elapsed().as_secs_f64(),
-                        level: recorder.get_level(),
-                    });
-                    if let Some(waker) = &waker {
-                        waker();
-                    }
-                }
-                if last_timer.elapsed() >= Duration::from_millis(500) {
-                    last_timer = Instant::now();
-                    let _ = tx.send(Event::RecordTick {
-                        seconds: started.elapsed().as_secs_f64(),
+                        // The sample count excludes paused time, so the timer
+                        // freezes on Pause and matches the WAV duration.
+                        seconds: recorder.recorded_seconds(),
                         level: recorder.get_level(),
                     });
                     if let Some(waker) = &waker {
@@ -432,9 +424,23 @@ pub fn spawn_recording(
                         .unwrap_or_else(|| request.dest_dir.clone());
                     (Some(wav), folder)
                 }
-                // The WAV could not be written. Keep the live transcript in
-                // the recordings work folder, where the raw PCM also lives.
-                Ok(None) => (None, paths.recordings_work_dir.clone()),
+                // Stopped before any samples were kept (for example paused at
+                // 00:00). `stop` removed the empty pair; this is a cancel, not
+                // a save failure.
+                Ok(None) => {
+                    let _ = tx.send(Event::RecordDone(RecordDone {
+                        audio: None,
+                        transcript: None,
+                        error: None,
+                        mic_error: false,
+                        model_error: false,
+                        cancelled: true,
+                    }));
+                    if let Some(waker) = waker {
+                        waker();
+                    }
+                    return;
+                }
                 Err(error) => {
                     finish_error(
                         &tx,

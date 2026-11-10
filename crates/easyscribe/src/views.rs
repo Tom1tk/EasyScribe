@@ -4,7 +4,7 @@
 //! Layout follows `docs/rewrite/REFERENCE_UI.md`: 24 px gutter, 12 px card gap,
 //! white 14-radius cards, 18 px inner padding, feature colours per task.
 
-use rune::{Color, Cursor, El, ScrollSpec, Shape, col, el, row, text, text_input};
+use rune::{Color, Cursor, Cx, El, ScrollSpec, Shape, col, el, row, text, text_input};
 
 use crate::app::{
     Activity, AppState, BarMode, FileState, FindCard, MessageKind, Mode, NamingState,
@@ -17,7 +17,7 @@ use crate::widgets::{
     strong,
 };
 
-pub fn view(s: &AppState) -> El {
+pub fn view(s: &AppState, cx: &Cx<AppState>) -> El {
     if let Some(preparing) = &s.preparing {
         return preparing_view(s, preparing);
     }
@@ -72,6 +72,9 @@ pub fn view(s: &AppState) -> El {
     }
 
     let mut root = el().key("root").w_full().h_full().child(main);
+    if let Some(caret) = rename_caret(s, cx) {
+        root = root.child(caret);
+    }
     if s.mode == Mode::Record && s.mic_menu_open && s.idle() {
         // A popup must not push the rest of the form down. Draw a dismiss
         // scrim and the menu over the page, anchored under the selector.
@@ -87,6 +90,30 @@ pub fn view(s: &AppState) -> El {
         root = root.child(privacy_overlay(s));
     }
     root
+}
+
+/// Rune paints a focused field's caret in one colour and does not blink it.
+/// The rename box is the one place the app wants a word-processor caret, so
+/// draw a slow-blink line over the field and leave Rune's own caret
+/// transparent there. The rect comes from the focused field, in window points.
+fn rename_caret(s: &AppState, cx: &Cx<AppState>) -> Option<El> {
+    if !s.rename_visible || s.privacy_open || s.mic_menu_open {
+        return None;
+    }
+    let [x, y, w, h] = cx.caret("rename-input")?;
+    Some(
+        el().key("rename-caret")
+            .absolute(x, y)
+            .size(w.max(1.0), h)
+            .fill(s.theme.ink)
+            .looping(rune::LoopSpec::cycle(rune::Cycle {
+                period: 1.06,
+                phase: 0.0,
+                stops: &[(0.0, 1.0), (0.5, 1.0), (0.5, 0.0), (1.0, 0.0)],
+                still: 1.0,
+                fps: 30.0,
+            })),
+    )
 }
 
 /// First launch: the single executable is unpacking its runtime. This is a
@@ -1222,8 +1249,14 @@ fn record_controls(s: &AppState) -> El {
     };
     // Keep the timer coral while the recording is being saved: the stop
     // request has not finished yet, and the timer is still meaningful.
-    let timer_color = if recording { t.coral_ink } else { t.faint };
-    let level = if recording {
+    let timer_color = if s.record_paused {
+        t.amber_ink
+    } else if recording {
+        t.coral_ink
+    } else {
+        t.faint
+    };
+    let level = if recording && !s.record_paused {
         s.level.clamp(0.0, 1.0)
     } else {
         0.0
@@ -1244,23 +1277,35 @@ fn record_controls(s: &AppState) -> El {
         );
     }
 
-    row()
-        .w_full()
-        .gap(16.0)
-        .center_y()
-        .child(
+    let mut controls = row().w_full().gap(16.0).center_y().child(
+        button(
+            t,
+            label,
+            ButtonKind::Coral,
+            metric::CTA_W,
+            metric::CTA_H,
+            type_::PRIMARY,
+            enabled,
+            |s: &mut AppState| s.toggle_recording(),
+        )
+        .key("record-button"),
+    );
+    if recording && s.record_capturing && !s.record_saving {
+        controls = controls.child(
             button(
                 t,
-                label,
-                ButtonKind::Coral,
-                metric::CTA_W,
+                if s.record_paused { "Resume" } else { "Pause" },
+                ButtonKind::Secondary,
+                110.0,
                 metric::CTA_H,
-                type_::PRIMARY,
-                enabled,
-                |s: &mut AppState| s.toggle_recording(),
+                type_::STRONG,
+                true,
+                |s: &mut AppState| s.toggle_pause(),
             )
-            .key("record-button"),
-        )
+            .key("pause-button"),
+        );
+    }
+    controls
         .child(
             text(easyscribe_core::outputs::fmt_timer(s.timer_seconds))
                 .font(type_::TIMER)
@@ -1466,6 +1511,9 @@ fn rename_row(s: &AppState) -> El {
                                 .w_full()
                                 .single_line()
                                 .color(t.ink)
+                                // `rename_caret` draws the blinking line; hide
+                                // Rune's solid white default on the light field.
+                                .caret(Color::TRANSPARENT, t.coral_soft)
                                 .placeholder(
                                     "Type a new name, for example Team meeting 21 Oct",
                                     t.faint,
@@ -1684,6 +1732,7 @@ fn naming_panel(s: &AppState, naming: &NamingState) -> El {
                             .w_full()
                             .single_line()
                             .color(t.ink)
+                            .caret(t.ink, t.coral_soft)
                             .placeholder("Type a name", t.faint)
                             .on_edit(move |s: &mut AppState| {
                                 &mut s.naming.as_mut().expect("naming panel").rows[index].edit

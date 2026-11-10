@@ -26,7 +26,7 @@ pub mod whispercpp;
 pub use config::{APP_NAME, APP_VERSION, Paths};
 pub use error::{Error, Result};
 pub use model::{AssignedSegment, Segment, SpeakerShare, Status, Turn};
-pub use report::{CancelToken, Reporter, SilentReporter};
+pub use report::{CancelToken, PauseToken, Reporter, SilentReporter};
 pub use sherpa_engine::TranscriptionEngine;
 
 mod model;

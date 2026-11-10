@@ -61,7 +61,7 @@ Select **Record** and choose your microphone. Then choose what you want:
 - **Best quality transcript after recording** (the default). EasyScribe records only. When you stop, it makes the transcript at once with the more accurate engine, with times. Then select **Find speakers** to name the speakers. EasyScribe first shows a rough estimate of how long it takes, and you can stop at any time. The names go into a copy, `<name> (speakers).txt`; the first transcript is kept.
 - **Show words as I speak**. The words appear as you speak. This is quicker but less accurate.
 
-Both choices save the recording in `Documents\EasyScribe`. To use a different folder, select **Change folder** under **Save recordings to**; EasyScribe remembers it. Select **Start recording**. The small bar next to the timer shows that the microphone hears you.
+Both choices save the recording in `Documents\EasyScribe`. To use a different folder, select **Change folder** under **Save recordings to**; EasyScribe remembers it. Select **Start recording**. The small bar next to the timer shows that the microphone hears you. **Pause** stops the timer and the audio for a break; **Resume** continues the same file. Paused time is not written to the recording or the live transcript.
 
 <p align="center">
   <img src="docs/screenshots/recording.png" alt="The Record tab: microphone, what you want, and where recordings are saved" width="640">
@@ -235,7 +235,7 @@ pwsh -File scripts/build-windows.ps1
 # -> dist\EasyScribe.exe
 ```
 
-The script builds the app and packer together with the `release-static` feature (sherpa-onnx built from source with TTS disabled, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a draft pre-release tagged `v4.0.0` (or another tag matching the workspace version). The release stays a pre-release until it is explicitly promoted.
+The script builds the app and packer together with the `release-static` feature (sherpa-onnx built from source with TTS disabled, static MSVC runtime, CPU-only in-process fallback) and bundles the Vulkan `whisper-cli.exe` as the primary file engine, then appends the payload. GitHub Actions runs the same build from **Actions → Rune Windows Release**, dispatched from the `rune-rewrite` branch; it publishes a pre-release tagged `v4.0.1` (or another tag matching the workspace version). The release stays a pre-release until it is explicitly promoted.
 
 Local checks:
 
@@ -245,7 +245,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets
 ```
 
-The app version is the workspace version (`4.0.0`).
+The app version is the workspace version (`4.0.1`).
 
 ---
 

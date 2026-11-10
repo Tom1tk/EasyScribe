@@ -1,6 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-//! EasyScribe 4.0.0 — Rune single-window app.
+//! EasyScribe 4.0.1 — Rune single-window app.
 //!
 //! Startup resolves the single-exe payload (or a development runtime), imports
 //! v3 settings, runs crash recovery and dependency checks, then hands the
@@ -125,7 +125,10 @@ fn main() {
         poll: Some(poll),
         on_key: Some(on_key),
     };
-    rune::App::new(spec).on_close(on_close).run();
+    rune::App::new(spec)
+        .on_window(platform::set_window_icon)
+        .on_close(on_close)
+        .run();
 }
 
 /// Hidden child-process entry points. The main window is never created.
@@ -557,8 +560,8 @@ fn scene_height() -> f32 {
         .unwrap_or(820.0)
 }
 
-fn view(s: &AppState, _cx: &mut Cx<AppState>) -> El {
-    views::view(s)
+fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
+    views::view(s, cx)
 }
 
 fn setup(s: &mut AppState, waker: Waker) {
@@ -638,6 +641,7 @@ const SCENES: &[Scene] = &[
     ("done", scene_done),
     ("error", scene_error),
     ("record", scene_record),
+    ("record-paused", scene_record_paused),
     ("record-details", scene_record_details),
     ("record-live-details", scene_record_live_details),
     ("recording-details", scene_recording_details),
@@ -763,6 +767,7 @@ fn scene_record(s: &mut AppState) {
 fn scene_recording(s: &mut AppState) {
     scene_record(s);
     s.ui = UiState::Recording;
+    s.record_capturing = true;
     s.timer_seconds = 83.0;
     s.level = 0.62;
     s.live_text = app::LISTENING.into();
@@ -773,10 +778,30 @@ fn scene_recording(s: &mut AppState) {
     s.activity = Some(activity);
 }
 
+fn scene_record_paused(s: &mut AppState) {
+    scene_recording(s);
+    s.record_paused = true;
+    s.level = 0.0;
+    s.timer_seconds = 47.0;
+    if let Some(activity) = &mut s.activity {
+        activity.status = Status::Recording;
+        activity.title = "Recording paused".into();
+        activity.tone = app::Tone::Amber;
+        activity.bar = app::BarMode::Idle;
+        activity.bar_color = s.theme.amber;
+        activity.message = Some((
+            "Recording is paused. Select Resume to continue, or Stop recording to save what you have."
+                .into(),
+            app::MessageKind::Info,
+        ));
+    }
+}
+
 fn scene_live(s: &mut AppState) {
     scene_record(s);
     s.record_mode = app::RecordMode::Live;
     s.ui = UiState::Recording;
+    s.record_capturing = true;
     s.timer_seconds = 41.0;
     s.level = 0.35;
     s.live_has_text = true;
