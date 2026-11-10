@@ -305,6 +305,11 @@ Residual risks specific to this follow-up:
 - The title-bar/taskbar icon cannot be inspected by the headless CI; it needs
   the owner's real-Windows check. The Windows code is compiled in the release
   build, and the icon resource is verified by the embedded resource.
+- The fast release gate skips the two in-process whisper.cpp fallback decodes
+  because they cost about 11 minutes each on the CI runner. Run the workflow
+  with `full_selftest=true` before promotion or after changing the whisper
+  backend; the shipping CLI, sherpa, VAD, diarization and silence checks are
+  still in the fast gate.
 
 ## Verification
 
@@ -346,6 +351,14 @@ Residual risks specific to this follow-up:
   an 89-byte `.sha256`. It is published as a pre-release at
   <https://github.com/Tom1tk/EasyScribe/releases/tag/v4.0.1>; `v3.2.3` remains
   `Latest`.
+- Release turnaround (2026-11-10): the workflow now restores compiled Rust
+  dependencies and reuses the whisper.cpp/sherpa-onnx CMake outputs. Run
+  `42815563747` completed in **10.6 min** (build 3.5, selftest 2.1, release
+  1.1) versus 33.7 min for `v4.0.1`. An 8-second in-process excerpt was tested
+  and discarded: whisper pads to a 30 s window, so each short decode still
+  took about 11 minutes. The fast gate keeps the CLI full-fixture golden
+  check, sherpa load, VAD, diarization and silence; the two in-process
+  fallback decodes require `full_selftest=true`.
 - `v3.2.3-rust.11` failed at the app link when the espeak exclusion was tried;
   the linker proved `piper-phonemize-lexicon.obj` references `espeak_Initialize`.
   The TTS-off source build in `rust.14` supersedes that workaround. `rust.12`

@@ -117,6 +117,18 @@ real-PC clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
       espeak-ng/piper), the 1900 MiB size guard, the 1.92 GB release notes, the
       `Transcribing (slow fallback)` warning, and the process-wide live ONNX
       lock with decoder-first Stop.
+- [x] **CI turnaround (2026-11-10):** the release workflow now keeps
+      `target/` for the Rust cache and reuses the whisper.cpp/sherpa-onnx CMake
+      outputs instead of deleting and rebuilding them. The normal release gate
+      runs the bundled `whisper-cli` on the full fixture, the sherpa model
+      load, VAD, both diarization paths and the silence check; the two
+      in-process fallback decodes are opt-in with `full_selftest=true`.
+      Run `42815563747` measured **10.6 min end to end** (build 3.5 min,
+      selftest 2.1 min, release 1.1 min), down from **33.7 min** for `v4.0.1`
+      (build 11.3 min, selftest 16.6 min). An 8-second excerpt was tried first
+      and still took 680 s because whisper pads to a 30 s encoder window, so it
+      was discarded. The published `v4.0.1` asset predates these workflow
+      changes; the next build uses them.
 - [x] First real-PC test fixes: `recover_pcm_to_wav` now reopens the finished
       WAV for writing before `sync_all` (Windows `FlushFileBuffers` rejects a
       read-only handle, which made every recording report "not saved"); the
@@ -367,6 +379,10 @@ real-PC clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
   to the live transcript; the saved WAV excludes all paused time.
 - The window icon and blinking caret are compiled into the release but cannot
   be inspected by headless CI; both are on the owner's real-Windows checklist.
+- The fast release gate does not run the in-process whisper.cpp fallback on the
+  full fixture. Dispatch with `full_selftest=true` after a whisper/backend
+  change or before promoting a build; the CLI child, sherpa load, VAD,
+  diarization and silence checks remain in the fast gate.
 
 ## Next actions
 

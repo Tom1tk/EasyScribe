@@ -587,3 +587,29 @@ the narrative history.
   zero-audio cancel, the rename caret and the title-bar/taskbar icon, then run
   the clean-PC checklist. Do not promote `v4.0.1` to `Latest` before those
   pass.
+
+## 2026-11-10 — Session 18: release turnaround
+
+- **The 30-minute release was measured before changing it.** Run `42795767098`
+  took 33.7 min: 11.3 min build, 16.6 min selftest, 1.4 min release and about
+  2 min setup. The selftest's two in-process whisper.cpp decodes took 439.9 s
+  and 425.4 s; the shipping `whisper-cli` path took 50.8 s.
+- **A shorter in-process clip did not help.** The first attempt trimmed the
+  fixture to 8 s. On the next run each short decode still took 680.5 s and
+  657.9 s, because whisper.cpp pads every clip to a 30 s encoder window; the
+  cost is the fixed encode, not the audio length. That change was discarded.
+- **The fallback diagnostics are now opt-in.** The normal release gate runs
+  the bundled CLI on the full 23.3 s fixture with the exact golden text, loads
+  sherpa, checks VAD, runs both diarization paths and the silence check. The
+  two in-process fallback decodes run only when `full_selftest=true` is passed
+  to the workflow dispatch. This is the gate to use before promotion or after
+  a whisper/backend change.
+- **The build cache is now effective.** The workflow no longer deletes
+  `target/` before the cache saves, so Swatinem restores compiled dependencies.
+  It also stops deleting the whisper.cpp/sherpa-onnx build-script outputs; the
+  existing CMake-cache assertions still reject a stale flag configuration.
+  The first warm-up run took 15.9 min to build; the next took 3.5 min.
+- **Result.** Run `42815563747` completed in **10.6 min**: build 3.5 min,
+  selftest 2.1 min, release 1.1 min. That is a 23-minute reduction. The
+  workflow changes are after the `v4.0.1` asset, so the owner's current
+  download is unchanged; the next build uses the faster path.
