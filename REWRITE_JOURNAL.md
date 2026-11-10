@@ -547,3 +547,43 @@ the narrative history.
   new asset: 1,921,949,518 bytes, SHA-256
   `d935714b4b3e09b5d8a3f0717276bdb3526c914734f91c93ed54d5fc79a1c28b`.
   `v3.2.3` remains `Latest`; `v4.0.0` remains a draft pre-release.
+
+## 2026-11-10 — Session 17: v4.0.1 pause, caret and window icon
+
+- **Pause/Resume while recording.** The owner asked for a Pause button next to
+  Stop in the Record tab, changing to Resume while paused. `MicRecorder` takes
+  a shared `PauseToken`; the cpal callback keeps the device stream open but
+  drops audio while paused, so the format cannot change and resume cannot fail.
+  Nothing is appended to the PCM, the crash-recovery sidecar, the level meter
+  or the live VAD queue. The timer now follows the written sample count, so it
+  freezes while paused and always matches the WAV duration. Stop while paused
+  saves the audio captured before the pause; pausing at 00:00 and stopping
+  removes the empty pair and reports `Recording cancelled`.
+- **Rename caret.** Rune's text-field caret is solid and defaults to white,
+  which is invisible on the rename box's white field. The rename box now hides
+  the built-in caret and draws a 1.06 s blink line at the insertion point using
+  `Cx::caret`; the speaker-name fields get a visible ink caret. The caret is
+  read in window points so it follows typing, selection and page scrolling.
+- **Window icon.** The executable already embeds `assets/EasyScribe.ico`
+  through `winres`, but winit left the class's generic icon in the title bar
+  and taskbar. `App::on_window` now calls `WM_SETICON` with the big and small
+  icon sizes loaded from resource id 1, which also covers window recreation
+  after a GPU release.
+- **Version and tests.** The workspace, window title and release docs move to
+  `4.0.1`. New tests cover pause/resume, pause-while-saving, clearing the pause
+  state after finish, and stopping before any audio. There are now 9 app, 62
+  core and 2 offline tests (73 passed, 2 ignored), and 18 headless scenes
+  including `record-paused`.
+- **Rebuild.** `v4.0.1` from `1fd3f35` passed in run `42795767098` (4 vCPUs,
+  no GPU): control 44.8 s, budget 90 s, CLI child 50.8 s, in-process 439.9 s,
+  sherpa ONNX 47.0 s, VAD 0.1 s, after-sherpa 425.4 s, diarization 7.2/7.3 s,
+  silence 0.1 s. AVX2/FMA/F16C/BMI2, the native selftest and the TTS-off/no
+  espeak checks passed. The asset is 1,921,993,041 bytes, SHA-256
+  `54a45ae030df7bbccee096fe8ef9d138af742e00a0636f50f4f4bb334f34af6e`.
+  It is published as a pre-release (not `Latest`) at
+  <https://github.com/Tom1tk/EasyScribe/releases/tag/v4.0.1>; the superseded
+  `v4.0.0` draft and tag were deleted, and `v3.2.3` stays `Latest`.
+- **Next.** The owner needs to retest pause/resume, the timer/WAV length, the
+  zero-audio cancel, the rename caret and the title-bar/taskbar icon, then run
+  the clean-PC checklist. Do not promote `v4.0.1` to `Latest` before those
+  pass.

@@ -260,11 +260,59 @@ Stop during "Getting ready" is also treated as a cancelled recording instead
 of a save error, because the worker now checks the stop token before opening
 the microphone.
 
+## v4.0.1 usability follow-up (2026-11-10)
+
+The owner asked for three additions after testing the fixed `v4.0.0` preview:
+record Pause/Resume, a blinking caret in the rename box, and the EasyScribe
+logo in the Windows title bar and taskbar. All three are implemented in
+`1fd3f35` and built as the `v4.0.1` pre-release.
+
+1. **Pause/Resume recording.** A `PauseToken` is shared by the UI, the
+   recorder and the worker. Pausing keeps the cpal device stream open and the
+   audio callback drops every buffer, so resuming cannot renegotiate the
+   device format or fail on a busy microphone. Nothing is appended to the PCM,
+   the crash-recovery sidecar, the level meter or the live VAD queue while
+   paused. The timer is derived from the samples actually written, so it
+   freezes at the same value the final WAV will have. Stop while paused saves
+   the pre-pause audio. Stopping at `00:00` removes the empty PCM/sidecar pair
+   and reports `Recording cancelled` with `Nothing was saved.` instead of a
+   save error. The button is hidden while the stop is saving and pause state
+   is cleared when the session finishes.
+2. **Blinking rename caret.** Rune draws a solid caret for a focused text
+   field and defaults its colour to white, which is invisible on the white
+   rename field. The rename field hides that caret (transparent) and the view
+   draws an ink-coloured line at `Cx::caret("rename-input")`, blinking with a
+   1.06 s two-stop cycle. The rect is in window points, so the line follows
+   typing, selection and scrolling. It is suppressed under the Privacy and
+   microphone popups. Speaker-name fields keep Rune's caret but set it to ink.
+3. **Window and taskbar icon.** `build.rs` already embedded
+   `assets/EasyScribe.ico` with `winres` as resource id 1, but winit left the
+   window class's generic icon in place. `App::on_window` now loads the big
+   and small icons from that resource and sends `WM_SETICON`; the hook also
+   runs when the native window is recreated after a GPU release.
+
+Residual risks specific to this follow-up:
+
+- The microphone stream stays open while paused, so Windows can still show the
+  microphone-in-use indicator and the device is not released for other apps.
+  Closing and reopening was rejected because it can change the format or fail
+  on resume.
+- Samples already queued for the live VAD decoder before Pause may still
+  produce a final phrase after the button is pressed. They are at most the
+  pre-pause tail; the saved WAV excludes all paused time.
+- The blink is an app-drawn rect, so it has no Windows caret/accessibility
+  semantics; it exists only while the rename row is visible and focused.
+- The title-bar/taskbar icon cannot be inspected by the headless CI; it needs
+  the owner's real-Windows check. The Windows code is compiled in the release
+  build, and the icon resource is verified by the embedded resource.
+
 ## Verification
 
-- `cargo test --workspace`: 70 passed (7 app, 61 core, 2 offline), 2 ignored
-  model-backed tests. The new `mic::tests` case runs the full PCM→WAV stop path
-  and would fail on Windows with the old read-only sync.
+- `cargo test --workspace`: 73 passed (9 app, 62 core, 2 offline), 2 ignored
+  model-backed tests. The `mic::tests` cases cover the full PCM→WAV stop path
+  (which would fail on Windows with the old read-only sync) and stopping before
+  any samples; the app tests cover pause/resume, pause-while-saving and clearing
+  the pause state after finish.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `cargo fmt --all -- --check`: clean.
 - Release selftest after the final-audit changes, 4 threads, 23.3 s real
@@ -285,9 +333,19 @@ the microphone.
   33.9 s, VAD 0.0 s, after-sherpa 339.4 s, diarization 5.1/5.2 s and silence
   0.1 s. The asset is 1,921,949,518 bytes, SHA-256
   `d935714b4b3e09b5d8a3f0717276bdb3526c914734f91c93ed54d5fc79a1c28b`, with an
-  89-byte `.sha256`. It is the current draft pre-release; `v3.2.3` remains
-  `Latest`. The first `v4.0.0` asset (run `42356076024`, `f9e03a2`, SHA-256
-  `0b0bc737...`) was replaced by this fixed build.
+  89-byte `.sha256`. The first `v4.0.0` asset (run `42356076024`, `f9e03a2`,
+  SHA-256 `0b0bc737...`) was replaced by this fixed build. `v4.0.0` was
+  superseded by `v4.0.1`, and its draft release and tag were deleted.
+- `v4.0.1` (run `42795767098`, `1fd3f35`, 4 vCPUs, no GPU) passed with control
+  44.8 s, budget 90 s, CLI child 50.8 s, in-process 439.9 s, sherpa ONNX
+  47.0 s, VAD 0.1 s, after sherpa 425.4 s, diarization 7.2/7.3 s and silence
+  0.1 s. The native selftest (including the golden text), AVX2/FMA/F16C/BMI2,
+  the TTS-off cache and the no-espeak symbol check passed. The asset is
+  1,921,993,041 bytes, SHA-256
+  `54a45ae030df7bbccee096fe8ef9d138af742e00a0636f50f4f4bb334f34af6e`, with
+  an 89-byte `.sha256`. It is published as a pre-release at
+  <https://github.com/Tom1tk/EasyScribe/releases/tag/v4.0.1>; `v3.2.3` remains
+  `Latest`.
 - `v3.2.3-rust.11` failed at the app link when the espeak exclusion was tried;
   the linker proved `piper-phonemize-lexicon.obj` references `espeak_Initialize`.
   The TTS-off source build in `rust.14` supersedes that workaround. `rust.12`

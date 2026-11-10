@@ -1,9 +1,9 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-09 (session 16 — first real-PC test fixes)
+**Updated:** 2026-11-10 (session 17 — v4.0.1 pause, caret and icon)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
-**Version:** `4.0.0` · **Release:** `v4.0.0` draft pre-release (rebuilt 2026-11-09), not `Latest`
+**Version:** `4.0.1` · **Release:** `v4.0.1` pre-release (built 2026-11-10), not `Latest`
 **Phase:** 7 — speed, GPU, process isolation and final release
 **Overall:** implementation complete. Audit 2's findings are actioned: the
 Vulkan `whisper-cli` is back as a child process with CPU retry, diarization is
@@ -26,13 +26,15 @@ The remaining final-audit findings are also actioned: the slow in-process
 fallback shows a visible warning, the live-mode ONNX race is serialised
 process-wide, the asset-size guard is documented, and the release notes use the
 measured 1.92 GB. The final-audit fixes passed as `v3.2.3-rust.14` (run
-`42309047043`), and the Rust line is now versioned `4.0.0`. The owner's first
-real-PC test of the `v4.0.0` preview found three issues: recordings reported
-"The recording was not saved", Show details covered Start recording, and the
-microphone menu pushed the form down. All three are fixed in `4bab66e` and
-`17415fb`; the draft was rebuilt as `v4.0.0` from `17415fb` (run `42621260185`).
-The current draft asset is recorded below. The only open gate is the real-PC
-clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
+`42309047043`). The owner's first real-PC test of the `v4.0.0` preview found
+three issues: recordings reported "The recording was not saved", Show details
+covered Start recording, and the microphone menu pushed the form down. All
+three were fixed and rebuilt as `v4.0.0` (run `42621260185`). The owner then
+asked for a recording Pause/Resume control, a blinking caret in the rename box
+and the EasyScribe logo in the Windows title bar/taskbar. Those are implemented
+as `4.0.1` and built in run `42795767098` from `1fd3f35`; the new pre-release
+asset is recorded below. `v4.0.0` was superseded. The only open gate is the
+real-PC clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
 
 ## What is built
 
@@ -51,12 +53,12 @@ clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
       GUI subsystem for release builds, AppUserModelID.
 - [x] **Build/release** — `scripts/build-windows.ps1` and
       `.github/workflows/rune-release.yml` build one self-contained
-      `EasyScribe.exe` and publish a draft pre-release with a `.sha256`.
+      `EasyScribe.exe` and publish a pre-release with a `.sha256`.
 - [x] **Docs** — README, third-party notices, packaging/UI/backend references.
 
 ## Verification completed
 
-- [x] `cargo test --workspace`: **6 app + 60 core + 2 offline = 68 passed**,
+- [x] `cargo test --workspace`: **9 app + 62 core + 2 offline = 73 passed**,
       2 ignored (the model-backed long-silence and golden tests, run manually).
 - [x] `cargo clippy --workspace --all-targets`: clean.
 - [x] `cargo fmt --all -- --check`: clean.
@@ -92,7 +94,25 @@ clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
       `d935714b4b3e09b5d8a3f0717276bdb3526c914734f91c93ed54d5fc79a1c28b`,
       with an 89-byte `.sha256` asset. The code had previously passed as
       `v3.2.3-rust.14` (run `42309047043`, `09761af`); the `rust.13` and
-      `rust.14` drafts were superseded and deleted.
+      `rust.14` drafts were superseded and deleted. This build is superseded
+      by `v4.0.1`.
+- [x] Windows CI `v4.0.1` (run `42795767098`, `1fd3f35`, 4 vCPUs, no GPU):
+      the standalone control decoded the 23.3 s fixture in **44.8 s** and set
+      a **90 s** budget (2×). The bundled CLI child decoded in **50.8 s**
+      (inside budget), the in-process engine **439.9 s**, the sherpa Whisper
+      ONNX model **47.0 s**, Silero VAD **0.1 s**, the post-sherpa in-process
+      decode **425.4 s**, in-process diarization **7.2 s**, child diarization
+      **7.3 s**, and silence **0.1 s** with zero segments. System info
+      reported AVX2/FMA/F16C/BMI2, the native selftest (including the golden
+      text) passed, and the build asserted `SHERPA_ONNX_ENABLE_TTS:BOOL=OFF`,
+      `BUILD_SHARED_LIBS:BOOL=OFF` and no `espeak_Initialize` symbol. Imports,
+      GUI subsystem, extraction, cached launch and the assets were verified.
+      `EasyScribe-v4.0.1.exe` is 1,921,993,041 bytes (1,832.9 MiB, 1.79 GiB),
+      SHA-256
+      `54a45ae030df7bbccee096fe8ef9d138af742e00a0636f50f4f4bb334f34af6e`,
+      with an 89-byte `.sha256`. It is a **published pre-release**, not
+      `Latest`; `v3.2.3` remains `Latest`, and the superseded `v4.0.0` draft
+      and tag were deleted.
 - [x] Final-audit fixes verified in `v4.0.0`: TTS-off source build (no
       espeak-ng/piper), the 1900 MiB size guard, the 1.92 GB release notes, the
       `Transcribing (slow fallback)` warning, and the process-wide live ONNX
@@ -106,10 +126,17 @@ clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
       scrolls on short windows; the microphone menu is an anchored popup with
       an outside-click scrim and Escape. A regression test covers the full
       PCM→WAV stop path.
-- [x] All 17 headless scenes render (the 13 previous states plus
+- [x] All 18 headless scenes render (the 13 original states plus record-paused,
       record-details, record-live-details, recording-details and
       record-mic-menu).
-- [x] UI click/state tests pass (including the cancelled-recording path).
+- [x] UI click/state tests pass, including pause/resume, pause-while-saving,
+      the cleared pause state after finish, the cancelled-recording path and
+      stopping before any audio was captured.
+- [x] v4.0.1 UI additions: Pause/Resume beside Stop with a frozen timer and
+      zero level meter; amber `Recording paused` activity and info banner;
+      blinking ink caret in the rename box; visible caret in speaker-name
+      fields; embedded window icon installed with `WM_SETICON` after native
+      creation so the title bar and taskbar use the logo.
 - [x] Packed first-run smoke with a 300 MB fake payload: extraction, marker,
       adoption, main window, and cached quick launch.
 - [x] Payload ZIP stores >8 MB entries without a compression level; a 9 MB
@@ -307,18 +334,19 @@ clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
 
 - Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
   drag/drop and a real microphone can only be proven on a real Windows PC or VM.
-  `v4.0.0` exercises the CPU path on CI (the runner has no GPU), but not a
+  `v4.0.1` exercises the CPU path on CI (the runner has no GPU), but not a
   dedicated/integrated GPU or a crashing driver. The owner's first manual test
   found the recording-save, details-layout and microphone-menu bugs now fixed
-  here; the full clean-PC checklist still needs a rerun.
+  here; the v4.0.1 pause/resume, caret and window-icon changes also need the
+  owner's real-Windows check. The full clean-PC checklist still needs a rerun.
 - The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
-  file on v3.2.3 GPU, v3.2.3 CPU and v4.0.0, then record wall times in this
+  file on v3.2.3 GPU, v3.2.3 CPU and v4.0.1, then record wall times in this
   file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
 - The old 655 s CI decode was the in-process engine, not the shipped CLI path.
-  `v4.0.0` confirms the CLI child decodes the fixture in 26.9 s against a 23.8 s
-  control; the in-process fallback remains around 14× real time (338.7 s in
-  this run, 331.7 s in the prior run) and its exact cause is still unproven, so
-  the UI now warns instead of running silently.
+  `v4.0.1` confirms the CLI child decodes the fixture in 50.8 s against a 44.8 s
+  control (the runner was slower than the 23.8 s v4.0.0 run); the in-process
+  fallback took 439.9 s and remains around 19× real time. Its exact cause is
+  still unproven, so the UI warns instead of running silently.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
   shipping primary path is the child process. When it is active, the title reads
@@ -332,31 +360,40 @@ clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
   appended after the footer, and the release publishes a SHA-256 file.
 - Audit 3 lists the remaining hot-unplug, live-error, non-ASCII path and UI
   parity risks in `docs/rewrite/AUDIT_3.md`. The live decoder/VAD race is fixed
-  in `v4.0.0`; hot-unplug reporting is now the highest-risk item not fixed.
+  since `v4.0.0`; hot-unplug reporting is now the highest-risk item not fixed.
+- Pause keeps the microphone stream open by design, so Windows can still show
+  the microphone-in-use indicator and another app cannot take the device until
+  Stop. Samples already queued before Pause may still add one pre-pause phrase
+  to the live transcript; the saved WAV excludes all paused time.
+- The window icon and blinking caret are compiled into the release but cannot
+  be inspected by headless CI; both are on the owner's real-Windows checklist.
 
 ## Next actions
 
-1. **Done.** `v4.0.0` from `17415fb` passed the full Windows pipeline
-   (run `42621260185`): control 23.8 s, budget 60 s, CLI child 26.9 s,
-   in-process 338.7 s, after-sherpa 339.4 s, sherpa ONNX 33.9 s, VAD 0.0 s,
-   diarization 5.1/5.2 s, silence 0.1 s; AVX2/FMA/F16C/BMI2, the golden text,
-   the TTS-off CMake cache and the no-espeak symbol check were verified.
-2. **Done.** `EasyScribe-v4.0.0.exe` (1,921,949,518 bytes) and its 89-byte
+1. **Done.** `v4.0.1` from `1fd3f35` passed the full Windows pipeline
+   (run `42795767098`): control 44.8 s, budget 90 s, CLI child 50.8 s,
+   in-process 439.9 s, after-sherpa 425.4 s, sherpa ONNX 47.0 s, VAD 0.1 s,
+   diarization 7.2/7.3 s, silence 0.1 s; AVX2/FMA/F16C/BMI2, the native
+   selftest/golden text, the TTS-off CMake cache and the no-espeak symbol
+   check were verified.
+2. **Done.** `EasyScribe-v4.0.1.exe` (1,921,993,041 bytes) and its 89-byte
    `.sha256`
-   (`d935714b4b3e09b5d8a3f0717276bdb3526c914734f91c93ed54d5fc79a1c28b`) are
-   present on the rebuilt draft pre-release. `v3.2.3` remains the stable
-   `Latest` release; the superseded `rust.13`, `rust.14` and first `v4.0.0`
-   assets have been deleted or replaced.
+   (`54a45ae030df7bbccee096fe8ef9d138af742e00a0636f50f4f4bb334f34af6e`)
+   are published as a pre-release at
+   <https://github.com/Tom1tk/EasyScribe/releases/tag/v4.0.1>. `v3.2.3`
+   remains the stable `Latest` release; the superseded `v4.0.0` draft and tag
+   were deleted.
 3. **Done.** The GPL-3.0 espeak-ng question is resolved for the Rust build:
    sherpa-onnx is compiled from source with `SHERPA_ONNX_ENABLE_TTS=OFF`, and
    the workflow proves the library has no `espeak_Initialize` symbol. Main's
    Python-release notice now discloses the component that remains in v3.2.3
    (`a11ca32`).
 4. Rerun the clean-PC script in `docs/rewrite/CLEAN_PC_TEST.md` (unpack,
-   microphone including the new save/overlay/recovery checks, DPI,
-   dialogs/drag-drop, SmartScreen, GPU matrix, offline) and the real-PC speed
-   comparison; record results here. A failed recording from the first build
-   leaves `recording_*.pcm`/`.json` in `%LOCALAPPDATA%\EasyScribe\recordings`;
-   the rebuilt app offers to recover it on launch.
-5. Hand over for the decision on replacing v3.2.3. Do not publish `v4.0.0` as
+   microphone including pause/resume, zero-audio cancel and the save/recovery
+   checks, the rename caret and window/taskbar icon, DPI, dialogs/drag-drop,
+   SmartScreen, GPU matrix, offline) and the real-PC speed comparison; record
+   results here. A failed recording from the first build leaves
+   `recording_*.pcm`/`.json` in `%LOCALAPPDATA%\EasyScribe\recordings`; the
+   app offers to recover it on launch.
+5. Hand over for the decision on replacing v3.2.3. Do not publish `v4.0.1` as
    `Latest` until the real-PC speed, clean-PC checks and GPU checks pass.

@@ -215,7 +215,7 @@ crates/easyscribe-pack/        Appends the payload and writes the footer
 scripts/build-windows.ps1      Local single-exe build
 .github/workflows/rune.yml     Linux tests and Windows check
 .github/workflows/rune-release.yml
-                               Windows draft pre-release build
+                               Windows pre-release build
 docs/rewrite/                  Behaviour, UI and packaging reference specs
 models/ whispercpp/            Development model folders (ignored by git)
 ```

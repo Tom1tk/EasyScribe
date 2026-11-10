@@ -1,9 +1,9 @@
 name: Rune Windows Release
 
-# Builds the single-file Rust/Rune EasyScribe.exe and publishes it as a draft
-# pre-release. Manual dispatch only. The release is created with
-# `prerelease: true`, so a tag like v4.0.1 stays a pre-release (and out of
-# `Latest`) until it is explicitly promoted.
+# Builds the single-file Rust/Rune EasyScribe.exe and creates it as a draft
+# pre-release. Manual dispatch only. After the checks, publish the draft with
+# `gh release edit --draft=false`; `prerelease: true` keeps it out of `Latest`
+# until it is explicitly promoted.
 on:
   workflow_dispatch:
     inputs:
@@ -607,6 +607,18 @@ jobs:
 
             A feature-parity rebuild of EasyScribe 3.2.3 in Rust with the Rune UI.
             This is a **pre-release for testing**, not the stable Python release.
+
+            ### What's new in v4.0.1
+            - **Pause and Resume** while recording. Paused time is left out of
+              the timer, the saved WAV and the live transcript; Stop while
+              paused saves the audio captured before the pause.
+            - A **blinking text caret** in the rename box, and a visible caret
+              in the speaker-name fields.
+            - The **EasyScribe logo** in the window title bar and on the
+              taskbar.
+            - Includes the v4.0.0 fixes for saving recordings, the Record
+              details layout and the microphone menu. This build replaces the
+              v4.0.0 preview; do not use both.
 
             **One file.** Download `EasyScribe-${{ inputs.tag }}.exe` and double-click it.
             The first launch unpacks the speech models and ffmpeg into
