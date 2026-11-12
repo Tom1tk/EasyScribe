@@ -117,29 +117,87 @@ pub fn build_vad_with(
         .map_err(|e| Error::Transcription(format!("Could not create VAD: {e}")))
 }
 
+/// Streaming speech gate. Feed arbitrary mono `f32` blocks and stop as soon
+/// as speech is confirmed; only a partial 512-sample VAD window is retained,
+/// so the caller can check a long file without loading it into memory.
+pub struct SpeechScanner<'a> {
+    detector: &'a mut SileroVad,
+    gate: SpeechGate,
+    pending: Vec<f32>,
+    window: usize,
+}
+
+impl<'a> SpeechScanner<'a> {
+    pub fn new(detector: &'a mut SileroVad) -> Self {
+        let window = crate::config::VAD_CHUNK_SAMPLES;
+        Self {
+            detector,
+            gate: SpeechGate::new((VAD_MIN_SPEECH_SEC * VAD_SAMPLE_RATE as f32) as usize),
+            pending: Vec::new(),
+            window,
+        }
+    }
+
+    /// Feed one block. Returns true once speech is confirmed.
+    pub fn push(&mut self, mut samples: &[f32], cancel: &CancelToken) -> Result<bool> {
+        cancel.check()?;
+        if !self.pending.is_empty() {
+            let needed = self.window - self.pending.len();
+            let take = needed.min(samples.len());
+            self.pending.extend_from_slice(&samples[..take]);
+            samples = &samples[take..];
+            if self.pending.len() == self.window {
+                let chunk = std::mem::take(&mut self.pending);
+                if self.feed(&chunk)? {
+                    return Ok(true);
+                }
+            }
+        }
+        while samples.len() >= self.window {
+            let (chunk, rest) = samples.split_at(self.window);
+            samples = rest;
+            if self.feed(chunk)? {
+                return Ok(true);
+            }
+        }
+        self.pending.extend_from_slice(samples);
+        Ok(false)
+    }
+
+    fn feed(&mut self, chunk: &[f32]) -> Result<bool> {
+        self.detector.accept_waveform(chunk.to_vec());
+        Ok(!self.detector.is_empty() || self.gate.feed(self.detector.is_speech(), chunk.len()))
+    }
+
+    /// Flush the final partial window. Call after the last block.
+    pub fn finish(&mut self) -> bool {
+        if !self.pending.is_empty() {
+            let mut chunk = std::mem::take(&mut self.pending);
+            let fed = chunk.len();
+            chunk.resize(self.window, 0.0);
+            self.detector.accept_waveform(chunk);
+            if !self.detector.is_empty() || self.gate.feed(self.detector.is_speech(), fed) {
+                return true;
+            }
+        }
+        self.detector.flush();
+        !self.detector.is_empty()
+    }
+}
+
 /// True as soon as the VAD has confirmed speech. This is the cheap gate for
 /// whisper-cli: a normal file exits after the first speech segment instead of
 /// running the detector over the whole recording. Silence still costs the
 /// full pass, which is unavoidable without a different signal.
 pub fn has_speech(detector: &mut SileroVad, samples: &[f32], cancel: &CancelToken) -> Result<bool> {
-    let window = crate::config::VAD_CHUNK_SAMPLES;
-    let mut gate = SpeechGate::new((VAD_MIN_SPEECH_SEC * VAD_SAMPLE_RATE as f32) as usize);
-    let mut pos = 0;
-    while pos < samples.len() {
-        cancel.check()?;
-        let end = (pos + window).min(samples.len());
-        let mut chunk = samples[pos..end].to_vec();
-        if chunk.len() < window {
-            chunk.resize(window, 0.0);
-        }
-        detector.accept_waveform(chunk);
-        if !detector.is_empty() || gate.feed(detector.is_speech(), end - pos) {
+    let mut scanner = SpeechScanner::new(detector);
+    const BLOCK: usize = 16_384;
+    for block in samples.chunks(BLOCK) {
+        if scanner.push(block, cancel)? {
             return Ok(true);
         }
-        pos = end;
     }
-    detector.flush();
-    Ok(!detector.is_empty())
+    Ok(scanner.finish())
 }
 
 /// The early-exit rule for [`has_speech`], extracted so it can be tested

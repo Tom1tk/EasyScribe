@@ -14,6 +14,107 @@ pub fn wav_duration(path: &Path) -> Result<f64> {
     Ok(reader.duration() as f64 / spec.sample_rate as f64)
 }
 
+/// Read the WAV sample rate from its header without loading the samples.
+pub fn wav_sample_rate(path: &Path) -> Result<u32> {
+    Ok(hound::WavReader::open(path)?.spec().sample_rate)
+}
+
+/// Stream a WAV as mono `f32` blocks, applying the same channel mixing and
+/// integer scaling as [`load_wav_float32`]. `block_samples` limits each block
+/// (in frames), so the speech gate and peak check do not need the whole file
+/// in memory. Return `false` from `consume` to stop reading early.
+pub fn for_each_wav_block<F>(path: &Path, block_samples: usize, mut consume: F) -> Result<()>
+where
+    F: FnMut(&[f32]) -> Result<bool>,
+{
+    if block_samples == 0 {
+        return Err(Error::Transcription(
+            "WAV block size must be greater than zero".into(),
+        ));
+    }
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    let channels = spec.channels.max(1) as usize;
+    match spec.sample_format {
+        hound::SampleFormat::Int => match spec.bits_per_sample {
+            8 => stream_blocks(
+                reader.samples::<i8>(),
+                channels,
+                block_samples,
+                |sample| sample as f32 / 128.0,
+                &mut consume,
+            ),
+            9..=16 => stream_blocks(
+                reader.samples::<i16>(),
+                channels,
+                block_samples,
+                |sample| sample as f32 / 32768.0,
+                &mut consume,
+            ),
+            17..=24 => stream_blocks(
+                reader.samples::<i32>(),
+                channels,
+                block_samples,
+                |sample| sample as f32 / 8_388_608.0,
+                &mut consume,
+            ),
+            25..=32 => stream_blocks(
+                reader.samples::<i32>(),
+                channels,
+                block_samples,
+                |sample| sample as f32 / 2_147_483_648.0,
+                &mut consume,
+            ),
+            bits => Err(Error::Transcription(format!(
+                "unsupported WAV sample width: {bits} bits"
+            ))),
+        },
+        hound::SampleFormat::Float => stream_blocks(
+            reader.samples::<f32>(),
+            channels,
+            block_samples,
+            |sample| sample,
+            &mut consume,
+        ),
+    }
+}
+
+fn stream_blocks<T, C, F>(
+    samples: impl Iterator<Item = std::result::Result<T, hound::Error>>,
+    channels: usize,
+    block_samples: usize,
+    convert: C,
+    consume: &mut F,
+) -> Result<()>
+where
+    C: Fn(T) -> f32,
+    F: FnMut(&[f32]) -> Result<bool>,
+{
+    let mut block = Vec::with_capacity(block_samples);
+    let mut frame_sum = 0.0;
+    let mut frame_samples = 0usize;
+    for sample in samples {
+        frame_sum += convert(sample?);
+        frame_samples += 1;
+        if frame_samples == channels {
+            block.push(frame_sum / channels as f32);
+            frame_sum = 0.0;
+            frame_samples = 0;
+            if block.len() == block_samples {
+                if !consume(&block)? {
+                    return Ok(());
+                }
+                block.clear();
+            }
+        }
+    }
+    // Match `load_wav_float32`, which ignores an incomplete final frame.
+    if !block.is_empty() && !consume(&block)? {
+        return Ok(());
+    }
+    Ok(())
+}
+
 /// Load a WAV as mono `f32` samples, using the same integer scaling as the
 /// Python app (`/32768`, `/2147483648`).
 pub fn load_wav_float32(path: &Path) -> Result<(Vec<f32>, u32)> {
@@ -254,6 +355,46 @@ mod tests {
         assert_eq!(rate, 16_000);
         assert_eq!(loaded.len(), samples.len());
         assert!((loaded[50] - 50.0 / 32768.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn streamed_wav_blocks_match_the_full_load_and_stop_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stereo.wav");
+        let mut writer = hound::WavWriter::create(
+            &path,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 16_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for index in 0..5_000_i16 {
+            writer.write_sample(index % 100).unwrap();
+            writer.write_sample(-(index % 50)).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        assert_eq!(wav_sample_rate(&path).unwrap(), 16_000);
+        let (full, _) = load_wav_float32(&path).unwrap();
+        let mut streamed = Vec::new();
+        for_each_wav_block(&path, 777, |block| {
+            assert!(block.len() <= 777, "block was {} frames", block.len());
+            streamed.extend_from_slice(block);
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(streamed, full);
+
+        let mut seen = 0;
+        for_each_wav_block(&path, 1_000, |block| {
+            seen += block.len();
+            Ok(false)
+        })
+        .unwrap();
+        assert_eq!(seen, 1_000);
     }
 
     #[test]

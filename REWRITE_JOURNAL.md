@@ -634,14 +634,19 @@ the narrative history.
   full-file `speech_regions` pass before `whisper-cli`. It exits at the first
   confirmed speech segment (or after 0.25 s of continuous speech), logs
   "Checking for speech…" and records the gate's elapsed time at info level.
-  Silence still costs a full pass, as the audit noted. On a long local test
-  file (kept outside the repository), the gate returned speech almost
-  immediately instead of scanning the whole file (ignored
-  `bench_gate_against_full_vad` test). The
-  selftest now prepends 30 s of silence to the speech fixture and asserts the
-  gate finds the speech (0.4 s locally). The full gate also writes the padded
-  file and transcribes it end to end (105.3 s locally, all 53 s decoded); the
-  fast gate skips that second decode and keeps the gate check.
+  `whispercli::transcribe_file` now uses `audio::for_each_wav_block` to stream
+  the WAV in 16,384-frame blocks and computes the peak in the same pass, so
+  the gate no longer allocates the whole recording as `f32`; only a partial
+  512-sample VAD window is retained. `SpeechScanner` accepts arbitrary block
+  boundaries, and `has_speech` keeps the in-memory wrapper used by tests and
+  the in-process path. Silence still costs a full pass, as the audit noted.
+  On a long local test file (kept outside the repository), the gate returned
+  speech almost immediately instead of scanning the whole file (ignored
+  `bench_gate_against_full_vad` test). The selftest now prepends 30 s of
+  silence to the speech fixture and asserts the gate finds the speech (0.4 s
+  locally). The full gate also writes the padded file and transcribes it end
+  to end (83.7 s locally, all 53 s decoded); the fast gate skips that second
+  decode and keeps the gate check.
 - **Thread priority (item 3).** Removed `lower_thread_priority` and all three
   worker calls. Python had no equivalent; the children already run at normal
   priority, and the Rust-side file preparation is faster without the
@@ -688,19 +693,21 @@ the narrative history.
   `EASYSCRIBE_NUM_THREADS` as the audit noted.
 - **Verification (Linux, 8 logical CPUs, CPU-only).** `cargo fmt --all --
   --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
-  `cargo test --workspace` are clean (10 app + 73 core + 2 offline passed,
-  4 ignored (2 model-backed, 2 manual benchmarks)). The full debug selftest
-  passed: CLI cold 56.5 s, in-process 89.4 s, sherpa 9.4 s, after-sherpa
-  86.3 s, diarization 5.2/5.5 s, silence 0.1 s. The fast selftest with the new gate step passed:
-  CLI 55.5 s, sherpa 12.9 s, speech-after-silence gate 0.4 s, diarization
-  5.2/6.2 s, silence 0.1 s; the full-gate padded transcription passed in
-  106.9 s. The release profile built in 8m35s and its
-  selftest passed (release profile asserted; CLI 53.6 s, sherpa 15.0 s, gate
-  0.3 s, diarization 5.9/5.2 s, silence 0.1 s). GitHub Actions run
-  `43217592692` passed Linux tests (1m5s) and the Windows `cargo check`
-  (2m21s); run `43217811088` passed Linux tests in 52s and Windows check in
-  2m14s. These are Linux CPU numbers plus Windows compilation, not the
-  Windows GPU/real-PC gate.
+  `cargo test --workspace` are clean (10 app + 74 core + 2 offline passed,
+  4 ignored: 2 model-backed, 2 manual benchmarks). After the block-streaming
+  change the full debug selftest passed: CLI cold 43.9 s, in-process 68.4 s,
+  sherpa 8.7 s, speech gate 0.3 s, padded 30 s-silence transcription 83.7 s,
+  decode after sherpa 68.7 s, diarization 3.6/4.0 s, silence 0.1 s. The fast
+  debug selftest passed (CLI 44.6 s, sherpa 9.1 s, gate 0.4 s, diarization
+  3.7/4.0 s, silence 0.1 s). The post-streaming release build took 2m43s
+  incrementally and its selftest passed (CLI 43.7 s, sherpa 9.0 s, gate
+  0.3 s, diarization 3.6/3.8 s, silence 0.1 s). A local long-file benchmark
+  (file kept outside the repository) showed the expected multi-thread speedup
+  with identical turn output, and the full-file VAD pass became an early-exit
+  gate that returns in milliseconds. GitHub Actions run `43221786609` passed
+  Linux tests and the Windows `cargo check` before the streaming change; the
+  post-streaming run is recorded below after the push. These are Linux CPU
+  numbers plus Windows compilation, not the Windows GPU/real-PC gate.
 - **Still open.** Real Windows cold/warm launch and update timings, the same
   10+ minute file on v3.2.3 vs this build (with and without speakers), the
   item 8 A–F GPU matrix and three clean GPU runs, the clean-PC checklist, and

@@ -279,40 +279,67 @@ pub fn transcribe_file(
     // and wastes a full encode. Ask the same Silero gate the in-process path
     // uses, but always hand real speech to whisper-cli as one whole file so
     // the output matches the Python release.
-    let (samples, rate) = crate::audio::load_wav_float32(audio_path)
+    let rate = crate::audio::wav_sample_rate(audio_path)
         .map_err(|e| Error::Transcription(format!("Could not load audio: {e}")))?;
     if rate != 16_000 {
         return Err(Error::Transcription(format!(
             "whisper.cpp needs 16 kHz audio, got {rate} Hz"
         )));
     }
-    let peak = samples
-        .iter()
-        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+    let audio_seconds = crate::audio::wav_duration(audio_path)
+        .map_err(|e| Error::Transcription(format!("Could not read audio duration: {e}")))?;
+    // The gate and peak check share one streaming pass over bounded WAV
+    // blocks; the child process reads the file itself afterwards.
+    const STREAM_BLOCK_SAMPLES: usize = 16_384; // about one second at 16 kHz
+    let mut peak = 0.0_f32;
+    let mut has_speech = false;
     // The gate only answers "is there any speech?". Stop at the first
     // confirmed segment instead of scanning every minute of a long file.
     reporter.log("[whisper.cpp] Checking for speech…");
     let gate_started = Instant::now();
-    let has_speech = match crate::sherpa_engine::build_vad_with(paths, 60.0, 0.4, 0.16) {
-        Ok(mut detector) => crate::sherpa_engine::has_speech(&mut detector, &samples, cancel)?,
+    let mut detector = match crate::sherpa_engine::build_vad_with(paths, 60.0, 0.4, 0.16) {
+        Ok(detector) => Some(detector),
         Err(error) => {
             log::warn!("Speech gate unavailable, decoding the whole file: {error}");
             reporter.log(
                 "[whisper.cpp] Warning: speech detection is unavailable; decoding the whole file.",
             );
-            // Digital silence can still be rejected without a VAD; quiet but
-            // non-zero audio must reach whisper-cli instead of being dropped.
-            peak >= 0.01
+            None
         }
     };
+    if let Some(detector) = detector.as_mut() {
+        let mut scanner = crate::sherpa_engine::SpeechScanner::new(detector);
+        crate::audio::for_each_wav_block(audio_path, STREAM_BLOCK_SAMPLES, |block| {
+            peak = block
+                .iter()
+                .fold(peak, |peak, sample| peak.max(sample.abs()));
+            if scanner.push(block, cancel)? {
+                has_speech = true;
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        })?;
+        if !has_speech {
+            has_speech = scanner.finish();
+        }
+    } else {
+        crate::audio::for_each_wav_block(audio_path, STREAM_BLOCK_SAMPLES, |block| {
+            cancel.check()?;
+            peak = block
+                .iter()
+                .fold(peak, |peak, sample| peak.max(sample.abs()));
+            Ok(true)
+        })?;
+        // Digital silence can still be rejected without a VAD; quiet but
+        // non-zero audio must reach whisper-cli instead of being dropped.
+        has_speech = peak >= 0.01;
+    }
     log::info!(
         "Speech gate took {:.3}s for {:.1}s of audio (speech={has_speech})",
         gate_started.elapsed().as_secs_f64(),
-        samples.len() as f64 / 16_000.0
+        audio_seconds
     );
-    // The child process reads the WAV itself. Drop our copy before starting it
-    // so a long file does not hold hundreds of megabytes beside the model.
-    drop(samples);
     if !has_speech {
         if peak < 0.01 {
             reporter.progress(1.0);

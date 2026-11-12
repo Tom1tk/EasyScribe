@@ -380,10 +380,15 @@ logs are in `REWRITE_JOURNAL.md` session 19.
    fixed 10+ minute file on Windows.
 2. **Pre-whisper VAD.** `sherpa_engine::has_speech` exits at the first
    confident speech, logs `Checking for speech…`, and records elapsed time at
-   `log::info!`. `speech_regions` remains for the in-process path. The
-   selftest now checks 30 s of silence followed by the fixture (0.4 s locally)
-   and the full gate transcribes that padded 53 s file end to end (106.9 s
-   locally); the existing silence fixture still returns no speech.
+   `log::info!`. `whispercli::transcribe_file` now reads the WAV through
+   `audio::for_each_wav_block` in 16,384-frame blocks, computes the peak in
+   the same pass, and feeds `SpeechScanner`, which retains only a partial
+   512-sample VAD window; the whole recording is no longer allocated as
+   `f32`. `speech_regions` and the in-memory `has_speech` wrapper remain for
+   the in-process path. The selftest now checks 30 s of silence followed by
+   the fixture (0.4 s locally) and the full gate transcribes that padded 53 s
+   file end to end (83.7 s locally); the existing silence fixture still
+   returns no speech.
 3. **Worker priority.** `lower_thread_priority` and its three calls are gone.
 4. **Startup.** `prepare_with_progress` records its wall time; the app logs
    paths-ready, prepare and first-window times. Cleanup runs on a background
@@ -421,20 +426,20 @@ logs are in `REWRITE_JOURNAL.md` session 19.
 
 **Verification (Linux, 8 logical CPUs, CPU-only).** `cargo fmt --all --
 --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
-`cargo test --workspace` passed (85 tests; 4 ignored: 2 model-backed, 2 manual
-benchmarks). The full debug selftest passed: cold CLI
-56.5 s, in-process 89.4 s, after-sherpa 86.3 s, diarization 5.2/5.5 s, silence
-0.1 s; the padded 30 s-silence file was transcribed end to end in 106.9 s and
-the gate found speech in 0.4 s. The fast selftest passed with the new gate
-step: CLI 55.5 s, gate 0.4 s, diarization 5.2/6.2 s, silence 0.1 s. The
-release profile built in 8m35s and its selftest passed on two runs (cold CLI
-53.6/55.1 s; the latest measured gate 0.3 s, diarization 5.9/5.3 s, silence
-0.1 s). A local long-file benchmark
-(file kept outside the repository) showed the expected multi-thread speedup
-with identical turn output, and the old full-file VAD pass became an
-early-exit gate that returns in milliseconds. CI run `43221068673` (history
-cleanup) and run `43221226305` (final docs) both passed Linux tests and the
-Windows `cargo check`.
+`cargo test --workspace` passed (10 app + 74 core + 2 offline; 4 ignored:
+2 model-backed, 2 manual benchmarks). After the block-streaming change the
+full debug selftest passed: cold CLI 43.9 s, in-process 68.4 s, sherpa 8.7 s,
+speech gate 0.3 s, padded 30 s-silence transcription 83.7 s, decode after
+sherpa 68.7 s, diarization 3.6/4.0 s, silence 0.1 s. The fast debug selftest
+passed (CLI 44.6 s, gate 0.4 s, diarization 3.7/4.0 s, silence 0.1 s). The
+post-streaming release build took 2m43s incrementally and its selftest passed
+(CLI 43.7 s, gate 0.3 s, diarization 3.6/3.8 s, silence 0.1 s). A local
+long-file benchmark (file kept outside the repository) showed the expected
+multi-thread speedup with identical turn output, and the old full-file VAD
+pass became an early-exit gate that returns in milliseconds. CI run
+`43221068673` (history cleanup), run `43221226305` (final docs) and run
+`43221786609` (pre-streaming docs) passed Linux tests and the Windows
+`cargo check`; the post-streaming run is recorded after the push.
 
 **These are not Windows GPU or real-PC gate results.** The owner still needs
 to run the clean-PC checklist, the fixed-file before/after comparison and the

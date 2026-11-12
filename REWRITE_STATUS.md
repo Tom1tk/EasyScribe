@@ -348,7 +348,9 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
   code. Diarization calls both native models with `config::num_threads()`;
   the child reports native compute time for the per-PC estimate. The
   pre-whisper speech check is now an early-exit `has_speech` gate with a
-  visible status line and timing log. Worker priority lowering is removed.
+  visible status line and timing log; the WAV is streamed in 16,384-frame
+  blocks and the peak is computed in the same pass, so the gate no longer
+  holds the whole recording as `f32`. Worker priority lowering is removed.
   Startup logs process/paths/prepare/first-window times, cleans old runtimes
   on a background thread, and hashes the payload while extracting it instead
   of reading the archive twice. Microphone downsampling has a 63-tap
@@ -361,19 +363,20 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
   on failure; the selftest fails on a decoder loop. The UI log is capped at
   2,000 lines, stderr uses `VecDeque`, ffmpeg regexes are cached, WAV probing
   happens once, non-UTF-8 model paths error clearly, and live queue depth is
-  logged. Local Linux verification: fmt/clippy clean; full debug selftest
-  passed (CLI cold 56.5 s, in-process 89.4 s, after-sherpa 86.3 s,
-  diarization 5.2/5.5 s); fast selftest passed with the new 30 s-silence gate
-  check (0.4 s; the full gate transcribes the padded 53 s file end to end in
-  106.9 s); release profile built in 8m35s and its selftest passed (CLI
-  53.6 s, diarization 5.9/5.2 s). A local long-file benchmark (file kept
+  logged. Local Linux verification: fmt/clippy clean; the post-streaming full
+  debug selftest passed (CLI cold 43.9 s, in-process 68.4 s, after-sherpa
+  68.7 s, diarization 3.6/4.0 s); the 30 s-silence gate check took 0.3 s and
+  the padded 53 s file transcribed end to end in 83.7 s. The fast debug
+  selftest passed (CLI 44.6 s, gate 0.4 s, diarization 3.7/4.0 s), and the
+  post-streaming release build (2m43s incremental) and selftest passed (CLI
+  43.7 s, diarization 3.6/3.8 s). A local long-file benchmark (file kept
   outside the repository) showed the expected multi-thread speedup with
   identical turn output, and the full-file VAD pass was replaced by an
   early-exit gate that returns in milliseconds. GitHub Actions run
-  `43217592692` passed the Linux tests and Windows `cargo check`; run
-  `43217811088` also passed. Real
-  Windows cold/warm/update timings, the GPU A–F matrix and the clean-PC
-  checks remain open.
+  `43221786609` passed the Linux tests and Windows `cargo check`; the
+  post-streaming run is recorded after the push. Real Windows
+  cold/warm/update timings, the GPU A–F matrix and the clean-PC checks remain
+  open.
 
 ## Known limitations / residual risk
 
