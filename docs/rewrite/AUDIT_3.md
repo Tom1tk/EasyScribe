@@ -364,3 +364,73 @@ Residual risks specific to this follow-up:
   The TTS-off source build in `rust.14` supersedes that workaround. `rust.12`
   and `rust.13` validated the payload and CPU paths recorded in
   `REWRITE_STATUS.md`.
+
+## 2026-11-12 — follow-up: `EasyScribe-v4-audit.md` actioned
+
+The nine findings in `/home/user/EasyScribe-v4-audit.md` (branch
+`rune-rewrite`, base `399b038`) are now implemented; the per-item reasoning and
+logs are in `REWRITE_JOURNAL.md` session 19.
+
+1. **Diarization threads.** `local_diarize.rs` wraps the sherpa-onnx C API
+   with `num_threads = config::num_threads()` for both models, returns errors
+   for non-UTF-8 paths, and checks the native result for null. The child
+   reports `took_sec` (native compute only) and the parent feeds that to
+   `save_measured_speed`. Thread configuration and non-UTF-8 paths have unit
+   tests. The estimate constants stay unchanged until the owner measures the
+   fixed 10+ minute file on Windows.
+2. **Pre-whisper VAD.** `sherpa_engine::has_speech` exits at the first
+   confident speech, logs `Checking for speech…`, and records elapsed time at
+   `log::info!`. `speech_regions` remains for the in-process path. The
+   selftest now checks 30 s of silence followed by the fixture (0.6 s locally)
+   and the existing silence fixture still returns no speech.
+3. **Worker priority.** `lower_thread_priority` and its three calls are gone.
+4. **Startup.** `prepare_with_progress` records its wall time; the app logs
+   paths-ready, prepare and first-window times. Cleanup runs on a background
+   `PayloadCleanup` thread under the cache lock. `HashingReader` hashes the
+   payload while the streaming zip reader extracts it, then drains the central
+   directory so the digest covers the whole payload; a mismatch deletes
+   staging before the completion marker is written. Unit tests prove the
+   one-pass hash and corruption detection. Cold/warm/update and Defender
+   numbers need the owner's PC; packaging was not changed.
+5. **Resampler.** 48 k → 16 k (and 44.1 k → 16 k) now pass through a 63-tap
+   Blackman windowed-sinc low-pass at 7.2 kHz before the linear step. The unit
+   test measures more than 40 dB rejection of 10 kHz against 1 kHz. The PCM
+   writer channel is bounded (256 blocks) with a drop counter/warning, and the
+   live VAD queue logs depth at 75%. Same-speech v3.2.3/v4 recordings still
+   need the owner.
+6. **Release profile.** `codegen-units = 1`, `incremental = false`; the old
+   settings live in `release-fast`. Windows build time and the release
+   selftest still need a run.
+7. **Slow fallback.** The visible status already said the slow path was in
+   use; it now also shows a truncated CLI failure reason in the activity
+   detail line (`Reporter::detail` → `Event::StatusDetail`) and keeps the full
+   reason in the file log. Renaming `whisper-cli.exe` in a test runtime is on
+   the owner's checklist.
+8. **Repetition loop.** The app normalises sentences, flags more than 4
+   identical long repeats (more than 8 short interjections), re-decodes only
+   that padded range on CPU with `-ng -ot -d -mc 0 -et 2.8`, and splices the
+   absolute-offset result back. Failure or a still-repeating repair keeps the
+   original. Unit tests cover the detector, normalisation and a fake CLI
+   repair; the selftest fails if the golden decode loops. The A–F GPU matrix
+   and three clean GPU runs of the owner's file remain required.
+9. **Smaller items.** UI log capped at 2,000 lines; `VecDeque` stderr tail;
+   `LazyLock` ffmpeg regexes; one ffprobe per input; clear errors for
+   non-UTF-8 whisper/VAD paths; live VAD high-water logging. The diarization
+   child still inherits `EASYSCRIBE_NUM_THREADS`.
+
+**Verification (Linux, 8 logical CPUs, CPU-only).** `cargo fmt --all --
+--check`, `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo test --workspace` passed (84 tests; 4 ignored: 2 model-backed, 2 manual
+benchmarks). The full debug selftest passed: cold CLI
+57.0 s, in-process 90.9 s, after-sherpa 93.3 s, diarization 5.3/6.0 s, silence
+0.2 s. The fast selftest passed with the new gate step: CLI 55.6 s, gate
+0.6 s, diarization 5.6/5.5 s, silence 0.1 s. The release profile built in
+8m35s and its selftest passed (CLI 53.6 s, gate 0.3 s, diarization 5.9/5.2 s,
+silence 0.1 s). A local long-file benchmark (file kept outside the repository)
+showed the expected multi-thread speedup with identical turn output, and the
+old full-file VAD pass became an early-exit gate that returns in
+milliseconds.
+
+**These are not Windows GPU or real-PC gate results.** The owner still needs
+to run the clean-PC checklist, the fixed-file before/after comparison and the
+GPU matrix before promotion; `v3.2.3` remains `Latest`.

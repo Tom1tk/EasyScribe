@@ -86,7 +86,6 @@ pub fn spawn_batch(
     let spawn = std::thread::Builder::new()
         .name("TranscriptionWorker".into())
         .spawn(move || {
-            crate::platform::lower_thread_priority();
             let total = request.files.len();
             let mut saved = Vec::new();
             let mut failed = Vec::new();
@@ -287,7 +286,6 @@ pub fn spawn_recording(
     let spawn = std::thread::Builder::new()
         .name("RecordingWorker".into())
         .spawn(move || {
-            crate::platform::lower_thread_priority();
             let mut recorder = MicRecorder::new();
             let live_mode = request.mode == RecordMode::Live;
             if live_mode {
@@ -549,7 +547,6 @@ pub fn spawn_find_speakers(
     let spawn = std::thread::Builder::new()
         .name("SpeakersWorker".into())
         .spawn(move || {
-            crate::platform::lower_thread_priority();
             let started = Instant::now();
             let result = transcriber::add_speakers_to_file(
                 &paths,

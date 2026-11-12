@@ -8,6 +8,7 @@ pub mod diarizer;
 pub mod error;
 pub mod ffmpeg;
 pub mod live;
+pub mod local_diarize;
 pub mod logger;
 pub mod mic;
 pub mod offline;

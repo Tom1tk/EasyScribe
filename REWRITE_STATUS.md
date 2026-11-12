@@ -1,6 +1,6 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-10 (session 17 — v4.0.1 pause, caret and icon)
+**Updated:** 2026-11-12 (session 19 — v4 speed/bug audit actioned)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Version:** `4.0.1` · **Release:** `v4.0.1` pre-release (built 2026-11-10), not `Latest`
@@ -33,8 +33,10 @@ three were fixed and rebuilt as `v4.0.0` (run `42621260185`). The owner then
 asked for a recording Pause/Resume control, a blinking caret in the rename box
 and the EasyScribe logo in the Windows title bar/taskbar. Those are implemented
 as `4.0.1` and built in run `42795767098` from `1fd3f35`; the new pre-release
-asset is recorded below. `v4.0.0` was superseded. The only open gate is the
-real-PC clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
+asset is recorded below. `v4.0.0` was superseded. The 2026-11-12 v4
+speed/bug audit is actioned in code (see "Audit dispositions"); the only open
+gate is the real-PC clean-PC/speed/GPU/microphone checklist and the audit's
+same-file/GPU measurements. `v3.2.3` remains `Latest`.
 
 ## What is built
 
@@ -342,6 +344,33 @@ real-PC clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
   fatal batch keeps a full green bar when an earlier file saved; and the
   speaker-naming panel focuses its first entry.
 
+- **v4 speed/bug audit (2026-11-12).** All nine findings are actioned in
+  code. Diarization calls both native models with `config::num_threads()`;
+  the child reports native compute time for the per-PC estimate. The
+  pre-whisper speech check is now an early-exit `has_speech` gate with a
+  visible status line and timing log. Worker priority lowering is removed.
+  Startup logs process/paths/prepare/first-window times, cleans old runtimes
+  on a background thread, and hashes the payload while extracting it instead
+  of reading the archive twice. Microphone downsampling has a 63-tap
+  anti-alias filter (tested at >40 dB rejection), a bounded PCM queue and
+  drop/VAD-depth logging. Release uses `codegen-units = 1`/`incremental =
+  false`, with `release-fast` retained for smoke builds. The slow fallback
+  shows its failure reason in the activity detail line. Repeated sentences
+  are detected and only the affected range is re-decoded on CPU (`-ng`,
+  `-ot`/`-d`, `-mc 0`, `-et 2.8`) and spliced back, with the original kept
+  on failure; the selftest fails on a decoder loop. The UI log is capped at
+  2,000 lines, stderr uses `VecDeque`, ffmpeg regexes are cached, WAV probing
+  happens once, non-UTF-8 model paths error clearly, and live queue depth is
+  logged. Local Linux verification: fmt/clippy clean; full debug selftest
+  passed (CLI cold 57.0 s, in-process 90.9 s, after-sherpa 93.3 s,
+  diarization 5.3/6.0 s); fast selftest passed with the new 30 s-silence gate
+  check (0.6 s); release profile built in 8m35s and its selftest passed (CLI
+  53.6 s, diarization 5.9/5.2 s). A local long-file benchmark (file kept
+  outside the repository) showed the expected multi-thread speedup with
+  identical turn output, and the full-file VAD pass was replaced by an
+  early-exit gate that returns in milliseconds. Real Windows cold/warm/update timings, the GPU
+  A–F matrix and the clean-PC checks remain open.
+
 ## Known limitations / residual risk
 
 - Windows GPU device selection, Vulkan failure/CPU retry, DPI, native dialogs,
@@ -351,9 +380,13 @@ real-PC clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
   found the recording-save, details-layout and microphone-menu bugs now fixed
   here; the v4.0.1 pause/resume, caret and window-icon changes also need the
   owner's real-Windows check. The full clean-PC checklist still needs a rerun.
-- The real-PC speed gate from audit 2 is still open: compare the same 5–10 min
-  file on v3.2.3 GPU, v3.2.3 CPU and v4.0.1, then record wall times in this
-  file. CI has no GPU and its 4 vCPUs are much slower than a normal desktop.
+- The real-PC speed gate from audit 2 and the v4 audit is still open:
+  compare the same 10+ minute file on v3.2.3 GPU, v3.2.3 CPU, v4.0.1 and this
+  build (with and without speakers), then record wall times in this file.
+  Specifically measure cold/warm/update launch, first-run unpack, "Find
+  speakers", the pre-whisper speech gate, and the gate's log line. CI has no
+  GPU and its 4 vCPUs are much slower than a normal desktop; do not tune from
+  the 23 s fixture.
 - The old 655 s CI decode was the in-process engine, not the shipped CLI path.
   `v4.0.1` confirms the CLI child decodes the fixture in 50.8 s against a 44.8 s
   control (the runner was slower than the 23.8 s v4.0.0 run); the in-process
@@ -361,8 +394,9 @@ real-PC clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
   still unproven, so the UI warns instead of running silently.
 - The in-process fallback is slower than `whisper-cli` on Windows; it is used
   when the payload has no `whisper-cli` or when the CLI cannot start. The
-  shipping primary path is the child process. When it is active, the title reads
-  **Transcribing (slow fallback)** and the activity pane explains the delay.
+  shipping primary path is the child process. When it is active, the title
+  reads **Transcribing (slow fallback)**, the activity detail line shows a
+  short CLI failure reason, and the file log records why the fallback ran.
 - The download is about 1.92 GB and every update is full-size. A fresh install
   uses about 3.7 GB (exe plus ~1.7 GB runtime); an update needs up to about
   5.4 GB free temporarily while the old and new runtimes coexist.
@@ -411,5 +445,12 @@ real-PC clean-PC/speed/GPU/microphone checklist; `v3.2.3` remains `Latest`.
    results here. A failed recording from the first build leaves
    `recording_*.pcm`/`.json` in `%LOCALAPPDATA%\EasyScribe\recordings`; the
    app offers to recover it on launch.
-5. Hand over for the decision on replacing v3.2.3. Do not publish `v4.0.1` as
-   `Latest` until the real-PC speed, clean-PC checks and GPU checks pass.
+5. Run the v4 audit verification on the owner's Windows PC: one fixed 10+
+   minute speech file, v3.2.3 vs this build, cold/warm/update launch, Find
+   speakers with 4- and 8-thread settings, and the repetition A–F GPU matrix
+   (three runs each). Check the new `startup:`, `Speech gate took` and
+   `Diarization compute:` lines in the file log. Rename `whisper-cli.exe` in a
+   test runtime to confirm the visible slow-fallback reason. Record the
+   numbers in this file.
+6. Hand over for the decision on replacing v3.2.3. Do not publish this build
+   as `Latest` until the real-PC speed, clean-PC checks and GPU checks pass.

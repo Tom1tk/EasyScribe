@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, Stream};
 use serde::Serialize;
 
-use crate::audio::LinearResampler;
+use crate::audio::AntiAliasResampler;
 use crate::config::VAD_SAMPLE_RATE;
 use crate::recovery::{RecordingMetadata, recover_pcm_to_wav};
 use crate::report::PauseToken;
@@ -51,6 +51,7 @@ pub struct AudioQueue {
     ready: Condvar,
     capacity: usize,
     dropped: AtomicBool,
+    high_water: AtomicBool,
 }
 
 impl AudioQueue {
@@ -60,12 +61,22 @@ impl AudioQueue {
             ready: Condvar::new(),
             capacity,
             dropped: AtomicBool::new(false),
+            high_water: AtomicBool::new(false),
         }
     }
 
     pub fn push_drop_newest(&self, chunk: Vec<f32>) {
         let mut queue = self.inner.lock().expect("audio queue poisoned");
-        if queue.len() >= self.capacity {
+        let depth = queue.len();
+        if depth >= self.capacity * 3 / 4 && !self.high_water.swap(true, Ordering::SeqCst) {
+            log::warn!(
+                "VAD queue depth {depth}/{}: live transcription is falling behind",
+                self.capacity
+            );
+        } else if depth < self.capacity / 2 {
+            self.high_water.store(false, Ordering::SeqCst);
+        }
+        if depth >= self.capacity {
             if !self.dropped.swap(true, Ordering::SeqCst) {
                 log::warn!("VAD queue full — dropping audio from live transcription");
             }
@@ -104,11 +115,12 @@ struct Sidecar {
 pub struct MicRecorder {
     stream: Option<Stream>,
     vad_queue: Option<Arc<AudioQueue>>,
-    pcm_tx: Option<Sender<Vec<i16>>>,
+    pcm_tx: Option<SyncSender<Vec<i16>>>,
     writer: Option<std::thread::JoinHandle<()>>,
     writer_error: Arc<std::sync::Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     samples_written: Arc<AtomicU64>,
+    pcm_drops: Arc<AtomicU64>,
     peak: Arc<AtomicU32>,
     pcm_path: Option<PathBuf>,
     json_path: Option<PathBuf>,
@@ -132,6 +144,7 @@ impl MicRecorder {
             writer_error: Arc::new(std::sync::Mutex::new(None)),
             stop: Arc::new(AtomicBool::new(false)),
             samples_written: Arc::new(AtomicU64::new(0)),
+            pcm_drops: Arc::new(AtomicU64::new(0)),
             peak: Arc::new(AtomicU32::new(0)),
             pcm_path: None,
             json_path: None,
@@ -206,6 +219,7 @@ impl MicRecorder {
 
         self.stop = Arc::new(AtomicBool::new(false));
         self.samples_written = Arc::new(AtomicU64::new(0));
+        self.pcm_drops = Arc::new(AtomicU64::new(0));
         self.peak = Arc::new(AtomicU32::new(0));
         // A previous failed start can leave an error behind; it must not be
         // reported against this recording.
@@ -215,7 +229,7 @@ impl MicRecorder {
         self.session_stem = Some(stem);
         self.feed_vad = feed_vad;
 
-        let (pcm_tx, pcm_rx) = mpsc::channel::<Vec<i16>>();
+        let (pcm_tx, pcm_rx) = mpsc::sync_channel::<Vec<i16>>(256);
         let (ready_tx, ready_rx) = mpsc::sync_channel::<std::result::Result<(), String>>(1);
         let samples_written = self.samples_written.clone();
         let stop = self.stop.clone();
@@ -268,12 +282,13 @@ impl MicRecorder {
             None
         };
         let peak = self.peak.clone();
+        let pcm_drops = self.pcm_drops.clone();
         let pcm_tx_for_callback = pcm_tx.clone();
         let vad_for_callback = vad_queue.clone();
         let pause_for_callback = pause.clone();
 
         let mut resampler = (sample_rate != VAD_SAMPLE_RATE)
-            .then(|| LinearResampler::new(sample_rate, VAD_SAMPLE_RATE));
+            .then(|| AntiAliasResampler::new(sample_rate, VAD_SAMPLE_RATE));
         let stream = build_stream(&device, &config, move |data| {
             // Keep the device stream open (closing and reopening it could
             // change the format or fail), but append nothing while paused.
@@ -306,7 +321,13 @@ impl MicRecorder {
                 let _ = peak.fetch_max(local_peak.to_bits(), Ordering::Relaxed);
             }
             if !pcm.is_empty() {
-                let _ = pcm_tx_for_callback.send(pcm);
+                match pcm_tx_for_callback.try_send(pcm) {
+                    Ok(()) => {}
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        pcm_drops.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => {}
+                }
             }
             if let (Some(queue), true) = (&vad_for_callback, !vad.is_empty()) {
                 queue.push_drop_newest(vad);
@@ -361,6 +382,12 @@ impl MicRecorder {
         self.pcm_tx.take();
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
+        }
+        let drops = self.pcm_drops.load(Ordering::Relaxed);
+        if drops > 0 {
+            log::warn!(
+                "PCM writer queue was full for {drops} audio block(s); the recording may have small gaps"
+            );
         }
         if let Some(error) = self
             .writer_error

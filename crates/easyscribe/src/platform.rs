@@ -200,28 +200,6 @@ pub fn stop_playback() {
     }
 }
 
-/// Lower a worker thread below normal so long decodes leave the UI responsive.
-/// Best effort: unsupported platforms simply keep the default priority.
-pub fn lower_thread_priority() {
-    #[cfg(windows)]
-    unsafe {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetCurrentThread() -> *mut std::ffi::c_void;
-            fn SetThreadPriority(thread: *mut std::ffi::c_void, priority: i32) -> i32;
-        }
-        const THREAD_PRIORITY_BELOW_NORMAL: i32 = -1;
-        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    unsafe {
-        unsafe extern "C" {
-            fn nice(increment: i32) -> i32;
-        }
-        let _ = nice(5);
-    }
-}
-
 /// The CPU floor for the whisper.cpp GGML build. Without these the first
 /// decode dies with an illegal instruction on old x86 CPUs.
 pub fn processor_problem() -> Option<String> {

@@ -86,7 +86,7 @@ pub fn probe_audio(paths: &Paths, input: &Path) -> Option<AudioInfo> {
 }
 
 /// A WAV that is already mono 16 kHz PCM s16le can be copied without ffmpeg.
-fn is_already_suitable_wav(paths: &Paths, input: &Path) -> bool {
+fn is_already_suitable_wav(input: &Path, info: &AudioInfo) -> bool {
     if input
         .extension()
         .and_then(|e| e.to_str())
@@ -95,9 +95,6 @@ fn is_already_suitable_wav(paths: &Paths, input: &Path) -> bool {
     {
         return false;
     }
-    let Some(info) = probe_audio(paths, input) else {
-        return false;
-    };
     info.codec_name.as_deref() == Some("pcm_s16le")
         && info.sample_rate == Some(16_000)
         && info.channels == Some(1)
@@ -118,8 +115,10 @@ pub fn fmt_duration(seconds: f64) -> String {
 
 /// Total duration from an ffmpeg stderr header line.
 pub fn parse_duration(line: &str) -> Option<f64> {
-    let re = regex::Regex::new(r"Duration:\s*(\d+):(\d+):([\d.]+)").ok()?;
-    let captures = re.captures(line)?;
+    static DURATION: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"Duration:\s*(\d+):(\d+):([\d.]+)").expect("valid duration regex")
+    });
+    let captures = DURATION.captures(line)?;
     let h: f64 = captures[1].parse().ok()?;
     let m: f64 = captures[2].parse().ok()?;
     let s: f64 = captures[3].parse().ok()?;
@@ -128,8 +127,10 @@ pub fn parse_duration(line: &str) -> Option<f64> {
 
 /// Current encode position from an ffmpeg `time=` progress line.
 pub fn parse_time(line: &str) -> Option<f64> {
-    let re = regex::Regex::new(r"time=(\d+):(\d+):([\d.]+)").ok()?;
-    let captures = re.captures(line)?;
+    static TIME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"time=(\d+):(\d+):([\d.]+)").expect("valid time regex")
+    });
+    let captures = TIME.captures(line)?;
     let h: f64 = captures[1].parse().ok()?;
     let m: f64 = captures[2].parse().ok()?;
     let s: f64 = captures[3].parse().ok()?;
@@ -152,7 +153,12 @@ pub fn extract_audio(
         reporter.log(&message);
     };
 
-    if is_already_suitable_wav(paths, input) {
+    // Probe once: the suitability test and the displayed input properties
+    // used to start ffprobe twice for every non-suitable WAV.
+    let info = probe_audio(paths, input);
+    if let Some(info) = &info
+        && is_already_suitable_wav(input, info)
+    {
         log(format!(
             "[ffmpeg] Already mono 16 kHz PCM WAV — copying directly: {}",
             filename(input)
@@ -162,7 +168,7 @@ pub fn extract_audio(
         return Ok(temp);
     }
 
-    if let Some(info) = probe_audio(paths, input) {
+    if let Some(info) = info {
         let duration = info
             .duration_seconds
             .map(fmt_duration)

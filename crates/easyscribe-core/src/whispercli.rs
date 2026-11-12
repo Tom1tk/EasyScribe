@@ -6,6 +6,7 @@
 //! as the stable release. The in-process `whispercpp` engine remains the
 //! fallback when no bundled binary is present (development and Linux tests).
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -288,12 +289,29 @@ pub fn transcribe_file(
     let peak = samples
         .iter()
         .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-    let regions =
-        crate::whispercpp::speech_regions(paths, &samples, cancel, reporter.as_ref(), false)?;
+    // The gate only answers "is there any speech?". Stop at the first
+    // confirmed segment instead of scanning every minute of a long file.
+    reporter.log("[whisper.cpp] Checking for speech…");
+    let gate_started = Instant::now();
+    let has_speech = match crate::sherpa_engine::build_vad_with(paths, 60.0, 0.4, 0.16) {
+        Ok(mut detector) => crate::sherpa_engine::has_speech(&mut detector, &samples, cancel)?,
+        Err(error) => {
+            log::warn!("Speech gate unavailable, decoding the whole file: {error}");
+            reporter.log(
+                "[whisper.cpp] Warning: speech detection is unavailable; decoding the whole file.",
+            );
+            true
+        }
+    };
+    log::info!(
+        "Speech gate took {:.3}s for {:.1}s of audio (speech={has_speech})",
+        gate_started.elapsed().as_secs_f64(),
+        samples.len() as f64 / 16_000.0
+    );
     // The child process reads the WAV itself. Drop our copy before starting it
     // so a long file does not hold hundreds of megabytes beside the model.
     drop(samples);
-    if regions.is_empty() {
+    if !has_speech {
         if peak < 0.01 {
             reporter.progress(1.0);
             reporter.log("[whisper.cpp] No speech found. Nothing to transcribe.");
@@ -303,7 +321,7 @@ pub fn transcribe_file(
         // signal must still reach whisper-cli instead of becoming an empty
         // transcript.
         reporter.log(
-            "[whisper.cpp] Warning: speech detection found no regions, but the audio is not silent; decoding the whole file.",
+            "[whisper.cpp] Warning: speech detection found no speech, but the audio is not silent; decoding the whole file.",
         );
     }
 
@@ -354,8 +372,16 @@ pub fn transcribe_file(
     let output = paths
         .temp_dir
         .join(format!("whispercpp_{}.json", uuid::Uuid::new_v4().simple()));
-    let first = run_cli(paths, audio_path, &output, choice, cancel, reporter);
-    let segments = match first {
+    let first = run_cli(
+        paths,
+        audio_path,
+        &output,
+        choice,
+        cancel,
+        reporter,
+        CliOptions::default(),
+    );
+    let mut segments = match first {
         Ok(segments) => segments,
         Err(Error::Cancelled) => {
             cleanup_output(&output);
@@ -388,6 +414,7 @@ pub fn transcribe_file(
                 DeviceChoice::Cpu,
                 cancel,
                 reporter,
+                CliOptions::default(),
             ) {
                 Ok(segments) => segments,
                 Err(Error::Cancelled) => {
@@ -409,6 +436,20 @@ pub fn transcribe_file(
             return Err(error);
         }
     };
+    match repair_repetitions(paths, audio_path, &output, cancel, reporter, &segments) {
+        Ok(Some(repaired)) => segments = repaired,
+        Ok(None) => {}
+        Err(Error::Cancelled) => {
+            cleanup_output(&output);
+            return Err(Error::Cancelled);
+        }
+        Err(error) => {
+            reporter.log(&format!(
+                "[whisper.cpp] Warning: repetition repair failed ({error}); keeping the original transcript."
+            ));
+            log::warn!("whisper.cpp repetition repair failed: {error}");
+        }
+    }
     cleanup_output(&output);
     if let DeviceChoice::Gpu(_) = choice
         && let Some(gpu) = &gpu_usable
@@ -441,6 +482,8 @@ fn fallback_in_process(
     reporter.log(&format!(
         "[Warning] The bundled whisper-cli could not start ({error}). Using the slower in-process engine."
     ));
+    let reason: String = error.to_string().chars().take(140).collect();
+    reporter.detail(&format!("Built-in engine: {reason}"));
     log::warn!("whisper-cli could not start, using the in-process engine: {error}");
     crate::whispercpp::transcribe_in_process(paths, audio_path, cancel, reporter)
 }
@@ -508,6 +551,17 @@ enum DeviceChoice {
     Gpu(i32),
 }
 
+/// Extra whisper-cli arguments used by the repetition repair. The normal
+/// transcription leaves these at their defaults so its output stays identical
+/// to v3.2.3.
+#[derive(Clone, Copy, Default)]
+struct CliOptions {
+    offset_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    max_context: Option<i32>,
+    entropy_thold: Option<f32>,
+}
+
 fn run_cli(
     paths: &Paths,
     audio_path: &Path,
@@ -515,6 +569,7 @@ fn run_cli(
     choice: DeviceChoice,
     cancel: &CancelToken,
     reporter: &Arc<dyn Reporter>,
+    options: CliOptions,
 ) -> Result<Vec<Segment>> {
     cancel.check()?;
     // whisper.cpp writes `<stem>.json`; older builds also touch `<stem>`.
@@ -536,6 +591,18 @@ fn run_cli(
         .arg("--output-json")
         .arg("--output-file")
         .arg(&output_stem);
+    if let Some(offset) = options.offset_ms {
+        command.arg("-ot").arg(offset.to_string());
+    }
+    if let Some(duration) = options.duration_ms {
+        command.arg("-d").arg(duration.to_string());
+    }
+    if let Some(max_context) = options.max_context {
+        command.arg("-mc").arg(max_context.to_string());
+    }
+    if let Some(entropy) = options.entropy_thold {
+        command.arg("-et").arg(format!("{entropy:.2}"));
+    }
     match choice {
         DeviceChoice::Gpu(device) => {
             command.arg("-dev").arg(device.to_string());
@@ -609,7 +676,7 @@ fn run_cli(
             )));
         }
     };
-    let mut tail = Vec::new();
+    let mut tail = VecDeque::new();
 
     let status = loop {
         if cancel.is_cancelled() {
@@ -673,6 +740,280 @@ fn run_cli(
     Ok(segments)
 }
 
+/// A run of the same sentence. `start`/`end` cover the repeated text itself.
+#[derive(Debug, Clone, PartialEq)]
+struct Repetition {
+    start: f64,
+    end: f64,
+    count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct Sentence {
+    normalized: String,
+    start: f64,
+    end: f64,
+}
+
+/// A long sentence repeated more than this many times is treated as a decoder
+/// loop. Short interjections ("No.", "Yes.") are allowed a higher count because
+/// they can be genuine speech.
+const MAX_LONG_REPEATS: usize = 4;
+const MAX_SHORT_REPEATS: usize = 8;
+const MIN_LONG_SENTENCE_WORDS: usize = 3;
+
+/// Find the longest run of identical consecutive sentences in `segments`.
+/// Timestamps inside one segment are distributed by character count; this is
+/// only used to choose the repair range, so an approximation is enough.
+fn find_repetition(segments: &[Segment]) -> Option<Repetition> {
+    let sentences = split_sentences(segments);
+    let mut best: Option<Repetition> = None;
+    let mut run_start = 0usize;
+    let mut index = 1usize;
+    while index <= sentences.len() {
+        let same = index < sentences.len()
+            && !sentences[index].normalized.is_empty()
+            && sentences[index].normalized == sentences[run_start].normalized;
+        if same {
+            index += 1;
+            continue;
+        }
+        let count = index - run_start;
+        let words = sentences[run_start].normalized.split_whitespace().count();
+        let limit = if words >= MIN_LONG_SENTENCE_WORDS {
+            MAX_LONG_REPEATS
+        } else {
+            MAX_SHORT_REPEATS
+        };
+        if count > limit {
+            let candidate = Repetition {
+                start: sentences[run_start].start,
+                end: sentences[index - 1].end,
+                count,
+            };
+            let longer = best.as_ref().is_none_or(|current| {
+                candidate.end - candidate.start > current.end - current.start
+            });
+            if longer {
+                best = Some(candidate);
+            }
+        }
+        run_start = index;
+        index += 1;
+    }
+    best
+}
+
+/// The longest run of identical consecutive sentences, if it looks like a
+/// decoder loop. Exposed for the release selftest; the app uses it internally
+/// to choose the CPU repair range.
+pub fn repeated_sentence(segments: &[Segment]) -> Option<(usize, f64, f64)> {
+    find_repetition(segments).map(|found| (found.count, found.start, found.end))
+}
+
+fn split_sentences(segments: &[Segment]) -> Vec<Sentence> {
+    let mut sentences = Vec::new();
+    for segment in segments {
+        let chars: Vec<char> = segment.text.trim().chars().collect();
+        if chars.is_empty() {
+            continue;
+        }
+        let total = chars.len().max(1) as f64;
+        let mut start_char = 0usize;
+        let mut index = 0usize;
+        while index < chars.len() {
+            let boundary = matches!(chars[index], '.' | '!' | '?')
+                && (index + 1 == chars.len()
+                    || chars
+                        .get(index + 1)
+                        .is_some_and(|next| next.is_whitespace()));
+            if boundary {
+                push_sentence(
+                    &mut sentences,
+                    &chars[start_char..=index],
+                    segment,
+                    start_char,
+                    index + 1,
+                    total,
+                );
+                start_char = index + 1;
+                while start_char < chars.len() && chars[start_char].is_whitespace() {
+                    start_char += 1;
+                }
+                index = start_char;
+                continue;
+            }
+            index += 1;
+        }
+        if start_char < chars.len() {
+            push_sentence(
+                &mut sentences,
+                &chars[start_char..],
+                segment,
+                start_char,
+                chars.len(),
+                total,
+            );
+        }
+    }
+    sentences
+}
+
+fn push_sentence(
+    sentences: &mut Vec<Sentence>,
+    chars: &[char],
+    segment: &Segment,
+    start_char: usize,
+    end_char: usize,
+    total: f64,
+) {
+    let text: String = chars.iter().collect();
+    let normalized = normalize_sentence(&text);
+    if normalized.is_empty() {
+        return;
+    }
+    let span = (segment.end - segment.start).max(0.0);
+    sentences.push(Sentence {
+        normalized,
+        start: segment.start + span * (start_char as f64 / total),
+        end: segment.start + span * (end_char as f64 / total),
+    });
+}
+
+fn normalize_sentence(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pending_space = false;
+    for ch in text.chars() {
+        if ch.is_alphanumeric() || ch == '\'' || ch == '’' {
+            if pending_space && !out.is_empty() {
+                out.push(' ');
+            }
+            out.extend(ch.to_lowercase());
+            pending_space = false;
+        } else {
+            pending_space = true;
+        }
+    }
+    out
+}
+
+/// Repair a detected repetition by re-decoding only its time range on the CPU
+/// with context carry-over disabled. The GPU path is fast but can produce this
+/// failure on some drivers; the CPU decode of a short range is cheap and gives
+/// the correct text. Any failure keeps the original transcript instead of
+/// losing the whole file.
+fn repair_repetitions(
+    paths: &Paths,
+    audio_path: &Path,
+    output: &Path,
+    cancel: &CancelToken,
+    reporter: &Arc<dyn Reporter>,
+    segments: &[Segment],
+) -> Result<Option<Vec<Segment>>> {
+    let Some(repetition) = find_repetition(segments) else {
+        return Ok(None);
+    };
+    let total = crate::audio::wav_duration(audio_path).unwrap_or(repetition.end);
+    let padding = 1.5;
+    let start = (repetition.start - padding).max(0.0);
+    let end = (repetition.end + padding).min(total.max(repetition.end));
+    let span = (end - start).max(0.0);
+    if span <= 0.0 {
+        return Ok(None);
+    }
+    if span > 600.0 {
+        reporter.log(
+            "[whisper.cpp] A repeated section is too long to repair automatically; keeping the original transcript.",
+        );
+        log::warn!(
+            "whisper.cpp repetition spans {:.1}s; skipping automatic repair",
+            span
+        );
+        return Ok(None);
+    }
+
+    reporter.log(&format!(
+        "[whisper.cpp] Repetition detected ({} repeats over {:.1}s); re-decoding that part on the CPU…",
+        repetition.count, span
+    ));
+    log::warn!(
+        "whisper.cpp repetition detected: {} repeats over {:.1}s",
+        repetition.count,
+        span
+    );
+
+    let repair_output = output.with_file_name(format!(
+        "{}_repair.json",
+        output
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("whisper")
+    ));
+    let options = CliOptions {
+        offset_ms: Some((start * 1000.0).round() as u64),
+        duration_ms: Some((span * 1000.0).round() as u64),
+        max_context: Some(0),
+        entropy_thold: Some(2.8),
+    };
+    let repaired = match run_cli(
+        paths,
+        audio_path,
+        &repair_output,
+        DeviceChoice::Cpu,
+        cancel,
+        reporter,
+        options,
+    ) {
+        Ok(repaired) => repaired,
+        Err(Error::Cancelled) => {
+            cleanup_output(&repair_output);
+            return Err(Error::Cancelled);
+        }
+        Err(error) => {
+            cleanup_output(&repair_output);
+            reporter.log(&format!(
+                "[whisper.cpp] Warning: the CPU repair failed ({error}); keeping the original transcript."
+            ));
+            log::warn!("whisper.cpp CPU repair failed: {error}");
+            return Ok(None);
+        }
+    };
+    cleanup_output(&repair_output);
+
+    if repaired.is_empty() || find_repetition(&repaired).is_some() {
+        reporter.log(
+            "[whisper.cpp] Warning: the CPU repair did not remove the repetition; keeping the original transcript.",
+        );
+        log::warn!("whisper.cpp CPU repair still contained a repetition; keeping the original");
+        return Ok(None);
+    }
+
+    let mut combined: Vec<Segment> = segments
+        .iter()
+        .filter(|segment| segment.end <= start || segment.start >= end)
+        .cloned()
+        .collect();
+    combined.extend(
+        repaired
+            .into_iter()
+            .filter(|segment| segment.end > start && segment.start < end),
+    );
+    combined.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    reporter.log(&format!(
+        "[whisper.cpp] Repaired {:.1}s of repeated output on the CPU.",
+        span
+    ));
+    log::info!(
+        "whisper.cpp repaired {:.1}s of repeated output on the CPU",
+        span
+    );
+    Ok(Some(combined))
+}
+
 /// Stop a child for cancellation/error. If it cannot be reaped within five
 /// seconds (a GPU driver stuck in kernel mode), leave the reader thread
 /// detached; the Windows job object reaps the process when the app exits.
@@ -683,17 +1024,21 @@ fn stop_child(child: &mut std::process::Child, reader: std::thread::JoinHandle<(
     }
 }
 
-fn drain_stderr(lines: &Receiver<String>, reporter: &Arc<dyn Reporter>, tail: &mut Vec<String>) {
+fn drain_stderr(
+    lines: &Receiver<String>,
+    reporter: &Arc<dyn Reporter>,
+    tail: &mut VecDeque<String>,
+) {
     while let Ok(line) = lines.try_recv() {
         describe_stderr(&line, reporter);
         push_tail(tail, line);
     }
 }
 
-fn push_tail(tail: &mut Vec<String>, line: String) {
-    tail.push(line);
+fn push_tail(tail: &mut VecDeque<String>, line: String) {
+    tail.push_back(line);
     if tail.len() > 40 {
-        tail.remove(0);
+        tail.pop_front();
     }
 }
 
@@ -895,6 +1240,7 @@ ggml_vulkan: 0 = NVIDIA GeForce RTX 5070 (NVIDIA) | uma: 0 | fp16: 1 | bf16: 0 |
                 DeviceChoice::Cpu,
                 &worker_cancel,
                 &reporter,
+                CliOptions::default(),
             )
         });
         std::thread::sleep(Duration::from_millis(150));
@@ -903,5 +1249,160 @@ ggml_vulkan: 0 = NVIDIA GeForce RTX 5070 (NVIDIA) | uma: 0 | fp16: 1 | bf16: 0 |
         let result = handle.join().unwrap();
         assert!(matches!(result, Err(Error::Cancelled)));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repairs_a_repeated_run_on_the_cpu_and_splices_the_result() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("whisper-cli");
+        let script = r#"#!/bin/sh
+out=""
+repair=0
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--output-file" ]; then out="$arg"; fi
+  if [ "$arg" = "-ot" ]; then repair=1; fi
+  prev="$arg"
+done
+if [ "$repair" = "1" ]; then
+  cat > "$out.json" <<'JSON'
+{"transcription":[
+ {"text":" first repaired line.","offsets":{"from":9000,"to":30000}},
+ {"text":" second repaired line.","offsets":{"from":30000,"to":60000}}
+]}
+JSON
+else
+  cat > "$out.json" <<'JSON'
+{"transcription":[
+ {"text":" Intro.","offsets":{"from":0,"to":5000}},
+ {"text":" Looping sentence here.","offsets":{"from":10000,"to":20000}},
+ {"text":" Looping sentence here.","offsets":{"from":20000,"to":30000}},
+ {"text":" Looping sentence here.","offsets":{"from":30000,"to":40000}},
+ {"text":" Looping sentence here.","offsets":{"from":40000,"to":50000}},
+ {"text":" Looping sentence here.","offsets":{"from":50000,"to":60000}},
+ {"text":" Looping sentence here.","offsets":{"from":60000,"to":70000}},
+ {"text":" Outro.","offsets":{"from":72000,"to":75000}}
+]}
+JSON
+fi
+"#;
+        std::fs::write(&bin, script).unwrap();
+        let mut permissions = std::fs::metadata(&bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&bin, permissions).unwrap();
+
+        let mut paths = Paths::at(dir.path().to_path_buf()).unwrap();
+        paths.whispercpp_bin = bin;
+        paths.whispercpp_model = dir.path().join("model.bin");
+        let output = paths.temp_dir.join("out.json");
+        let cancel = CancelToken::new();
+        let reporter: Arc<dyn Reporter> = Arc::new(crate::report::SilentReporter);
+        let segments = run_cli(
+            &paths,
+            Path::new("audio.wav"),
+            &output,
+            DeviceChoice::Cpu,
+            &cancel,
+            &reporter,
+            CliOptions::default(),
+        )
+        .unwrap();
+        assert!(find_repetition(&segments).is_some());
+
+        let repaired = repair_repetitions(
+            &paths,
+            Path::new("audio.wav"),
+            &output,
+            &cancel,
+            &reporter,
+            &segments,
+        )
+        .unwrap()
+        .expect("repair was not attempted");
+        assert!(find_repetition(&repaired).is_none());
+        let texts: Vec<&str> = repaired.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "Intro.",
+                "first repaired line.",
+                "second repaired line.",
+                "Outro."
+            ]
+        );
+        assert!((repaired[1].start - 9.0).abs() < 0.01);
+        assert!((repaired[2].end - 60.0).abs() < 0.01);
+    }
+
+    fn segment(start: f64, end: f64, text: &str) -> Segment {
+        Segment::new(start, end, text)
+    }
+
+    #[test]
+    fn detects_a_long_sentence_repeated_more_than_four_times() {
+        let repeated = "The quarterly report is on the table by the door.";
+        let segments: Vec<Segment> = (0..6)
+            .map(|index| segment(index as f64 * 10.0, index as f64 * 10.0 + 10.0, repeated))
+            .collect();
+        let found = find_repetition(&segments).expect("loop not detected");
+        assert_eq!(found.count, 6);
+        assert!((found.start - 0.0).abs() < 0.01);
+        assert!((found.end - 60.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn accepts_four_long_repeats_and_up_to_eight_short_interjections() {
+        let long: Vec<Segment> = (0..4)
+            .map(|index| segment(index as f64, index as f64 + 1.0, "This is a long sentence."))
+            .collect();
+        assert!(find_repetition(&long).is_none());
+
+        let short: Vec<Segment> = (0..8)
+            .map(|index| segment(index as f64, index as f64 + 1.0, "Yes."))
+            .collect();
+        assert!(find_repetition(&short).is_none());
+
+        let too_many: Vec<Segment> = (0..9)
+            .map(|index| segment(index as f64, index as f64 + 1.0, "Yes."))
+            .collect();
+        assert!(find_repetition(&too_many).is_some());
+    }
+
+    #[test]
+    fn repetition_matching_ignores_case_and_punctuation_but_not_words() {
+        let segments = vec![
+            segment(0.0, 1.0, "Thank you very much."),
+            segment(1.0, 2.0, "thank you very much"),
+            segment(2.0, 3.0, "Thank you very much!"),
+            segment(3.0, 4.0, "Thank you very much?"),
+            segment(4.0, 5.0, "Thank you very much."),
+            segment(5.0, 6.0, "A different sentence."),
+            segment(6.0, 7.0, "A different sentence."),
+        ];
+        let found = find_repetition(&segments).expect("normalised repeats not detected");
+        assert_eq!(found.count, 5);
+
+        let distinct = vec![
+            segment(0.0, 1.0, "One two three"),
+            segment(1.0, 2.0, "One two four"),
+            segment(2.0, 3.0, "One two three"),
+            segment(3.0, 4.0, "One two four"),
+            segment(4.0, 5.0, "One two three"),
+            segment(5.0, 6.0, "One two four"),
+        ];
+        assert!(find_repetition(&distinct).is_none());
+    }
+
+    #[test]
+    fn repetition_inside_one_segment_uses_character_positions() {
+        let text = "A sentence that repeats. A sentence that repeats. A sentence that repeats. A sentence that repeats. A sentence that repeats.";
+        let segments = vec![segment(10.0, 30.0, text)];
+        let found = find_repetition(&segments).expect("in-segment loop not detected");
+        assert_eq!(found.count, 5);
+        assert!(found.start >= 10.0 && found.end <= 30.0);
+        assert!(found.end - found.start > 10.0);
     }
 }

@@ -7,16 +7,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use sherpa_rs::diarize::{Diarize, DiarizeConfig};
 
 use crate::audio::{load_wav_float32, wav_duration};
 use crate::ffmpeg::fmt_duration;
+use crate::local_diarize::{Config as DiarizeConfig, LocalDiarizer};
 use crate::model::{Segment, Turn};
 use crate::report::CancelToken;
 use crate::settings::Settings;
 use crate::transcript::speech_seconds;
 use crate::{Error, Paths, Reporter, Result};
 
+// Fitted against the Python multi-thread pipeline. Rust now passes the same
+// thread count to both native models again; re-fit these only from a real-PC
+// run of a fixed 10+ minute file, not from the 23 s CI fixture.
 pub const SEC_PER_AUDIO_SEC: f64 = 0.045;
 pub const SEC_PER_SPEECH_SEC: f64 = 0.165;
 pub const START_SECONDS: f64 = 3.0;
@@ -64,7 +67,7 @@ impl DiarizationEngine {
         cancel: &CancelToken,
         reporter: Arc<dyn Reporter>,
     ) -> Result<Vec<Turn>> {
-        self.diarize_inner(audio_path, cancel, reporter, false)
+        self.diarize_inner(audio_path, cancel, reporter, false, None)
     }
 
     /// `keep_engine_alive` is used by the short-lived worker. Dropping the
@@ -77,6 +80,7 @@ impl DiarizationEngine {
         cancel: &CancelToken,
         reporter: Arc<dyn Reporter>,
         keep_engine_alive: bool,
+        compute_seconds: Option<&mut f64>,
     ) -> Result<Vec<Turn>> {
         if !self.is_available() {
             return Err(Error::Diarization("The speaker models are missing.".into()));
@@ -103,19 +107,18 @@ impl DiarizationEngine {
         })?;
 
         let config = DiarizeConfig {
-            num_clusters: Some(-1),
-            threshold: Some(0.5),
-            min_duration_on: Some(0.3),
-            min_duration_off: Some(0.5),
-            provider: Some("cpu".into()),
-            debug: false,
+            num_clusters: -1,
+            threshold: 0.5,
+            min_duration_on: 0.3,
+            min_duration_off: 0.5,
+            provider: "cpu".into(),
+            num_threads: crate::config::num_threads() as i32,
         };
-        let mut engine = Diarize::new(
+        let mut engine = LocalDiarizer::new(
             &self.paths.separator_model,
             &self.paths.embedding_model,
             config,
-        )
-        .map_err(|e| Error::Diarization(format!("Speaker diarization failed: {e}")))?;
+        )?;
 
         let progress_reporter = reporter.clone();
         let progress_cancel = cancel.clone();
@@ -133,6 +136,7 @@ impl DiarizationEngine {
             0
         });
 
+        let compute_started = Instant::now();
         let result = match engine.compute(samples, Some(progress)) {
             Ok(segments) => {
                 let turns: Vec<Turn> = segments
@@ -163,6 +167,20 @@ impl DiarizationEngine {
                 "Speaker diarization failed: {e}"
             ))),
         };
+        let compute_elapsed = compute_started.elapsed().as_secs_f64();
+        reporter.log(&format!(
+            "[Diarize] Native compute took {:.1}s",
+            compute_elapsed
+        ));
+        log::info!(
+            "Diarization compute: {:.3}s for {:.1}s of audio ({} threads)",
+            compute_elapsed,
+            duration,
+            crate::config::num_threads()
+        );
+        if let Some(slot) = compute_seconds {
+            *slot = compute_elapsed;
+        }
         // The worker exits immediately after writing the result; skipping the
         // native destructor avoids losing that result to a teardown crash.
         if keep_engine_alive {
@@ -180,7 +198,7 @@ pub fn diarize_in_child(
     audio_path: &Path,
     cancel: &CancelToken,
     reporter: Arc<dyn Reporter>,
-) -> Result<Vec<Turn>> {
+) -> Result<(Vec<Turn>, f64)> {
     let exe = std::env::current_exe().map_err(Error::Io)?;
     let mut command = Command::new(&exe);
     command
@@ -244,7 +262,7 @@ pub fn diarize_in_child(
         .filter(|seconds| *seconds > 0)
         .map(|seconds| Instant::now() + Duration::from_secs(seconds));
 
-    let mut turns: Option<Vec<Turn>> = None;
+    let mut turns: Option<(Vec<Turn>, f64)> = None;
     let status = loop {
         if cancel.is_cancelled() {
             stop_worker(&mut child, stdout_reader, stderr_reader);
@@ -262,9 +280,9 @@ pub fn diarize_in_child(
                 // Turns are complete as soon as they arrive. Do not wait for
                 // the child to exit: a teardown crash after the result must not
                 // discard a valid answer.
-                WorkerMessage::Turns(value) => {
+                WorkerMessage::Turns { turns, took_sec } => {
                     stop_worker(&mut child, stdout_reader, stderr_reader);
-                    return Ok(value);
+                    return Ok((turns, took_sec));
                 }
                 WorkerMessage::Error(message) | WorkerMessage::Malformed(message) => {
                     stop_worker(&mut child, stdout_reader, stderr_reader);
@@ -291,7 +309,10 @@ pub fn diarize_in_child(
     while let Ok(message) = rx.try_recv() {
         match message {
             WorkerMessage::Progress(fraction) => reporter.progress(fraction.clamp(0.0, 1.0)),
-            WorkerMessage::Turns(value) => turns = Some(value),
+            WorkerMessage::Turns {
+                turns: value,
+                took_sec,
+            } => turns = Some((value, took_sec)),
             WorkerMessage::Error(message) | WorkerMessage::Malformed(message) => {
                 error = Some(message)
             }
@@ -415,7 +436,7 @@ fn stop_worker(
 
 enum WorkerMessage {
     Progress(f64),
-    Turns(Vec<Turn>),
+    Turns { turns: Vec<Turn>, took_sec: f64 },
     Error(String),
     Malformed(String),
     Log,
@@ -427,8 +448,9 @@ impl WorkerMessage {
             return Self::Progress(progress);
         }
         if let Some(turns) = value.get("turns") {
+            let took_sec = value.get("took_sec").and_then(Value::as_f64).unwrap_or(0.0);
             return match serde_json::from_value::<Vec<Turn>>(turns.clone()) {
-                Ok(turns) => Self::Turns(turns),
+                Ok(turns) => Self::Turns { turns, took_sec },
                 Err(error) => {
                     Self::Malformed(format!("The diarization worker sent bad turns: {error}"))
                 }
@@ -456,15 +478,20 @@ pub fn run_diarize_worker(paths: &Paths, wav: &Path) -> i32 {
         }
     }
 
+    let mut compute_seconds = 0.0_f64;
     let result = DiarizationEngine::new(paths.clone()).diarize_inner(
         wav,
         &CancelToken::new(),
         Arc::new(JsonReporter),
         true,
+        Some(&mut compute_seconds),
     );
     match result {
         Ok(turns) => {
-            write_worker_line(&serde_json::json!({ "turns": turns }));
+            write_worker_line(&serde_json::json!({
+                "turns": turns,
+                "took_sec": compute_seconds,
+            }));
             0
         }
         Err(error) => {
@@ -533,6 +560,39 @@ pub trait SpeakerNaming: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore]
+    fn bench_diarization_thread_counts() {
+        let wav = std::env::var("EASYSCRIBE_BENCH_WAV").unwrap();
+        let paths = Paths::discover().unwrap();
+        let mut reference: Option<Vec<Turn>> = None;
+        for threads in ["1", "4", "8"] {
+            // SAFETY: this ignored benchmark is run alone.
+            unsafe { std::env::set_var("EASYSCRIBE_NUM_THREADS", threads) };
+            let engine = DiarizationEngine::new(paths.clone());
+            let started = Instant::now();
+            let turns = engine
+                .diarize(
+                    Path::new(&wav),
+                    &CancelToken::new(),
+                    Arc::new(crate::report::SilentReporter),
+                )
+                .unwrap();
+            println!(
+                "threads={threads} compute={:.2}s turns={}",
+                started.elapsed().as_secs_f64(),
+                turns.len()
+            );
+            if let Some(reference) = &reference {
+                assert_eq!(reference, &turns, "turn output changed with thread count");
+            } else {
+                reference = Some(turns);
+            }
+        }
+        // SAFETY: see above.
+        unsafe { std::env::remove_var("EASYSCRIBE_NUM_THREADS") };
+    }
 
     #[test]
     fn estimates_read_like_sentences() {

@@ -18,6 +18,7 @@ mod workers;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::Instant;
 
 use easyscribe_core::{Paths, Status, payload};
 use rune::{AppSpec, Cx, El, Tx, Waker};
@@ -32,6 +33,7 @@ static FIRST_RUN: AtomicBool = AtomicBool::new(false);
 static WINDOW_HEIGHT_BITS: AtomicU32 = AtomicU32::new(0);
 
 fn main() {
+    let process_start = Instant::now();
     easyscribe_core::offline::install();
     if let Some(code) = worker_mode() {
         std::process::exit(code);
@@ -92,6 +94,12 @@ fn main() {
 
     if !headless && !first_run {
         app::startup(&paths);
+        payload::spawn_cleanup(paths.data_dir.clone(), paths.base_dir.clone());
+        log::info!(
+            "startup: paths ready in {:.3}s, payload prepare {:.3}s",
+            process_start.elapsed().as_secs_f64(),
+            payload::last_prepare_seconds()
+        );
         app::recover_before_ui(&paths);
         if let Some(message) = app::startup_error(&paths) {
             dialogs::error("EasyScribe cannot start", &message);
@@ -126,7 +134,13 @@ fn main() {
         on_key: Some(on_key),
     };
     rune::App::new(spec)
-        .on_window(platform::set_window_icon)
+        .on_window(move |window| {
+            platform::set_window_icon(window);
+            log::info!(
+                "startup: first window after {:.3}s",
+                process_start.elapsed().as_secs_f64()
+            );
+        })
         .on_close(on_close)
         .run();
 }
@@ -346,6 +360,30 @@ fn run_selftest(paths: &Paths) -> i32 {
     let result = sherpa_engine::build_vad(paths, 5.0).map(|_| ());
     report_step(&mut failures, "silero VAD model", started, None, result);
 
+    // The early-exit gate must ignore a long silent lead-in and still find the
+    // speech after it. This is the check for audit item 2 without paying for a
+    // second whisper decode.
+    let started = std::time::Instant::now();
+    let result = (|| -> easyscribe_core::Result<()> {
+        let (samples, _) = easyscribe_core::audio::load_wav_float32(&wav)?;
+        let mut padded = vec![0.0_f32; 30 * 16_000];
+        padded.extend_from_slice(&samples);
+        let mut detector = sherpa_engine::build_vad_with(paths, 90.0, 0.4, 0.16)?;
+        if !sherpa_engine::has_speech(&mut detector, &padded, &CancelToken::new())? {
+            return Err(easyscribe_core::Error::Transcription(
+                "the speech gate missed speech after 30 s of silence".into(),
+            ));
+        }
+        Ok(())
+    })();
+    report_step(
+        &mut failures,
+        "speech gate finds speech after silence",
+        started,
+        None,
+        result,
+    );
+
     // This step must stay in-process: it is the diagnostic that catches ONNX
     // Runtime's thread-local state poisoning a later whisper.cpp encode. It
     // is part of the full run, not the fast release gate.
@@ -379,12 +417,15 @@ fn run_selftest(paths: &Paths) -> i32 {
     // The child inherits this deadline, so a hung diarization fails the gate
     // instead of waiting for the CI job timeout.
     unsafe { std::env::set_var("EASYSCRIBE_DIARIZE_TIMEOUT_SEC", "180") };
-    let result = require_turns(easyscribe_core::diarizer::diarize_in_child(
-        paths,
-        &wav,
-        &CancelToken::new(),
-        Arc::new(SilentReporter),
-    ));
+    let result = require_turns(
+        easyscribe_core::diarizer::diarize_in_child(
+            paths,
+            &wav,
+            &CancelToken::new(),
+            Arc::new(SilentReporter),
+        )
+        .map(|(turns, _)| turns),
+    );
     unsafe { std::env::remove_var("EASYSCRIBE_DIARIZE_TIMEOUT_SEC") };
     report_step(
         &mut failures,
@@ -469,6 +510,11 @@ fn check_transcript(
         return Err(easyscribe_core::Error::Transcription(
             "the speech sample produced no segments".into(),
         ));
+    }
+    if let Some((count, start, _)) = easyscribe_core::whispercli::repeated_sentence(segments) {
+        return Err(easyscribe_core::Error::Transcription(format!(
+            "the decoder repeated one sentence {count} times starting at {start:.1}s"
+        )));
     }
     let Some(expected) = expected else {
         return Ok(());

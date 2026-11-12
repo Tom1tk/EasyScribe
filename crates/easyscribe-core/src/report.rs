@@ -66,6 +66,10 @@ pub trait Reporter: Send + Sync {
     fn status(&self, _status: Status) {}
     fn progress(&self, _fraction: f64) {}
     fn log(&self, _line: &str) {}
+    /// A short line shown beside the current status. Unlike `log`, this is
+    /// visible without opening the details panel; use it for the reason a
+    /// fallback or degraded path is active.
+    fn detail(&self, _text: &str) {}
 }
 
 /// A reporter that does nothing.

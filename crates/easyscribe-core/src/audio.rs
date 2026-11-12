@@ -128,9 +128,120 @@ impl LinearResampler {
     }
 }
 
+/// Low-pass FIR followed by the linear resampler. The filter is only needed
+/// when downsampling: without it, everything above the output Nyquist folds
+/// back into the speech band. 48 kHz → 16 kHz is the common Windows path.
+pub struct AntiAliasResampler {
+    filter: Option<LowPass>,
+    linear: LinearResampler,
+}
+
+impl AntiAliasResampler {
+    pub fn new(from_rate: u32, to_rate: u32) -> Self {
+        let filter = (from_rate > to_rate).then(|| LowPass::new(from_rate, to_rate));
+        Self {
+            filter,
+            linear: LinearResampler::new(from_rate, to_rate),
+        }
+    }
+
+    pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        match &mut self.filter {
+            Some(filter) => {
+                let filtered = filter.process(input);
+                self.linear.process(&filtered)
+            }
+            None => self.linear.process(input),
+        }
+    }
+}
+
+/// 63-tap windowed-sinc low-pass. A Blackman window at a 7.2 kHz cutoff gives
+/// about 80 dB of rejection at 10 kHz, well beyond the 40 dB the microphone
+/// path needs, and keeps the passband flat through the speech range.
+struct LowPass {
+    taps: Vec<f32>,
+    history: Vec<f32>,
+    next: usize,
+}
+
+impl LowPass {
+    fn new(from_rate: u32, to_rate: u32) -> Self {
+        const TAPS: usize = 63;
+        let cutoff_hz = 0.45 * to_rate as f32;
+        let normalized = cutoff_hz / from_rate as f32;
+        let middle = (TAPS - 1) as f32 / 2.0;
+        let mut taps = Vec::with_capacity(TAPS);
+        for index in 0..TAPS {
+            let offset = index as f32 - middle;
+            let angle = 2.0 * std::f32::consts::PI * normalized * offset;
+            let sinc = if angle.abs() < 1e-6 {
+                1.0
+            } else {
+                angle.sin() / angle
+            };
+            let phase = 2.0 * std::f32::consts::PI * index as f32 / (TAPS - 1) as f32;
+            let window = 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos();
+            taps.push(2.0 * normalized * sinc * window);
+        }
+        let sum: f32 = taps.iter().sum();
+        for tap in &mut taps {
+            *tap /= sum;
+        }
+        Self {
+            history: vec![0.0; TAPS],
+            next: 0,
+            taps,
+        }
+    }
+
+    fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        let mut output = Vec::with_capacity(input.len());
+        let count = self.taps.len();
+        for &sample in input {
+            self.history[self.next] = sample;
+            let newest = self.next;
+            self.next = (self.next + 1) % count;
+            let mut value = 0.0;
+            for (tap, coefficient) in self.taps.iter().enumerate() {
+                let index = (newest + count - tap) % count;
+                value += coefficient * self.history[index];
+            }
+            output.push(value);
+        }
+        output
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resampler_rejects_aliases_above_the_speech_band() {
+        fn rms_at(frequency: f32) -> f32 {
+            let mut resampler = AntiAliasResampler::new(48_000, 16_000);
+            let samples: Vec<f32> = (0..48_000)
+                .map(|index| {
+                    (2.0 * std::f32::consts::PI * frequency * index as f32 / 48_000.0).sin()
+                })
+                .collect();
+            let output = resampler.process(&samples);
+            let settled = &output[3_200..];
+            (settled.iter().map(|sample| sample * sample).sum::<f32>()
+                / settled.len().max(1) as f32)
+                .sqrt()
+        }
+
+        let speech = rms_at(1_000.0);
+        let alias = rms_at(10_000.0);
+        assert!(speech > 0.5, "1 kHz was attenuated to {speech}");
+        let ratio_db = 20.0 * (alias / speech).log10();
+        assert!(
+            ratio_db < -40.0,
+            "10 kHz leaked through at {ratio_db:.1} dB"
+        );
+    }
 
     #[test]
     fn wav_round_trip_and_duration() {

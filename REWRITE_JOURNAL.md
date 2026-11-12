@@ -613,3 +613,90 @@ the narrative history.
   selftest 2.1 min, release 1.1 min. That is a 23-minute reduction. The
   workflow changes are after the `v4.0.1` asset, so the owner's current
   download is unchanged; the next build uses the faster path.
+
+## 2026-11-12 — Session 19: v4 speed/bug audit actioned
+
+- **Diarization threads (item 1).** `sherpa-rs` 0.6.8 hardcodes
+  `num_threads: 1` for both the segmentation and embedding models. A local
+  `local_diarize.rs` now calls `SherpaOnnxCreateOfflineSpeakerDiarization`
+  with `config::num_threads()` for both, keeps the existing clustering values
+  and progress callback, rejects non-UTF-8 model paths instead of panicking,
+  and checks for a null native result. "Find speakers" now passes only the
+  native compute time to `save_measured_speed` through the worker protocol
+  (`took_sec`) instead of wall time that included process start and model
+  load. The estimate constants were not changed without a Windows
+  same-file measurement; the new `Diarize: Native compute took …` log line
+  makes that measurement possible. A local long-file benchmark (ignored test
+  `bench_diarization_thread_counts`, path supplied through
+  `EASYSCRIBE_BENCH_WAV`) showed the expected multi-thread speedup with
+  identical turn output at every setting.
+- **Speech gate (item 2).** `sherpa_engine::has_speech` replaces the
+  full-file `speech_regions` pass before `whisper-cli`. It exits at the first
+  confirmed speech segment (or after 0.25 s of continuous speech), logs
+  "Checking for speech…" and records the gate's elapsed time at info level.
+  Silence still costs a full pass, as the audit noted. On a long local test
+  file (kept outside the repository), the gate returned speech almost
+  immediately instead of scanning the whole file (ignored
+  `bench_gate_against_full_vad` test). The
+  selftest now prepends 30 s of silence to the speech fixture and asserts the
+  gate finds the speech (0.6 s locally).
+- **Thread priority (item 3).** Removed `lower_thread_priority` and all three
+  worker calls. Python had no equivalent; the children already run at normal
+  priority, and the Rust-side file preparation is faster without the
+  below-normal setting.
+- **Startup (item 4).** `prepare_with_progress` records wall time; the main
+  process logs paths-ready, payload-prepare and first-window times. Cleanup of
+  stale staging and old runtimes now runs on a `PayloadCleanup` thread after
+  the window, guarded by the cache lock. The pre-unzip SHA-256 pass is gone:
+  a `HashingReader` feeds the same bytes to SHA-256 and the streaming zip
+  reader, and the staging folder is deleted if the final hash does not match.
+  A unit test proves the hash covers the whole payload and that a flipped
+  byte changes it. Packaging/cold-launch numbers still need the owner's PC.
+- **Resampler (item 5).** Microphone capture now uses a 63-tap Blackman
+  windowed-sinc low-pass (7.2 kHz) before the linear resample. The unit test
+  puts a 10 kHz sine through 48 k → 16 k and measures more than 40 dB of
+  rejection against a 1 kHz reference. The PCM writer channel is bounded at
+  256 blocks; drops are counted and logged, and VAD queue depth is logged at
+  75% (once per crossing). This protects the real-time callback without
+  silently losing audio.
+- **Release profile (item 6).** The release profile uses `codegen-units = 1`
+  and `incremental = false`; `release-fast` keeps the old 16/true settings for
+  local smoke builds. The shipped artifact still needs a Windows build-time
+  and selftest comparison.
+- **Fallback visibility (item 7).** The slow path already switched the status
+  to "Transcribing (slow fallback)" and logged the failure; it now also sends
+  a short failure reason to the activity's visible detail line through
+  `Reporter::detail`, so the reason is not limited to the details panel. The
+  file log records "whisper-cli could not start, using the in-process engine".
+- **Repetition repair (item 8).** After `parse_json`, the app splits output
+  into sentences, normalises case and punctuation, and flags a run of more
+  than 4 identical long sentences (more than 8 for short interjections such
+  as "Yes."). It re-decodes only `start - 1.5 s .. end + 1.5 s` with
+  `-ng -ot -d -mc 0 -et 2.8`, then splices the absolute-offset JSON back into
+  the original timeline. A failed or still-repeating repair keeps the original
+  transcript. Tests cover the detector, punctuation/case normalisation,
+  in-segment repeats and a fake `whisper-cli` that proves the `-ot` run is
+  spliced back; the selftest now fails if the golden decode contains a loop.
+  The owner's A–F GPU matrix is still required before promotion.
+- **Smaller items (item 9).** The UI log is capped at 2,000 lines; the child
+  stderr tail uses `VecDeque`; ffmpeg's duration/time regexes are `LazyLock`;
+  a non-suitable WAV is probed once instead of twice; whisper/VAD model paths
+  return a clear error on non-UTF-8 instead of a lossy path; the live VAD
+  queue logs high-water depth. The diarization child still inherits
+  `EASYSCRIBE_NUM_THREADS` as the audit noted.
+- **Verification (Linux, 8 logical CPUs, CPU-only).** `cargo fmt --all --
+  --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo test --workspace` are clean (9 app + 73 core + 2 offline passed,
+  4 ignored (2 model-backed, 2 manual benchmarks)). The full debug selftest passed: CLI cold
+  57.0 s, in-process 90.9 s, sherpa 9.5 s, after-sherpa 93.3 s, diarization
+  5.3/6.0 s, silence 0.2 s. The fast selftest with the new gate step passed:
+  CLI 55.6 s, sherpa 13.0 s, speech-after-silence gate 0.6 s, diarization
+  5.6/5.5 s, silence 0.1 s. The release profile built in 8m35s and its
+  selftest passed (release profile asserted; CLI 53.6 s, sherpa 15.0 s, gate
+  0.3 s, diarization 5.9/5.2 s, silence 0.1 s). These are Linux CPU numbers,
+  not the Windows GPU/real-PC gate.
+- **Still open.** Real Windows cold/warm launch and update timings, the same
+  10+ minute file on v3.2.3 vs this build (with and without speakers), the
+  item 8 A–F GPU matrix and three clean GPU runs, the clean-PC checklist, and
+  a Windows release build with the new profile. Do not promote the preview to
+  `Latest` until those pass.

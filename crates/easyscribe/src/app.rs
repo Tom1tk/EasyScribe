@@ -289,6 +289,7 @@ pub enum NamingReply {
 #[derive(Debug)]
 pub enum Event {
     Status(Status),
+    StatusDetail(String),
     Progress(f64),
     Log(String),
     BatchLabel(String),
@@ -525,6 +526,11 @@ impl AppState {
         };
 
         startup(&paths);
+        payload::spawn_cleanup(paths.data_dir.clone(), paths.base_dir.clone());
+        log::info!(
+            "startup: prepared in {:.3}s",
+            payload::last_prepare_seconds()
+        );
         recover_before_ui(&paths);
         if let Some(message) = startup_error(&paths) {
             dialogs::error("EasyScribe cannot start", &message);
@@ -595,6 +601,17 @@ impl AppState {
         changed
     }
 
+    /// Keep the details view bounded. A long file or a live session can
+    /// otherwise grow this vector for hours and make every redraw pay for it.
+    fn push_log(&mut self, line: String) {
+        const MAX_LOG_LINES: usize = 2_000;
+        self.log.push(line);
+        if self.log.len() > MAX_LOG_LINES {
+            let excess = self.log.len() - MAX_LOG_LINES;
+            self.log.drain(..excess);
+        }
+    }
+
     pub fn apply(&mut self, event: Event) {
         let t = self.theme.clone();
         match event {
@@ -602,6 +619,11 @@ impl AppState {
                 if let Some(activity) = &mut self.activity {
                     let running = self.ui == UiState::Running;
                     activity.apply_status(status, &t, running);
+                }
+            }
+            Event::StatusDetail(text) => {
+                if let Some(activity) = &mut self.activity {
+                    activity.detail = text;
                 }
             }
             Event::Progress(value) => {
@@ -612,7 +634,7 @@ impl AppState {
                     }
                 }
             }
-            Event::Log(line) => self.log.push(line),
+            Event::Log(line) => self.push_log(line),
             Event::BatchLabel(label) => {
                 if let Some(activity) = &mut self.activity {
                     activity.detail = label;
@@ -651,7 +673,7 @@ impl AppState {
             }
             Event::RecordDone(done) => self.finish_recording(done),
             Event::LiveText(text) => {
-                self.log.push(text.trim().to_owned());
+                self.push_log(text.trim().to_owned());
                 if !self.live_has_text {
                     self.live_has_text = true;
                     self.live_text.clear();
@@ -662,7 +684,7 @@ impl AppState {
                 self.live_text.push_str(text.trim());
             }
             Event::LiveOverflow => {
-                self.log.push("[Warning] transcription falling behind. Some audio was skipped in the live view; the full recording is still saved".into());
+                self.push_log("[Warning] transcription falling behind. Some audio was skipped in the live view; the full recording is still saved".into());
             }
             Event::AskNames(preview, reply) => self.show_naming(preview, reply),
             Event::FindDone(done) => self.finish_find(done),
@@ -1151,7 +1173,7 @@ impl AppState {
                 {
                     self.batch_recording = Some(new.clone());
                 }
-                self.log.push(format!(
+                self.push_log(format!(
                     "[Rename] {} -> {name} ({} files)",
                     self.rename_old_stem,
                     map.len()
@@ -1316,13 +1338,13 @@ impl AppState {
                     MessageKind::Info,
                 ));
             }
-            self.log.push("[Record] Paused".into());
+            self.push_log("[Record] Paused".into());
         } else {
             pause.resume();
             if let Some(activity) = &mut self.activity {
                 activity.apply_status(Status::Recording, &t, false);
             }
-            self.log.push("[Record] Resumed".into());
+            self.push_log("[Record] Resumed".into());
         }
     }
 
@@ -1745,6 +1767,11 @@ impl Reporter for UiReporter {
 
     fn log(&self, line: &str) {
         let _ = self.tx.send(Event::Log(line.to_owned()));
+        self.wake();
+    }
+
+    fn detail(&self, text: &str) {
+        let _ = self.tx.send(Event::StatusDetail(text.to_owned()));
         self.wake();
     }
 }

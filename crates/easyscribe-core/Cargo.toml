@@ -26,7 +26,7 @@ crc32fast = "1"
 zip = { workspace = true }
 cpal = { workspace = true }
 rodio = { workspace = true }
-sherpa-rs = { workspace = true }
+sherpa-rs = { workspace = true, features = ["sys"] }
 whisper-rs = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

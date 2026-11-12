@@ -29,10 +29,18 @@ sherpa-rs = { version = "0.6.8", default-features = false }
 whisper-rs = { version = "0.16", default-features = false }
 
 [profile.release]
-codegen-units = 16
-incremental = true
+codegen-units = 1
+incremental = false
 lto = "thin"
 strip = true
+
+# Fast local/CI smoke profile when release build time matters more than the
+# last few percent of runtime speed. The shipped release uses the settings
+# above.
+[profile.release-fast]
+inherits = "release"
+codegen-units = 16
+incremental = true
 
 [profile.dev.package."*"]
 debug = false

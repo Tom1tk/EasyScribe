@@ -8,7 +8,7 @@ use std::time::Instant;
 use crate::audio::{load_wav_float32, wav_duration};
 use crate::diarizer::{DiarizationEngine, SpeakerNaming, SpeakerPreview, diarize_in_child};
 use crate::ffmpeg::fmt_duration;
-use crate::model::{Segment, Status, Turn};
+use crate::model::{Segment, Status};
 use crate::report::CancelToken;
 use crate::sherpa_engine::{self, TranscriptionEngine};
 use crate::transcript::{
@@ -184,13 +184,15 @@ pub fn speaker_transcript(
     naming: Option<&dyn SpeakerNaming>,
 ) -> Result<String> {
     reporter.status(Status::IdentifyingSpeakers);
-    let started = Instant::now();
     let engine = DiarizationEngine::new(paths.clone());
-    let turns: Vec<Turn> = diarize_in_child(paths, audio_path, cancel, reporter.clone())?;
+    let (turns, compute_seconds) = diarize_in_child(paths, audio_path, cancel, reporter.clone())?;
     // An empty result is a valid "one unnamed speaker" case, exactly as in
     // Python: assign_speakers falls back to SPEAKER_00 and the labelled
     // transcript is still written. Do not fail Find Speakers here.
-    engine.save_measured_speed(audio_path, raw_segments, started.elapsed().as_secs_f64());
+    // Only the native compute time feeds the speed estimate. Process start,
+    // model loading and WAV decoding are fixed costs the estimate models
+    // separately via START_SECONDS.
+    engine.save_measured_speed(audio_path, raw_segments, compute_seconds);
     let assigned = assign_speakers(raw_segments, &turns);
 
     let mut speaker_map: std::collections::HashMap<String, String> =

@@ -8,6 +8,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,15 @@ pub const TRAILER_MAGIC: &[u8; 8] = b"ESCEOF01";
 pub const FOOTER_SIZE: usize = 128;
 pub const CONTAINER_VERSION: u16 = 1;
 pub const RUNTIME_MARKER: &str = ".complete";
+
+/// Wall time spent in `prepare`, recorded so the main process can log it after
+/// the file logger is initialised. Stored as f64 bits in an atomic.
+static LAST_PREPARE_SECONDS: AtomicU64 = AtomicU64::new(0);
+
+/// Seconds spent resolving/verifying/extracting the payload on this launch.
+pub fn last_prepare_seconds() -> f64 {
+    f64::from_bits(LAST_PREPARE_SECONDS.load(Ordering::Relaxed))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Footer {
@@ -209,7 +219,14 @@ pub fn prepare() -> Result<Prepared> {
 
 /// [`prepare`] with a coarse progress callback `(stage, fraction)` for a
 /// first-run splash. `fraction` is 0..1 across verification and extraction.
-pub fn prepare_with_progress<F: FnMut(&str, f32)>(mut progress: F) -> Result<Prepared> {
+pub fn prepare_with_progress<F: FnMut(&str, f32)>(progress: F) -> Result<Prepared> {
+    let started = Instant::now();
+    let result = prepare_with_progress_inner(progress);
+    LAST_PREPARE_SECONDS.store(started.elapsed().as_secs_f64().to_bits(), Ordering::Relaxed);
+    result
+}
+
+fn prepare_with_progress_inner<F: FnMut(&str, f32)>(mut progress: F) -> Result<Prepared> {
     let data_dir = data_root();
     if let Some(dir) = std::env::var_os("EASYSCRIBE_PAYLOAD_DIR") {
         return Ok(Prepared {
@@ -234,8 +251,6 @@ pub fn prepare_with_progress<F: FnMut(&str, f32)>(mut progress: F) -> Result<Pre
     let runtime_root = runtime_root(&data_dir);
     let runtime = runtime_root.join(footer.cache_key());
     if cache_complete(&runtime, &footer) {
-        cleanup_stale_staging(&runtime_root);
-        cleanup_old_runtimes(&runtime_root, &runtime);
         return Ok(Prepared {
             runtime_dir: runtime,
             data_dir,
@@ -245,8 +260,6 @@ pub fn prepare_with_progress<F: FnMut(&str, f32)>(mut progress: F) -> Result<Pre
     progress("Preparing EasyScribe", 0.0);
     let _lock = CacheLock::acquire(&runtime_root.join(".lock"))?;
     if cache_complete(&runtime, &footer) {
-        cleanup_stale_staging(&runtime_root);
-        cleanup_old_runtimes(&runtime_root, &runtime);
         return Ok(Prepared {
             runtime_dir: runtime,
             data_dir,
@@ -254,7 +267,6 @@ pub fn prepare_with_progress<F: FnMut(&str, f32)>(mut progress: F) -> Result<Pre
     }
     cleanup_stale_staging(&runtime_root);
     extract_to_with_progress(&exe, &footer, &runtime_root, &runtime, &mut progress)?;
-    cleanup_old_runtimes(&runtime_root, &runtime);
     progress("Ready", 1.0);
     Ok(Prepared {
         runtime_dir: runtime,
@@ -285,6 +297,28 @@ pub fn runtime_root(data_dir: &Path) -> PathBuf {
     std::env::var_os("EASYSCRIBE_RUNTIME_DIR")
         .map(crate::config::resolve_env_path)
         .unwrap_or_else(|| data_dir.join("runtime"))
+}
+
+/// Clean stale staging folders and old runtimes on a background thread. This
+/// used to run synchronously before the window, so an update could block the
+/// first frame while deleting the previous ~1.9 GB runtime.
+pub fn spawn_cleanup(data_dir: PathBuf, active_runtime: PathBuf) {
+    let _ = std::thread::Builder::new()
+        .name("PayloadCleanup".into())
+        .spawn(move || {
+            let root = runtime_root(&data_dir);
+            if !root.is_dir() {
+                return;
+            }
+            // Do not race another instance that is unpacking into staging.
+            let Ok(_lock) = CacheLock::acquire(&root.join(".lock")) else {
+                return;
+            };
+            cleanup_stale_staging(&root);
+            if active_runtime.starts_with(&root) {
+                cleanup_old_runtimes(&root, &active_runtime);
+            }
+        });
 }
 
 /// Take a per-user lock so two EasyScribe windows cannot share (and clean) the
@@ -408,31 +442,18 @@ fn extract_to_with_progress<F: FnMut(&str, f32)>(
     let result = (|| -> Result<()> {
         progress("Checking the app files", 0.02);
         let mut file = File::open(exe)?;
-        let mut hasher = Sha256::new();
         file.seek(SeekFrom::Start(footer.payload_offset))?;
-        let mut remaining = footer.payload_size;
-        let mut buffer = vec![0_u8; 1024 * 1024];
-        let mut hashed = 0_u64;
-        while remaining > 0 {
-            let take = remaining.min(buffer.len() as u64) as usize;
-            file.read_exact(&mut buffer[..take])?;
-            hasher.update(&buffer[..take]);
-            remaining -= take as u64;
-            hashed += take as u64;
-            progress(
-                "Checking the app files",
-                0.02 + 0.43 * (hashed as f32 / footer.payload_size.max(1) as f32),
-            );
-        }
-        if hasher.finalize().as_slice() != footer.payload_sha256 {
+        // Hash the payload while it is unpacked instead of reading the whole
+        // ~1.9 GB archive once for SHA-256 and a second time for extraction.
+        // A mismatch deletes staging before the completion marker is written.
+        let mut hashing = HashingReader::new(file.take(footer.payload_size));
+        progress("Unpacking the app files", 0.05);
+        extract_zip_with_progress(&mut hashing, footer.payload_size, &staging, progress)?;
+        if hashing.finish().as_slice() != footer.payload_sha256 {
             return Err(Error::Payload(
                 "The app files could not be verified. Download EasyScribe again.".into(),
             ));
         }
-        file.seek(SeekFrom::Start(footer.payload_offset))?;
-        progress("Unpacking the app files", 0.45);
-        let take = file.take(footer.payload_size);
-        extract_zip_with_progress(take, &staging, progress)?;
         if !required_files_present(&staging) {
             return Err(Error::Payload(
                 "The app files are incomplete. Download EasyScribe again.".into(),
@@ -476,39 +497,85 @@ fn extract_to_with_progress<F: FnMut(&str, f32)>(
     Ok(())
 }
 
-fn extract_zip_with_progress<R: Read + Seek, F: FnMut(&str, f32)>(
-    reader: R,
+/// Read-through SHA-256 wrapper. Every byte the zip reader consumes is fed to
+/// the hash exactly once, in file order.
+struct HashingReader<R> {
+    inner: R,
+    hasher: Sha256,
+    bytes: u64,
+}
+
+impl<R> HashingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+            bytes: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buffer)?;
+        self.hasher.update(&buffer[..read]);
+        self.bytes += read as u64;
+        Ok(read)
+    }
+}
+
+impl<R> HashingReader<R> {
+    /// Finish the hash. Any unread bytes before this call are not included, so
+    /// callers must drain the reader first (extraction does).
+    fn finish(self) -> sha2::digest::Output<Sha256> {
+        self.hasher.finalize()
+    }
+}
+
+/// Extract a zip from a forward-only stream. The payload is produced by our
+/// own packer, so local headers carry real sizes; we do not need the central
+/// directory's random access. Progress follows bytes consumed, which also
+/// covers the compressed data as entries are copied out.
+fn extract_zip_with_progress<R: Read, F: FnMut(&str, f32)>(
+    reader: &mut HashingReader<R>,
+    payload_size: u64,
     dest: &Path,
     progress: &mut F,
 ) -> Result<()> {
-    let mut archive = zip::ZipArchive::new(reader)
-        .map_err(|e| Error::Payload(format!("The app files are damaged: {e}")))?;
-    let total = archive.len().max(1);
-    for index in 0..archive.len() {
-        progress(
-            "Unpacking the app files",
-            0.45 + 0.5 * (index as f32 / total as f32),
-        );
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|e| Error::Payload(format!("The app files are damaged: {e}")))?;
-        let Some(path) = entry.enclosed_name() else {
-            return Err(Error::Payload(
-                "The app files contain an unsafe path.".into(),
-            ));
+    loop {
+        let consumed = {
+            let Some(mut entry) = zip::read::read_zipfile_from_stream(&mut *reader)
+                .map_err(|e| Error::Payload(format!("The app files are damaged: {e}")))?
+            else {
+                break;
+            };
+            let Some(path) = entry.enclosed_name() else {
+                return Err(Error::Payload(
+                    "The app files contain an unsafe path.".into(),
+                ));
+            };
+            let path = sanitize_relative(&path)?;
+            let out = dest.join(&path);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out)?;
+            } else {
+                if let Some(parent) = out.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut file = File::create(&out)?;
+                std::io::copy(&mut entry, &mut file)?;
+            }
+            drop(entry);
+            reader.bytes
         };
-        let path = sanitize_relative(&path)?;
-        let out = dest.join(&path);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out)?;
-            continue;
-        }
-        if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = File::create(&out)?;
-        std::io::copy(&mut entry, &mut file)?;
+        let fraction = (consumed as f32 / payload_size.max(1) as f32).clamp(0.0, 1.0);
+        progress("Unpacking the app files", 0.05 + 0.90 * fraction);
     }
+    // The streaming reader stops at the central-directory signature. Drain
+    // the rest (central directory and end record) so the hash covers the
+    // whole payload.
+    std::io::copy(reader, &mut std::io::sink())?;
+    progress("Checking the app files", 0.96);
     Ok(())
 }
 
@@ -1181,6 +1248,51 @@ mod tests {
         std::fs::write(&out, bytes).unwrap();
         let parsed = read_footer(&out).unwrap().unwrap();
         assert_eq!(parsed.payload_sha256, footer.payload_sha256);
+    }
+
+    #[test]
+    fn streaming_extract_hashes_the_whole_payload_in_one_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = dir.path().join("payload");
+        std::fs::create_dir_all(payload.join("models")).unwrap();
+        std::fs::write(payload.join("models/a.txt"), b"hello").unwrap();
+        std::fs::write(payload.join("run.bin"), vec![5_u8; 4000]).unwrap();
+        let container = build_container(&payload, "3.2.3", "test").unwrap();
+        let expected = Sha256::digest(&container);
+
+        let dest = dir.path().join("extracted");
+        std::fs::create_dir_all(&dest).unwrap();
+        let mut reader = HashingReader::new(std::io::Cursor::new(container.as_slice()));
+        let mut stages = Vec::new();
+        extract_zip_with_progress(
+            &mut reader,
+            container.len() as u64,
+            &dest,
+            &mut |stage, fraction| {
+                stages.push((stage.to_owned(), fraction));
+            },
+        )
+        .unwrap();
+        assert_eq!(reader.finish().as_slice(), expected.as_slice());
+        assert_eq!(std::fs::read(dest.join("models/a.txt")).unwrap(), b"hello");
+        assert_eq!(std::fs::read(dest.join("run.bin")).unwrap().len(), 4000);
+        assert!(
+            stages
+                .iter()
+                .any(|(_, fraction)| *fraction > 0.5 && *fraction < 0.96),
+            "progress never advanced through the entries: {stages:?}"
+        );
+
+        let mut corrupt = container.clone();
+        let middle = corrupt.len() / 2;
+        corrupt[middle] ^= 0xFF;
+        let dest = dir.path().join("corrupt");
+        std::fs::create_dir_all(&dest).unwrap();
+        let mut reader = HashingReader::new(std::io::Cursor::new(corrupt.as_slice()));
+        // A flipped byte either fails the zip reader or produces a hash that
+        // does not match the footer. Both are handled by the caller.
+        let _ = extract_zip_with_progress(&mut reader, corrupt.len() as u64, &dest, &mut |_, _| {});
+        assert_ne!(reader.finish().as_slice(), expected.as_slice());
     }
 
     #[test]

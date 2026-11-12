@@ -98,6 +98,8 @@ pub fn transcribe_file(
     if crate::whispercli::is_available(paths) {
         crate::whispercli::transcribe_file(paths, audio_path, cancel, reporter)
     } else {
+        reporter.detail("Built-in engine: the bundled whisper-cli is not available");
+        log::warn!("whisper-cli is not available, using the in-process engine");
         transcribe_in_process(paths, audio_path, cancel, reporter)
     }
 }
@@ -653,6 +655,32 @@ mod tests {
         let segments = transcribe_in_process(&base, &wav, &CancelToken::new(), &reporter).unwrap();
         let text = crate::transcript::build_plain_transcript(&segments, false);
         assert_eq!(text.trim_end(), expected.trim_end());
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_gate_against_full_vad() {
+        let wav = std::env::var("EASYSCRIBE_BENCH_WAV").unwrap();
+        let base = Paths::discover().unwrap();
+        let (samples, _) = crate::audio::load_wav_float32(Path::new(&wav)).unwrap();
+        let cancel = CancelToken::new();
+        let reporter: Arc<dyn Reporter> = Arc::new(crate::report::SilentReporter);
+        let started = std::time::Instant::now();
+        let regions = speech_regions(&base, &samples, &cancel, reporter.as_ref(), false).unwrap();
+        println!(
+            "full VAD: {} regions in {:.3}s for {:.1}s audio",
+            regions.len(),
+            started.elapsed().as_secs_f64(),
+            samples.len() as f64 / 16_000.0
+        );
+        let mut vad = crate::sherpa_engine::build_vad_with(&base, 60.0, 0.4, 0.16).unwrap();
+        let started = std::time::Instant::now();
+        let has_speech = crate::sherpa_engine::has_speech(&mut vad, &samples, &cancel).unwrap();
+        println!(
+            "gate: speech={} in {:.3}s",
+            has_speech,
+            started.elapsed().as_secs_f64()
+        );
     }
 
     #[test]
