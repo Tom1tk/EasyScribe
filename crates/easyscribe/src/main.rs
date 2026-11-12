@@ -384,6 +384,43 @@ fn run_selftest(paths: &Paths) -> i32 {
         result,
     );
 
+    // The audit's end-to-end check: 30 s of digital silence followed by real
+    // speech must still reach whisper-cli and produce text. This decodes a
+    // 53 s file, so it runs only in the full gate; the fast gate still checks
+    // the gate itself above.
+    if !skip_inprocess {
+        let started = std::time::Instant::now();
+        let result = (|| -> easyscribe_core::Result<()> {
+            let (samples, rate) = easyscribe_core::audio::load_wav_float32(&wav)?;
+            let mut padded = vec![0.0_f32; 30 * rate as usize];
+            padded.extend_from_slice(&samples);
+            let pcm: Vec<i16> = padded
+                .iter()
+                .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+                .collect();
+            let path = paths.temp_dir.join("selftest_silence_then_speech.wav");
+            easyscribe_core::audio::write_mono_i16(&path, rate, &pcm)?;
+            let segments =
+                whispercli::transcribe_file(paths, &path, &CancelToken::new(), &reporter);
+            let _ = std::fs::remove_file(&path);
+            if segments?.is_empty() {
+                return Err(easyscribe_core::Error::Transcription(
+                    "speech after 30 s of silence produced no segments".into(),
+                ));
+            }
+            Ok(())
+        })();
+        report_step(
+            &mut failures,
+            "speech after 30 s of silence",
+            started,
+            None,
+            result,
+        );
+    } else {
+        println!("info: 30 s-silence transcription skipped for this run");
+    }
+
     // This step must stay in-process: it is the diagnostic that catches ONNX
     // Runtime's thread-local state poisoning a later whisper.cpp encode. It
     // is part of the full run, not the fast release gate.

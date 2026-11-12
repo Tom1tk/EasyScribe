@@ -364,7 +364,8 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
   logged. Local Linux verification: fmt/clippy clean; full debug selftest
   passed (CLI cold 57.0 s, in-process 90.9 s, after-sherpa 93.3 s,
   diarization 5.3/6.0 s); fast selftest passed with the new 30 s-silence gate
-  check (0.6 s); release profile built in 8m35s and its selftest passed (CLI
+  check (0.4 s; the full gate transcribes the padded 53 s file end to end in
+  105.3 s); release profile built in 8m35s and its selftest passed (CLI
   53.6 s, diarization 5.9/5.2 s). A local long-file benchmark (file kept
   outside the repository) showed the expected multi-thread speedup with
   identical turn output, and the full-file VAD pass was replaced by an

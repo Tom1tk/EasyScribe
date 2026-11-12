@@ -639,7 +639,9 @@ the narrative history.
   immediately instead of scanning the whole file (ignored
   `bench_gate_against_full_vad` test). The
   selftest now prepends 30 s of silence to the speech fixture and asserts the
-  gate finds the speech (0.6 s locally).
+  gate finds the speech (0.4 s locally). The full gate also writes the padded
+  file and transcribes it end to end (105.3 s locally, all 53 s decoded); the
+  fast gate skips that second decode and keeps the gate check.
 - **Thread priority (item 3).** Removed `lower_thread_priority` and all three
   worker calls. Python had no equivalent; the children already run at normal
   priority, and the Rust-side file preparation is faster without the
@@ -690,8 +692,9 @@ the narrative history.
   4 ignored (2 model-backed, 2 manual benchmarks)). The full debug selftest passed: CLI cold
   57.0 s, in-process 90.9 s, sherpa 9.5 s, after-sherpa 93.3 s, diarization
   5.3/6.0 s, silence 0.2 s. The fast selftest with the new gate step passed:
-  CLI 55.6 s, sherpa 13.0 s, speech-after-silence gate 0.6 s, diarization
-  5.6/5.5 s, silence 0.1 s. The release profile built in 8m35s and its
+  CLI 55.5 s, sherpa 12.9 s, speech-after-silence gate 0.4 s, diarization
+  5.2/6.2 s, silence 0.1 s; the full-gate padded transcription passed in
+  105.3 s in the preceding run. The release profile built in 8m35s and its
   selftest passed (release profile asserted; CLI 53.6 s, sherpa 15.0 s, gate
   0.3 s, diarization 5.9/5.2 s, silence 0.1 s). GitHub Actions run
   `43217592692` passed Linux tests (1m5s) and the Windows `cargo check`

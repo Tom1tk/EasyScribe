@@ -381,8 +381,9 @@ logs are in `REWRITE_JOURNAL.md` session 19.
 2. **Pre-whisper VAD.** `sherpa_engine::has_speech` exits at the first
    confident speech, logs `Checking for speech…`, and records elapsed time at
    `log::info!`. `speech_regions` remains for the in-process path. The
-   selftest now checks 30 s of silence followed by the fixture (0.6 s locally)
-   and the existing silence fixture still returns no speech.
+   selftest now checks 30 s of silence followed by the fixture (0.4 s locally)
+   and the full gate transcribes that padded 53 s file end to end (105.3 s
+   locally); the existing silence fixture still returns no speech.
 3. **Worker priority.** `lower_thread_priority` and its three calls are gone.
 4. **Startup.** `prepare_with_progress` records its wall time; the app logs
    paths-ready, prepare and first-window times. Cleanup runs on a background
@@ -424,7 +425,8 @@ logs are in `REWRITE_JOURNAL.md` session 19.
 benchmarks). The full debug selftest passed: cold CLI
 57.0 s, in-process 90.9 s, after-sherpa 93.3 s, diarization 5.3/6.0 s, silence
 0.2 s. The fast selftest passed with the new gate step: CLI 55.6 s, gate
-0.6 s, diarization 5.6/5.5 s, silence 0.1 s. The release profile built in
+0.4 s, diarization 5.2/6.2 s, silence 0.1 s; the full-gate padded
+transcription passed in 105.3 s. The release profile built in
 8m35s and its selftest passed (CLI 53.6 s, gate 0.3 s, diarization 5.9/5.2 s,
 silence 0.1 s). A local long-file benchmark (file kept outside the repository)
 showed the expected multi-thread speedup with identical turn output, and the
