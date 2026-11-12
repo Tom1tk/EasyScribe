@@ -65,13 +65,13 @@ git fetch origin
 git rev-parse origin/rune-rewrite
 
 gh workflow run rune-release.yml --ref rune-rewrite `
-  -f tag=v4.0.1-rc.2 -f full_selftest=false
+  -f tag=v4.0.2 -f full_selftest=false
 gh run list --workflow rune-release.yml --limit 1
 gh run watch <run-id> --exit-status
 ```
 
-Use a unique tag such as `v4.0.1-rc.2`; it must start with `v4.0.1-` because
-the workspace version is `4.0.1`. In the workflow log, find the line
+Use a unique tag such as `v4.0.2` or `v4.0.2-rc.1`; it must be `v4.0.2` or start with `v4.0.2-` because
+the workspace version is `4.0.2`. In the workflow log, find the line
 `Building <sha>` and confirm it is the handoff commit or a later commit that
 contains `perf: stream the pre-whisper gate WAV in bounded blocks`.
 
@@ -79,9 +79,9 @@ Download the draft asset:
 
 ```powershell
 New-Item -ItemType Directory -Force .\audit-build | Out-Null
-gh release download v4.0.1-rc.2 `
-  -p "EasyScribe-v4.0.1-rc.2.exe" `
-  -p "EasyScribe-v4.0.1-rc.2.exe.sha256" `
+gh release download v4.0.2 `
+  -p "EasyScribe-v4.0.2.exe" `
+  -p "EasyScribe-v4.0.2.exe.sha256" `
   -D .\audit-build
 ```
 
@@ -91,7 +91,7 @@ GitHub or download its assets through `gh api`; do not publish it.
 Verify the hash:
 
 ```powershell
-$exe = ".\audit-build\EasyScribe-v4.0.1-rc.2.exe"
+$exe = ".\audit-build\EasyScribe-v4.0.2.exe"
 $expected = (Get-Content "$exe.sha256" -Raw).Split()[0].ToLower()
 $actual = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
 if ($actual -ne $expected) { throw "SHA-256 mismatch: $actual" }
@@ -450,5 +450,5 @@ Do not publish the draft release or move `Latest` until:
 - [ ] the clean-PC checklist passes;
 - [ ] the owner approves the version bump/promotion.
 
-Until then: `v3.2.3` remains `Latest`; `v4.0.1` (and any `v4.0.1-rc.*` draft)
+Until then: `v3.2.3` remains `Latest`; `v4.0.1` and `v4.0.2` (and any `v4.0.2-rc.*` draft)
 remains a pre-release.

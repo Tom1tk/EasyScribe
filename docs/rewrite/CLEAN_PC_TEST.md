@@ -11,7 +11,7 @@ template. This checklist is the clean-PC portion of that handoff.
 ## 0. Preconditions
 
 - 64-bit Windows 10/11, x86-64 CPU with AVX2, FMA, F16C and BMI2.
-- Download the fresh audit build `EasyScribe-v4.0.1-rc.2.exe` (or the tag the
+- Download the fresh audit build `EasyScribe-v4.0.2.exe` (or the tag the
   handoff agent created) and its `.sha256` from the draft pre-release; verify
   the hash with `Get-FileHash`. Do not use the older `v4.0.1` pre-release for
   the audit; it predates the audit fixes.
@@ -98,8 +98,8 @@ Use the same 5–10 min invented-content WAV on one real PC:
 
 - [ ] v3.2.3 with GPU (default).
 - [ ] v3.2.3 with CPU (`whisper_gpu_disabled_for` set, or no Vulkan driver).
-- [ ] Fresh audit build (`v4.0.1-rc.*`) with GPU (default).
-- [ ] Fresh audit build (`v4.0.1-rc.*`) with CPU (`EASYSCRIBE_WHISPER_CPU=1`).
+- [ ] Fresh audit build (`v4.0.2`) with GPU (default).
+- [ ] Fresh audit build (`v4.0.2`) with CPU (`EASYSCRIBE_WHISPER_CPU=1`).
 
 Record wall time and the timings block for each in `REWRITE_STATUS.md`.
 Pass: rust CPU is within 10% of v3.2.3 CPU, and rust GPU is within 10% of
