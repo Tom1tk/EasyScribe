@@ -420,7 +420,7 @@ logs are in `REWRITE_JOURNAL.md` session 19.
 
 **Verification (Linux, 8 logical CPUs, CPU-only).** `cargo fmt --all --
 --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
-`cargo test --workspace` passed (84 tests; 4 ignored: 2 model-backed, 2 manual
+`cargo test --workspace` passed (85 tests; 4 ignored: 2 model-backed, 2 manual
 benchmarks). The full debug selftest passed: cold CLI
 57.0 s, in-process 90.9 s, after-sherpa 93.3 s, diarization 5.3/6.0 s, silence
 0.2 s. The fast selftest passed with the new gate step: CLI 55.6 s, gate

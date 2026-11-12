@@ -686,7 +686,7 @@ the narrative history.
   `EASYSCRIBE_NUM_THREADS` as the audit noted.
 - **Verification (Linux, 8 logical CPUs, CPU-only).** `cargo fmt --all --
   --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
-  `cargo test --workspace` are clean (9 app + 73 core + 2 offline passed,
+  `cargo test --workspace` are clean (10 app + 73 core + 2 offline passed,
   4 ignored (2 model-backed, 2 manual benchmarks)). The full debug selftest passed: CLI cold
   57.0 s, in-process 90.9 s, sherpa 9.5 s, after-sherpa 93.3 s, diarization
   5.3/6.0 s, silence 0.2 s. The fast selftest with the new gate step passed:

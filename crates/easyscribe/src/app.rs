@@ -1942,6 +1942,25 @@ mod tests {
     }
 
     #[test]
+    fn slow_fallback_reason_is_visible_in_the_activity() {
+        let mut state = test_state();
+        state.activity = Some(Activity::new(&state.theme));
+        state.apply(Event::Status(Status::SlowFallback));
+        state.apply(Event::StatusDetail(
+            "Built-in engine: missing whisper-cli.exe".into(),
+        ));
+        let activity = state.activity.as_ref().expect("activity");
+        assert_eq!(activity.detail, "Built-in engine: missing whisper-cli.exe");
+        assert!(
+            activity
+                .message
+                .as_ref()
+                .is_some_and(|(text, _)| text.contains("built-in engine")),
+            "the slow-path banner is missing"
+        );
+    }
+
+    #[test]
     fn start_without_files_sets_the_hint() {
         let mut state = test_state();
         state.mic_menu_open = true;
