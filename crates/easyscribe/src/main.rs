@@ -143,10 +143,14 @@ fn main() {
             );
             // Start the old-runtime cleanup only once the window exists, so
             // deleting a previous ~1.9 GB runtime never delays the first frame.
+            // A first launch cleans up after its own extraction via
+            // `adopt_prepared`, so do not queue a second thread before then.
             static CLEANUP: std::sync::Once = std::sync::Once::new();
-            CLEANUP.call_once(|| {
-                payload::spawn_cleanup(cleanup_data.clone(), cleanup_base.clone());
-            });
+            if !first_run {
+                CLEANUP.call_once(|| {
+                    payload::spawn_cleanup(cleanup_data.clone(), cleanup_base.clone());
+                });
+            }
         })
         .on_close(on_close)
         .run();

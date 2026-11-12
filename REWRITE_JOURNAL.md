@@ -689,12 +689,12 @@ the narrative history.
 - **Verification (Linux, 8 logical CPUs, CPU-only).** `cargo fmt --all --
   --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo test --workspace` are clean (10 app + 73 core + 2 offline passed,
-  4 ignored (2 model-backed, 2 manual benchmarks)). The full debug selftest passed: CLI cold
-  57.0 s, in-process 90.9 s, sherpa 9.5 s, after-sherpa 93.3 s, diarization
-  5.3/6.0 s, silence 0.2 s. The fast selftest with the new gate step passed:
+  4 ignored (2 model-backed, 2 manual benchmarks)). The full debug selftest
+  passed: CLI cold 56.5 s, in-process 89.4 s, sherpa 9.4 s, after-sherpa
+  86.3 s, diarization 5.2/5.5 s, silence 0.1 s. The fast selftest with the new gate step passed:
   CLI 55.5 s, sherpa 12.9 s, speech-after-silence gate 0.4 s, diarization
   5.2/6.2 s, silence 0.1 s; the full-gate padded transcription passed in
-  105.3 s in the preceding run. The release profile built in 8m35s and its
+  106.9 s. The release profile built in 8m35s and its
   selftest passed (release profile asserted; CLI 53.6 s, sherpa 15.0 s, gate
   0.3 s, diarization 5.9/5.2 s, silence 0.1 s). GitHub Actions run
   `43217592692` passed Linux tests (1m5s) and the Windows `cargo check`

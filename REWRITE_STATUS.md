@@ -362,15 +362,16 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
   2,000 lines, stderr uses `VecDeque`, ffmpeg regexes are cached, WAV probing
   happens once, non-UTF-8 model paths error clearly, and live queue depth is
   logged. Local Linux verification: fmt/clippy clean; full debug selftest
-  passed (CLI cold 57.0 s, in-process 90.9 s, after-sherpa 93.3 s,
-  diarization 5.3/6.0 s); fast selftest passed with the new 30 s-silence gate
+  passed (CLI cold 56.5 s, in-process 89.4 s, after-sherpa 86.3 s,
+  diarization 5.2/5.5 s); fast selftest passed with the new 30 s-silence gate
   check (0.4 s; the full gate transcribes the padded 53 s file end to end in
-  105.3 s); release profile built in 8m35s and its selftest passed (CLI
+  106.9 s); release profile built in 8m35s and its selftest passed (CLI
   53.6 s, diarization 5.9/5.2 s). A local long-file benchmark (file kept
   outside the repository) showed the expected multi-thread speedup with
   identical turn output, and the full-file VAD pass was replaced by an
-  early-exit gate that returns in milliseconds. GitHub Actions run `43217592692` passed the Linux
-  tests and Windows `cargo check`; run `43217811088` also passed. Real
+  early-exit gate that returns in milliseconds. GitHub Actions run
+  `43217592692` passed the Linux tests and Windows `cargo check`; run
+  `43217811088` also passed. Real
   Windows cold/warm/update timings, the GPU A–F matrix and the clean-PC
   checks remain open.
 
