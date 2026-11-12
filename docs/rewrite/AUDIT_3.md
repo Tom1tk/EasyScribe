@@ -397,7 +397,12 @@ logs are in `REWRITE_JOURNAL.md` session 19.
    directory so the digest covers the whole payload; a mismatch deletes
    staging before the completion marker is written. Unit tests prove the
    one-pass hash and corruption detection. Cold/warm/update and Defender
-   numbers need the owner's PC; packaging was not changed.
+   numbers need the owner's PC; packaging was not changed. The first Windows
+   run found that cold/update launches logged only `startup: prepared`,
+   because the logger started after the payload check; `main` now sets up
+   logging before `needs_prepare`, the setup is idempotent, and the selftest
+   writes every step line to `selftest.txt` instead of losing stdout in the
+   GUI exe.
 5. **Resampler.** 48 k → 16 k (and 44.1 k → 16 k) now pass through a 63-tap
    Blackman windowed-sinc low-pass at 7.2 kHz before the linear step. The unit
    test measures more than 40 dB rejection of 10 kHz against 1 kHz. The PCM
@@ -417,8 +422,12 @@ logs are in `REWRITE_JOURNAL.md` session 19.
    that padded range on CPU with `-ng -ot -d -mc 0 -et 2.8`, and splices the
    absolute-offset result back. Failure or a still-repeating repair keeps the
    original. Unit tests cover the detector, normalisation and a fake CLI
-   repair; the selftest fails if the golden decode loops. The A–F GPU matrix
-   and three clean GPU runs of the real recording remain required.
+   repair; the selftest fails if the golden decode loops. The first Windows
+   A–F pass reproduced the loop on all three A runs (58 consecutive segments,
+   57 s) and found B (`-mc 0`) clean on all three, confirming prompt
+   carry-over. B produced 10% fewer words than the one clean F run, so a
+   global `-mc 0` is not adopted without a word-loss check. The targeted CPU
+   repair still needs its Windows run on the same file.
 9. **Smaller items.** UI log capped at 2,000 lines; `VecDeque` stderr tail;
    `LazyLock` ffmpeg regexes; one ffprobe per input; clear errors for
    non-UTF-8 whisper/VAD paths; live VAD high-water logging. The diarization

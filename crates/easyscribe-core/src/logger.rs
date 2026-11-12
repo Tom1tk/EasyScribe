@@ -8,10 +8,17 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Local;
 
 use crate::Result;
+
+/// The logger is process-global. Startup calls `setup` once before the payload
+/// is prepared so first-launch timings are not lost, then `app::startup` calls
+/// it again with the resolved runtime paths. The second call must not rotate
+/// the log or create a second file.
+static SETUP_DONE: AtomicBool = AtomicBool::new(false);
 
 struct FileLogger {
     file: Mutex<std::fs::File>,
@@ -50,8 +57,19 @@ impl log::Log for FileLogger {
     }
 }
 
-/// Set up the process logger. Safe to call once; later calls are ignored.
+/// Set up the process logger. Safe to call more than once; later calls are
+/// ignored so an early setup does not create a second log file. A failed setup
+/// leaves the flag clear so the caller can retry with the resolved paths.
 pub fn setup(logs_dir: &Path) -> Result<()> {
+    if SETUP_DONE.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    setup_inner(logs_dir)?;
+    SETUP_DONE.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+fn setup_inner(logs_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(logs_dir)?;
     rotate(logs_dir);
 
@@ -66,7 +84,8 @@ pub fn setup(logs_dir: &Path) -> Result<()> {
         file: Mutex::new(file),
         mirror_stdout: !cfg!(windows),
     };
-    // A second call in tests simply keeps the first logger.
+    // If another logger is already installed (tests, for example), keep it
+    // rather than replacing it; the log file still exists for diagnostics.
     let _ = log::set_boxed_logger(Box::new(logger));
     log::set_max_level(log::LevelFilter::Debug);
 

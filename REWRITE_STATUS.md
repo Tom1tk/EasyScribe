@@ -1,9 +1,9 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-12 (session 20 — Windows audit handoff)
+**Updated:** 2026-11-12 (session 21 — Windows audit results and logging follow-up)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
-**Version:** `4.0.1` · **Release:** `v4.0.1` pre-release (built 2026-11-10), not `Latest`
+**Version:** `4.0.2` · **Release:** `v4.0.1` pre-release and `v4.0.2` draft pre-release, not `Latest`
 **Phase:** 7 — speed, GPU, process isolation and final release
 **Overall:** implementation complete. Audit 2's findings are actioned: the
 Vulkan `whisper-cli` is back as a child process with CPU retry, diarization is
@@ -36,10 +36,12 @@ as `4.0.1` and built in run `42795767098` from `1fd3f35`; the new pre-release
 asset is recorded below. `v4.0.0` was superseded. The 2026-11-12 v4
 speed/bug audit is actioned in code (see "Audit dispositions"); the only open
 gate is the real-PC clean-PC/speed/GPU/microphone checklist and the audit's
-same-file/GPU measurements. `v3.2.3` remains `Latest`. The Windows agent
-should start with `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md`, which records the
-fresh-build command, every remaining measurement, the A–F matrix, pass
-criteria and the results template.
+same-file/GPU measurements. The first partial Windows run reproduced the
+repetition on the RTX 5070 and showed prompt carry-over as the cause; it also
+found two logging gaps, both fixed below. `v3.2.3` remains `Latest`. The
+Windows agent should start with `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md`, which
+records the fresh-build command, every remaining measurement, the A–F matrix,
+pass criteria and the results template.
 
 ## What is built
 
@@ -395,12 +397,12 @@ and "Next actions" below._
   here; the v4.0.1 pause/resume, caret and window-icon changes also need the
   owner's real-Windows check. The full clean-PC checklist still needs a rerun.
 - The real-PC speed gate from audit 2 and the v4 audit is still open:
-  compare the same 10+ minute file on v3.2.3 GPU, v3.2.3 CPU, v4.0.1 and this
-  build (with and without speakers), then record wall times in this file.
-  Specifically measure cold/warm/update launch, first-run unpack, "Find
-  speakers", the pre-whisper speech gate, and the gate's log line. CI has no
-  GPU and its 4 vCPUs are much slower than a normal desktop; do not tune from
-  the 23 s fixture.
+  compare the same 10+ minute file on v3.2.3 GPU, v3.2.3 CPU, and the current
+  `v4.0.2` build (with and without speakers), then record wall times in this
+  file. The first Windows pass already recorded cold/warm/update launch and
+  the A–F GPU matrix; the fixed-file comparison, diarization threads and the
+  remaining checks are still open. CI has no GPU and its 4 vCPUs are much
+  slower than a normal desktop; do not tune from the 23 s fixture.
 - The old 655 s CI decode was the in-process engine, not the shipped CLI path.
   `v4.0.1` confirms the CLI child decodes the fixture in 50.8 s against a 44.8 s
   control (the runner was slower than the 23.8 s v4.0.0 run); the in-process
@@ -472,7 +474,9 @@ list below is the summary.
    confirm the visible slow-fallback reason. Record the numbers in this file.
    **The full handoff for the Windows agent, including the fresh-build command,
    A–F script, pass criteria and results template, is
-   `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md`.**
+   `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md`.** The first Windows pass is
+   recorded below; resume from its open rows rather than repeating the
+   completed cold/warm/update and B-matrix checks.
 6. Hand over for the decision on replacing v3.2.3. Do not publish this build
    as `Latest` until the real-PC speed, clean-PC checks and GPU checks pass.
 
@@ -535,3 +539,45 @@ Findings:
    lines go to stdout, which a GUI exe loses. The handoff's
    `Get-Content selftest.txt` shows no step detail; capture stdout with
    `Start-Process -RedirectStandardOutput` instead.
+
+### Follow-up after the first Windows pass — logging fixes (Linux, 2026-11-12)
+
+The partial Windows results above found two measurement gaps. Both are fixed
+in code:
+
+1. **Cold/update startup lines are now logged.** `main` installs the file
+   logger before `payload::needs_prepare`/`Paths::discover`, using
+   `payload::data_root_before_prepare()`. `logger::setup` is idempotent, so
+   the later `app::startup` call keeps the same file instead of creating a
+   second one. A first or update launch now logs `startup: first window`,
+   `startup: paths ready` and `startup: prepared`; a cached launch keeps the
+   existing `paths ready` / `first window` pair.
+2. **`--selftest` keeps its step detail.** A `SelftestLog` tees every step
+   line, timing and failure to `logs/selftest.txt` as well as stdout, so the
+   GUI exe no longer loses the step detail that made the Windows selftest
+   result hard to diagnose.
+
+Checks:
+
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: 11 app + 74 core + 2 offline + 1 logger = 88
+  passed; 4 ignored (2 model-backed, 2 manual benchmarks). New test
+  `crates/easyscribe-core/tests/logger.rs` proves a second setup does not
+  create or rotate a log; `selftest_log_keeps_step_lines_in_the_file` proves
+  the step lines are written.
+- Fast debug selftest passed and its `selftest.txt` now contains every step:
+  cold decode 109.0 s (in-process; this development checkout has no bundled
+  `whisper-cli`), sherpa 12.2 s, VAD 0.0 s, gate 0.4 s, diarization
+  6.0 / 7.8 s, silence 0.2 s. This is a logging check, not a speed comparison.
+
+The repetition A–F result narrows the cause to prompt carry-over: B (`-mc 0`)
+was clean on all three runs, but its 10% lower word count than the clean F run
+means `-mc 0` is not adopted globally without a word-loss check. The existing
+targeted CPU repair remains the fix; its Windows verification on the
+reproducing file is still open.
+
+Remaining Windows checks are unchanged: packed-exe selftest on a fresh
+`v4.0.2` build, fixed-file `v3.2.3` comparison, diarization 4/8 threads,
+app-level repetition repair, same-speech resampler, slow-fallback UI, low-disk
+unpack and the clean-PC checklist. `v3.2.3` remains `Latest`.

@@ -28,12 +28,24 @@ use app::{AppState, FileEntry, FileState, Init, UiState};
 static PATHS: OnceLock<Paths> = OnceLock::new();
 /// Set before `rune::run`; `AppSpec::init` is a plain function pointer.
 static FIRST_RUN: AtomicBool = AtomicBool::new(false);
+/// Process start time, shared with the UI thread so a first launch can log the
+/// same startup timings as a cached launch.
+pub(crate) static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 /// The real window height in points. Layout decisions (file rows, short-window
 /// naming, page scroll) must use the same value the window was created with.
 static WINDOW_HEIGHT_BITS: AtomicU32 = AtomicU32::new(0);
 
+/// Seconds since the process started, for startup timing lines.
+pub(crate) fn startup_elapsed() -> f64 {
+    PROCESS_START
+        .get()
+        .map(|start| start.elapsed().as_secs_f64())
+        .unwrap_or(0.0)
+}
+
 fn main() {
     let process_start = Instant::now();
+    PROCESS_START.set(process_start).ok();
     easyscribe_core::offline::install();
     if let Some(code) = worker_mode() {
         std::process::exit(code);
@@ -61,6 +73,17 @@ fn main() {
     };
 
     platform::set_app_identity();
+
+    // Start file logging before the payload check. A first launch creates its
+    // splash window and unpacks the runtime before `app::startup` runs, so
+    // without this the splash, prepare and first-window timings never reach
+    // the log. `logger::setup` is idempotent.
+    if !headless {
+        let logs_dir = payload::data_root_before_prepare().join("logs");
+        if let Err(error) = easyscribe_core::logger::setup(&logs_dir) {
+            eprintln!("EasyScribe: could not start file logging: {error}");
+        }
+    }
 
     // A first launch shows its unpacking progress in the window. Cached
     // launches, development builds and headless snapshots take the direct path
@@ -219,7 +242,13 @@ fn run_selftest(paths: &Paths) -> i32 {
         .unwrap_or(180.0);
 
     let mut failures: Vec<String> = Vec::new();
-    println!(
+    let mut log = SelftestLog::new(&paths.logs_dir);
+    macro_rules! note {
+        ($($arg:tt)*) => {{
+            log.line(format_args!($($arg)*));
+        }};
+    }
+    note!(
         "info: build profile: debug_assertions={}, cargo={}, whisper.cpp CMake={}",
         cfg!(debug_assertions),
         if cfg!(debug_assertions) {
@@ -234,21 +263,21 @@ fn run_selftest(paths: &Paths) -> i32 {
         }
     );
     let info = whispercpp::system_info();
-    println!("info: whisper.cpp system info: {info}");
+    note!("info: whisper.cpp system info: {info}");
     for feature in ["AVX2", "FMA", "F16C"] {
         let needle = format!("{feature} = 1");
         if !info.contains(&needle) {
             failures.push(format!("whisper.cpp CPU feature missing: {needle}"));
         }
     }
-    println!(
+    note!(
         "info: {} logical CPU(s), whisper.cpp uses {} thread(s)",
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(0),
         easyscribe_core::config::num_threads()
     );
-    println!(
+    note!(
         "info: bundled whisper-cli: {}",
         if paths.whispercpp_bin.is_file() {
             paths.whispercpp_bin.display().to_string()
@@ -261,10 +290,11 @@ fn run_selftest(paths: &Paths) -> i32 {
         Some(value) => {
             let path = PathBuf::from(value);
             if !path.is_file() {
-                println!(
+                note!(
                     "FAILED: EASYSCRIBE_SELFTEST_WAV is not a file: {}",
                     path.display()
                 );
+                log.save();
                 return 1;
             }
             path
@@ -272,22 +302,24 @@ fn run_selftest(paths: &Paths) -> i32 {
         None => {
             let path = paths.assets_dir.join("selftest_speech.wav");
             if !path.is_file() {
-                println!(
+                note!(
                     "FAILED: the selftest speech fixture is missing: {}",
                     path.display()
                 );
+                log.save();
                 return 1;
             }
             path
         }
     };
     let seconds = wav_seconds(&fixture).unwrap_or(0.0);
-    println!(
+    note!(
         "info: selftest speech: {} ({seconds:.1}s)",
         fixture.display()
     );
     let Some(expected) = expected_transcript(paths) else {
-        println!("FAILED: the selftest golden transcript is missing or unreadable");
+        note!("FAILED: the selftest golden transcript is missing or unreadable");
+        log.save();
         return 1;
     };
     let wav = fixture;
@@ -300,7 +332,7 @@ fn run_selftest(paths: &Paths) -> i32 {
     let skip_inprocess = std::env::var("EASYSCRIBE_SELFTEST_SKIP_INPROCESS")
         .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
     if skip_inprocess {
-        println!("info: in-process whisper.cpp diagnostics skipped for this run");
+        note!("info: in-process whisper.cpp diagnostics skipped for this run");
     }
 
     let have_cli = paths.whispercpp_bin.is_file() && paths.whispercpp_model.is_file();
@@ -328,6 +360,7 @@ fn run_selftest(paths: &Paths) -> i32 {
     }
     .and_then(|segments| check_transcript(&segments, Some(&expected)));
     report_step(
+        &mut log,
         &mut failures,
         "whisper.cpp cold decode",
         started,
@@ -343,6 +376,7 @@ fn run_selftest(paths: &Paths) -> i32 {
         let result = whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
             .and_then(|segments| check_transcript(&segments, Some(&expected)));
         report_step(
+            &mut log,
             &mut failures,
             "whisper.cpp in-process decode",
             started,
@@ -356,6 +390,7 @@ fn run_selftest(paths: &Paths) -> i32 {
     let engine = TranscriptionEngine::new(paths.clone());
     let result = engine.ensure_loaded(&SilentReporter);
     report_step(
+        &mut log,
         &mut failures,
         "sherpa-onnx whisper model",
         started,
@@ -369,7 +404,14 @@ fn run_selftest(paths: &Paths) -> i32 {
 
     let started = std::time::Instant::now();
     let result = sherpa_engine::build_vad(paths, 5.0).map(|_| ());
-    report_step(&mut failures, "silero VAD model", started, None, result);
+    report_step(
+        &mut log,
+        &mut failures,
+        "silero VAD model",
+        started,
+        None,
+        result,
+    );
 
     // The early-exit gate must ignore a long silent lead-in and still find the
     // speech after it. This is the check for audit item 2 without paying for a
@@ -388,6 +430,7 @@ fn run_selftest(paths: &Paths) -> i32 {
         Ok(())
     })();
     report_step(
+        &mut log,
         &mut failures,
         "speech gate finds speech after silence",
         started,
@@ -422,6 +465,7 @@ fn run_selftest(paths: &Paths) -> i32 {
             Ok(())
         })();
         report_step(
+            &mut log,
             &mut failures,
             "speech after 30 s of silence",
             started,
@@ -429,7 +473,7 @@ fn run_selftest(paths: &Paths) -> i32 {
             result,
         );
     } else {
-        println!("info: 30 s-silence transcription skipped for this run");
+        note!("info: 30 s-silence transcription skipped for this run");
     }
 
     // This step must stay in-process: it is the diagnostic that catches ONNX
@@ -441,6 +485,7 @@ fn run_selftest(paths: &Paths) -> i32 {
         let result = whispercpp::transcribe_in_process(paths, &wav, &cancel, &reporter)
             .and_then(|segments| check_transcript(&segments, Some(&expected)));
         report_step(
+            &mut log,
             &mut failures,
             "whisper.cpp decode after sherpa",
             started,
@@ -453,6 +498,7 @@ fn run_selftest(paths: &Paths) -> i32 {
     let engine = DiarizationEngine::new(paths.clone());
     let result = require_turns(engine.diarize(&wav, &CancelToken::new(), Arc::new(SilentReporter)));
     report_step(
+        &mut log,
         &mut failures,
         "speaker diarization (in-process)",
         started,
@@ -476,6 +522,7 @@ fn run_selftest(paths: &Paths) -> i32 {
     );
     unsafe { std::env::remove_var("EASYSCRIBE_DIARIZE_TIMEOUT_SEC") };
     report_step(
+        &mut log,
         &mut failures,
         "speaker diarization (child process)",
         started,
@@ -511,6 +558,7 @@ fn run_selftest(paths: &Paths) -> i32 {
     });
     let _ = std::fs::remove_file(&silence);
     report_step(
+        &mut log,
         &mut failures,
         "silence produces no speech",
         started,
@@ -518,14 +566,50 @@ fn run_selftest(paths: &Paths) -> i32 {
         result,
     );
 
-    let report = if failures.is_empty() {
-        "EasyScribe selftest passed".to_owned()
+    if failures.is_empty() {
+        note!("EasyScribe selftest passed");
     } else {
-        format!("EasyScribe selftest failed:\n{}", failures.join("\n"))
-    };
-    println!("{report}");
-    let _ = std::fs::write(paths.logs_dir.join("selftest.txt"), &report);
+        note!("EasyScribe selftest failed:");
+        for failure in &failures {
+            note!("  {failure}");
+        }
+    }
+    log.save();
     if failures.is_empty() { 0 } else { 1 }
+}
+
+/// The selftest writes the same lines to stdout and to `logs/selftest.txt`.
+/// The release exe is a Windows GUI process, so stdout is not visible there;
+/// without the file copy the step timings from a packed run are lost.
+struct SelftestLog {
+    path: PathBuf,
+    lines: Vec<String>,
+}
+
+impl SelftestLog {
+    fn new(logs_dir: &std::path::Path) -> Self {
+        Self {
+            path: logs_dir.join("selftest.txt"),
+            lines: Vec::new(),
+        }
+    }
+
+    fn line(&mut self, args: std::fmt::Arguments<'_>) {
+        let line = args.to_string();
+        println!("{line}");
+        self.lines.push(line);
+    }
+
+    fn save(&self) {
+        let mut text = self.lines.join("\n");
+        text.push('\n');
+        if let Err(error) = std::fs::write(&self.path, text) {
+            log::error!(
+                "Could not write the selftest log to {}: {error}",
+                self.path.display()
+            );
+        }
+    }
 }
 
 struct CaptureReporter {
@@ -596,6 +680,7 @@ fn require_turns(
 }
 
 fn report_step(
+    log: &mut SelftestLog,
     failures: &mut Vec<String>,
     name: &str,
     started: std::time::Instant,
@@ -605,17 +690,17 @@ fn report_step(
     let seconds = started.elapsed().as_secs_f64();
     match result {
         Ok(()) => {
-            println!("ok: {name} ({seconds:.1}s)");
+            log.line(format_args!("ok: {name} ({seconds:.1}s)"));
             if let Some(budget) = budget
                 && seconds > budget
             {
                 let message = format!("{name} took {seconds:.1}s, over the {budget:.0}s budget");
-                println!("FAILED: {message}");
+                log.line(format_args!("FAILED: {message}"));
                 failures.push(message);
             }
         }
         Err(error) => {
-            println!("FAILED: {name} ({seconds:.1}s): {error}");
+            log.line(format_args!("FAILED: {name} ({seconds:.1}s): {error}"));
             failures.push(format!("{name}: {error}"));
         }
     }
@@ -1053,4 +1138,25 @@ fn scene_recording_details(s: &mut AppState) {
 fn scene_record_mic_menu(s: &mut AppState) {
     scene_record(s);
     s.mic_menu_open = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SelftestLog;
+
+    #[test]
+    fn selftest_log_keeps_step_lines_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("easyscribe-selftest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = SelftestLog::new(&dir);
+        log.line(format_args!("ok: first step (1.2s)"));
+        log.line(format_args!("FAILED: second step"));
+        log.save();
+        let text = std::fs::read_to_string(dir.join("selftest.txt")).unwrap();
+        assert!(text.contains("ok: first step (1.2s)"));
+        assert!(text.contains("FAILED: second step"));
+        assert!(text.ends_with('\n'));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -27,6 +27,11 @@ decision belongs to the owner after these checks pass.
     gate 0.3 s, diarization 3.6/3.8 s, silence 0.1 s.
   - CI runs `43224636495` (streaming), `43224901423` (cancellation test) and
     `43225196187` (docs) passed Linux tests and the Windows `cargo check`.
+- The first partial Windows pass (`9af1e4b`, recorded in `REWRITE_STATUS.md`)
+  found two logging gaps, now fixed: the logger starts before the payload
+  check so cold/update logs contain all startup lines, and `--selftest` writes
+  every step to `selftest.txt`. The Windows timings already recorded remain
+  valid; re-run the launch checks only to confirm the new lines.
 - The current Windows pre-release `v4.0.1` was built before the audit changes.
   Do not use it for the audit; build a fresh exe from this branch (section 2).
 
@@ -121,6 +126,13 @@ Useful log lines:
 
 - `startup: paths ready in ... payload prepare ...`
 - `startup: first window after ...`
+- `startup: prepared in ...`
+
+On a first or update launch, `first window` is the splash window and
+`paths ready` / `prepared` cover the unpack. On a cached launch, `paths ready`
+and `first window` are the two launch timings. The logger now starts before
+the payload check, so all three lines are present on every launch.
+
 - `[whisper.cpp] Engine: Vulkan (device ...)` / `Engine: CPU ...`
 - `Speech gate took ... for ... of audio (speech=...)`
 - `[Diarize] Native compute took ...`
@@ -148,8 +160,12 @@ Select-String -Path $log.FullName -Pattern `
 ```powershell
 & $exe --selftest
 if ($LASTEXITCODE -ne 0) { throw "selftest failed" }
-Get-Content "$env:LOCALAPPDATA\EasyScribe\logs\selftest.txt" -Tail 40
+Get-Content "$env:LOCALAPPDATA\EasyScribe\logs\selftest.txt" -Tail 60
 ```
+
+`selftest.txt` now contains every step line and timing, not only the final
+pass/fail line, so the GUI exe does not lose the step detail. If the exe is
+started from a console you can still tee stdout, but the file is the record.
 
 - [ ] Record the exe size, the extracted runtime size, the version/build SHA,
       and the Windows/CPU/GPU/driver/RAM/Defender/free-disk details.
@@ -164,11 +180,12 @@ state). Use a stopwatch or `Measure-Command`; record the `startup:` lines too.
 - [ ] **Cold first launch.** Start from a snapshot with no
       `%LOCALAPPDATA%\EasyScribe`, or rename that folder aside. Measure from
       process start to the main window, and record:
-      `paths ready`, `payload prepare`, `first window`, exe size, extracted
-      runtime size, free disk before/after.
+      `first window` (the splash appears), `paths ready` / `prepared` (the
+      unpack is done and the main UI can run), exe size, extracted runtime
+      size, free disk before/after.
 - [ ] **Warm launch.** Close the app completely and start again. Record the
-      same three `startup:` timings. Confirm the runtime `.complete` marker
-      timestamp did not change.
+      `paths ready` / `first window` timings. Confirm the runtime `.complete`
+      marker timestamp did not change.
 - [ ] **Update launch.** Keep the old runtime, run the new exe, and record the
       prepare/unpack time, peak free disk (the update needs up to about
       5.4 GB temporarily), and whether the old runtime is removed after the
@@ -322,6 +339,15 @@ For every run record:
 - `Get-CimInstance Win32_VideoController | Select Name,DriverVersion,DriverDate`
   and the GPU reported in stderr.
 
+**Partial result already measured (2026-11-12, RTX 5070 Laptop):** A reproduced
+a 58-segment / 57 s loop on all three runs; B (`-mc 0`) was clean on all three
+but produced 10% fewer words than the one clean F run, so do not switch the
+whole GPU path to `-mc 0` without checking for dropped speech. C shortened the
+loop but did not remove it; D did not help; F was clean once on the integrated
+Radeon. The targeted fix is the app-level repair below: it leaves the fast
+decode alone and re-decodes only the repeated range on the CPU with `-mc 0`.
+The next Windows run must verify that repair on this same reproducing file.
+
 Then verify the app-level repair on the same file:
 
 - [ ] Run the file through the current build on the GPU.
@@ -333,7 +359,9 @@ Then verify the app-level repair on the same file:
 
 Interpretation:
 
-- B clean ⇒ prompt carry-over is the cause; consider `-mc 0` on the GPU path.
+- B clean ⇒ prompt carry-over is the cause. The app-level repair uses `-mc 0`
+  only for the re-decoded range; a global `-mc 0` needs a word-loss check
+  first.
 - C clean ⇒ the entropy guard is too loose; consider `-et 2.8`.
 - D clean ⇒ Vulkan flash attention is the source.
 - E clean ⇒ quantised weights on Vulkan are the source.

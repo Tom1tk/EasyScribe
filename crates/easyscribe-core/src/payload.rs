@@ -274,6 +274,21 @@ fn prepare_with_progress_inner<F: FnMut(&str, f32)>(mut progress: F) -> Result<P
     })
 }
 
+/// The data directory `Paths::discover` will use, resolved without preparing
+/// the payload. Startup uses this to begin file logging before a first launch
+/// unpacks the runtime, so the splash and prepare timings reach the log.
+pub fn data_root_before_prepare() -> PathBuf {
+    if let Some(base) = std::env::var_os("EASYSCRIBE_BASE_DIR") {
+        if let Some(data) = std::env::var_os("EASYSCRIBE_DATA_DIR") {
+            return crate::config::resolve_env_path(data);
+        }
+        // `Paths::discover` uses the base directory as the data directory in
+        // development when no separate data directory is set.
+        return crate::config::resolve_env_path(base);
+    }
+    data_root()
+}
+
 /// `%LOCALAPPDATA%\EasyScribe`, or a portable `EasyScribe-data` folder when
 /// an `EasyScribe.portable` marker sits next to the exe.
 pub fn data_root() -> PathBuf {

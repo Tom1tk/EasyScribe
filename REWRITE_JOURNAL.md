@@ -738,3 +738,28 @@ the narrative history.
   same-speech test, slow-fallback UI test, clean-PC checklist), pass criteria,
   and the results template. It also repeats the confidentiality and
   no-promotion rules. `v3.2.3` remains `Latest`.
+
+## 2026-11-12 — Session 21: first Windows results and logging follow-up
+
+- **Pulled the owner's partial results.** `bd22a10` records a real Windows 11
+  run on the RTX 5070 Laptop: cold 3.46 s, warm 0.87/0.90 s, update 4.06 s,
+  and a packed selftest pass. The repetition reproduces on all three A runs
+  (58 consecutive segments, 57 s loop); B (`-mc 0`) is clean 3/3, C only
+  shortens the loop, D does not help, and F is clean once on the Radeon 610M.
+  B's 10% lower word count means a global `-mc 0` is not adopted without a
+  word-loss check; the targeted CPU repair remains the fix.
+- **Fixed the two logging findings.** `main` now starts file logging before
+  the payload check via `payload::data_root_before_prepare()`, and
+  `logger::setup` is idempotent, so cold/update logs contain `first window`,
+  `paths ready` and `prepared`. `--selftest` now tees every step line and
+  timing to `selftest.txt` instead of losing stdout in the GUI exe.
+- **Checks.** `cargo fmt --all -- --check` and `cargo clippy --workspace
+  --all-targets -- -D warnings` are clean. `cargo test --workspace` passed
+  11 app + 74 core + 2 offline + 1 logger = 88 tests (4 ignored). The fast
+  debug selftest passed and its `selftest.txt` contains every step:
+  cold decode 109.0 s (in-process; no bundled CLI in this checkout), sherpa
+  12.2 s, VAD 0.0 s, gate 0.4 s, diarization 6.0/7.8 s, silence 0.2 s.
+- **Still open.** Packed-exe selftest on a fresh 4.0.2 build, fixed-file
+  v3.2.3 comparison, diarization 4/8 threads, app-level repetition repair on
+  the reproducing file, same-speech resampler, slow-fallback UI, low-disk
+  unpack and the clean-PC checklist. `v3.2.3` remains `Latest`.

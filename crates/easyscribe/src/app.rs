@@ -525,6 +525,11 @@ impl AppState {
             }
         };
 
+        log::info!(
+            "startup: paths ready in {:.3}s, payload prepare {:.3}s",
+            crate::startup_elapsed(),
+            payload::last_prepare_seconds()
+        );
         startup(&paths);
         payload::spawn_cleanup(paths.data_dir.clone(), paths.base_dir.clone());
         log::info!(
