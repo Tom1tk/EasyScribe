@@ -475,3 +475,63 @@ list below is the summary.
    `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md`.**
 6. Hand over for the decision on replacing v3.2.3. Do not publish this build
    as `Latest` until the real-PC speed, clean-PC checks and GPU checks pass.
+
+### Windows audit results — 2026-11-12, build 9af1e4b5125a0a154602d6a899eee42c7b5e3382 (partial)
+
+Environment: Windows 11 Education 10.0.26200, AMD Ryzen 9 8940HX (16C/32T),
+NVIDIA GeForce RTX 5070 Laptop GPU (driver 32.0.15.9613, 2026-04-08) +
+AMD Radeon 610M (driver 32.0.21036.11002, 2026-08-20), 31.2 GB RAM,
+Defender real-time on, free disk 155 GB.
+
+Exe `EasyScribe-v4.0.2.exe` from run 43242882848 (draft pre-release), SHA-256
+`482d4edad9cd30dd0761cbd077909ea0cdbc64841ac1f3904d45ba556213b952`, matches
+the `.sha256` asset.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Build/selftest | pass | `--selftest` exit 0, 383.2 s; release build, AVX2/FMA/F16C/BMI2 on, 8 whisper.cpp threads of 32. Steps: cold decode 2.1 s, in-process decode 161.0 s, sherpa model 39.3 s, VAD 0.0 s, gate 0.2 s, speech after 30 s silence 2.7 s, decode after sherpa 168.7 s, diarization 4.7 s in-process / 3.4 s child, silence 0.1 s |
+| Cold launch | 3.46 s | `startup: prepared in 3.460s`; 1.76 GB disk used during unpack |
+| Warm launch | 0.87 / 0.90 s | `paths ready in 0.006s, payload prepare 0.001s`; `first window after 0.873s` / `0.903s`; `.complete` marker unchanged |
+| Update launch (v4.0.1 → v4.0.2) | 4.06 s | `startup: prepared in 4.058s`; old runtime removed in the same second; peak extra disk 1.72 GB |
+| Low-disk unpack | not run | owner declined filling the system disk |
+| Fixed file: v3.2.3 / current, GPU / CPU | not run yet | needs GUI runs |
+| Diarization 4/8 threads | not run yet | needs GUI runs |
+| A–F matrix | B clean 3/3 | see below |
+| Repetition repair | not run yet | |
+| Same-speech resampler | not run yet | |
+| Slow fallback | not run yet | |
+| Clean-PC checklist | not run yet | |
+
+A–F matrix on the fixed file (`-bs 5 -t 4 -pp`, q5_0 model unless noted).
+"Longest run" is the longest chain of identical consecutive segments; "loop" is
+the time those chains cover; "words" is the total word count relative to F-1,
+the only run free of a loop on the reference engine path.
+
+| Config | Device | Seconds (3 runs) | Exit | Longest run | Loop | Words vs F-1 |
+|---|---|---|---|---|---|---|
+| A baseline | RTX 5070 | 51.0 / 41.9 / 39.7 | 0 | 58 (all 3) | 57 s | 113% |
+| B `-mc 0` | RTX 5070 | 57.2 / 19.8 / 30.2 | 0 | 1 (all 3) | 0 s | 90% |
+| C `-et 2.8` | RTX 5070 | 42.0 / 36.5 / 46.3 | 0 | 4 (all 3) | 3 s | 97% |
+| D `-nfa` | RTX 5070 | 45.8 / 43.7 / 45.9 | 0 | 50 (all 3) | 48 s | 107% |
+| E f16 model | — | not run | — | — | — | — |
+| F `-dev 1` | Radeon 610M | 603.6 (1 run) | 0 | 2 | 0 s | 100% |
+
+- The loop reproduces on this PC, identically on all three A runs.
+- B is clean on all three runs, so prompt carry-over is the cause. It also
+  produces 10% fewer words than F-1; check B's transcript for dropped speech
+  before adopting `-mc 0` on the GPU path.
+- C shortens the loop but does not remove it. D does not help, so Vulkan flash
+  attention is not the source.
+- F ran once (runs 2–3 stopped by the owner); one clean run on the integrated
+  GPU is not enough to blame the NVIDIA driver.
+- E skipped by owner decision. Driver not updated.
+
+Findings:
+
+1. On a first or update launch the log has only `startup: prepared in ...`.
+   The `paths ready` and `first window` lines are written before the logger
+   starts, so cold and update first-window times cannot be read from the log.
+2. `--selftest` writes only the pass/fail line to `selftest.txt`; the step
+   lines go to stdout, which a GUI exe loses. The handoff's
+   `Get-Content selftest.txt` shows no step detail; capture stdout with
+   `Start-Process -RedirectStandardOutput` instead.
