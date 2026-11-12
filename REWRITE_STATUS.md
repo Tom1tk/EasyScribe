@@ -3,7 +3,10 @@
 **Updated:** 2026-11-12 (session 21 — Windows audit results and logging follow-up)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
-**Version:** `4.0.2` · **Release:** `v4.0.1` pre-release and `v4.0.2` draft pre-release, not `Latest`
+**Version:** `4.0.3` · **Release:** `v4.0.1` pre-release and `v4.0.2` draft pre-release; `v4.0.3` source pending build, not `Latest`
+**Build numbering:** every build handed to testing increments the last
+component (`4.0.9` → `4.0.10`); do not bump the minor or major component
+without the owner's approval.
 **Phase:** 7 — speed, GPU, process isolation and final release
 **Overall:** implementation complete. Audit 2's findings are actioned: the
 Vulkan `whisper-cli` is back as a child process with CPU retry, diarization is
@@ -398,7 +401,7 @@ and "Next actions" below._
   owner's real-Windows check. The full clean-PC checklist still needs a rerun.
 - The real-PC speed gate from audit 2 and the v4 audit is still open:
   compare the same 10+ minute file on v3.2.3 GPU, v3.2.3 CPU, and the current
-  `v4.0.2` build (with and without speakers), then record wall times in this
+  `v4.0.3` build (with and without speakers), then record wall times in this
   file. The first Windows pass already recorded cold/warm/update launch and
   the A–F GPU matrix; the fixed-file comparison, diarization threads and the
   remaining checks are still open. CI has no GPU and its 4 vCPUs are much
@@ -579,6 +582,6 @@ targeted CPU repair remains the fix; its Windows verification on the
 reproducing file is still open.
 
 Remaining Windows checks are unchanged: packed-exe selftest on a fresh
-`v4.0.2` build, fixed-file `v3.2.3` comparison, diarization 4/8 threads,
+`v4.0.3` build, fixed-file `v3.2.3` comparison, diarization 4/8 threads,
 app-level repetition repair, same-speech resampler, slow-fallback UI, low-disk
 unpack and the clean-PC checklist. `v3.2.3` remains `Latest`.

@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, e.g. v4.0.2 or v4.0.2-rc.1'
+        description: 'Release tag, e.g. v4.0.3 or v4.0.3-rc.1'
         required: true
-        default: 'v4.0.2'
+        default: 'v4.0.3'
       full_selftest:
         description: 'Also run the slow in-process fallback diagnostics (adds ~20 minutes)'
         type: boolean
@@ -69,7 +69,7 @@ jobs:
             throw "The tag must be v$version or start with v$version-, matching the workspace version; got '$env:TAG'."
           }
           if ($env:TAG -notmatch '^v[0-9A-Za-z._-]+$') {
-            throw "The tag contains unsupported characters; use v4.0.2 or v4.0.2-rc.1; got '$env:TAG'."
+            throw "The tag contains unsupported characters; use v4.0.3 or v4.0.3-rc.1; got '$env:TAG'."
           }
           Write-Host "Building pre-release $env:TAG"
           Add-Content $env:GITHUB_ENV "APP_VERSION=$version"
@@ -615,7 +615,11 @@ jobs:
             A feature-parity rebuild of EasyScribe 3.2.3 in Rust with the Rune UI.
             This is a **pre-release for testing**, not the stable Python release.
 
-            ### What's new in v4.0.2
+            ### What's new in v4.0.3
+            - **Startup and selftest diagnostics are reliable.** Cold and update
+              launches now log the splash, path and prepare timings, and
+              `--selftest` keeps every step in `logs\selftest.txt` instead of
+              losing it with the GUI console.
             - **Repeated sentences are repaired.** If the GPU engine gets stuck
               repeating a sentence, only that part is transcribed again on the
               CPU and put back. If the repair fails, the original transcript
@@ -631,9 +635,11 @@ jobs:
               start, Show details says why.
             - Faster startup: old versions are cleaned up in the background,
               and the download is checked while it unpacks.
-            - Includes everything in v4.0.1 (Pause and Resume, the blinking
-              caret, the logo in the title bar). This build replaces the
-              v4.0.1 preview; do not use both.
+            - Includes everything in v4.0.2 (repetition repair, faster Find
+              speakers, streaming speech gate, cleaner microphone audio,
+              visible slow-engine reason) and v4.0.1 (Pause and Resume, the
+              blinking caret, the logo in the title bar). This build replaces
+              the v4.0.2 preview; do not use both.
 
             **One file.** Download `EasyScribe-${{ inputs.tag }}.exe` and double-click it.
             The first launch unpacks the speech models and ffmpeg into

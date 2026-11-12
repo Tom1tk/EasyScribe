@@ -1,6 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-//! EasyScribe 4.0.2 — Rune single-window app.
+//! EasyScribe 4.0.3 — Rune single-window app.
 //!
 //! Startup resolves the single-exe payload (or a development runtime), imports
 //! v3 settings, runs crash recovery and dependency checks, then hands the

@@ -759,7 +759,18 @@ the narrative history.
   debug selftest passed and its `selftest.txt` contains every step:
   cold decode 109.0 s (in-process; no bundled CLI in this checkout), sherpa
   12.2 s, VAD 0.0 s, gate 0.4 s, diarization 6.0/7.8 s, silence 0.2 s.
-- **Still open.** Packed-exe selftest on a fresh 4.0.2 build, fixed-file
+- **Still open.** Packed-exe selftest on a fresh 4.0.3 build, fixed-file
   v3.2.3 comparison, diarization 4/8 threads, app-level repetition repair on
   the reproducing file, same-speech resampler, slow-fallback UI, low-disk
   unpack and the clean-PC checklist. `v3.2.3` remains `Latest`.
+
+## 2026-11-12 — Session 22: build 4.0.3 numbering
+
+- **Owner decision:** every build handed to testing increments the last version
+  component (`4.0.9` → `4.0.10`). The minor/major component is not changed
+  without explicit owner approval.
+- **Bumped the workspace to 4.0.3** for the build containing the startup and
+  selftest logging fixes. Updated `Cargo.toml`, `Cargo.lock`, the app version
+  string, README, release workflow defaults/tag validation/release notes,
+  handoff, clean-PC checklist and status. The 4.0.2 Windows results above stay
+  as historical evidence; the next test build must be 4.0.3 or later.
