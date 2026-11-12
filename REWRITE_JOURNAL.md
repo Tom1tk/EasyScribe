@@ -714,3 +714,27 @@ the narrative history.
   item 8 A–F GPU matrix and three clean GPU runs, the clean-PC checklist, and
   a Windows release build with the new profile. Do not promote the preview to
   `Latest` until those pass.
+
+## 2026-11-12 — Session 20: block streaming and Windows handoff
+
+- **Item 2 completed, not just the early-exit gate.** `transcribe_file` no
+  longer calls `load_wav_float32`. `audio::for_each_wav_block` streams a WAV
+  through bounded 16,384-frame blocks with the same channel mixing and integer
+  scaling as the full loader, and `SpeechScanner` feeds the VAD in 512-sample
+  windows while retaining only a partial window. The peak check runs in the
+  same pass and stops early when speech is found, so a long recording is not
+  allocated as `f32` before `whisper-cli` starts. The in-memory `has_speech`
+  wrapper remains for the in-process path and tests.
+- **Tests and verification.** Added a stereo block/full-load equivalence test,
+  a block-size bound, early-stop and cancellation checks. `cargo test
+  --workspace` passed 10 app + 74 core + 2 offline (4 ignored). The full debug
+  selftest passed with the padded 30 s-silence file at 83.7 s and gate 0.3 s;
+  the post-streaming release build took 2m43s incrementally and its selftest
+  passed. CI runs `43224636495` (streaming), `43224901423` (cancellation test)
+  and `43225196187` (docs) passed Linux tests and the Windows `cargo check`.
+- **Windows handoff.** `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md` records the
+  fresh-build commands, the exact remaining audit measurements (startup,
+  fixed-file v3.2.3 comparison, diarization threads, A–F GPU matrix, resampler
+  same-speech test, slow-fallback UI test, clean-PC checklist), pass criteria,
+  and the results template. It also repeats the confidentiality and
+  no-promotion rules. `v3.2.3` remains `Latest`.

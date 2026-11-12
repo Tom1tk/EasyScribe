@@ -1,6 +1,6 @@
 # EasyScribe Rune Rewrite — Status
 
-**Updated:** 2026-11-12 (session 19 — v4 speed/bug audit actioned)
+**Updated:** 2026-11-12 (session 20 — Windows audit handoff)
 **Branch:** `rune-rewrite` · **Worktree:** `/home/user/EasyScribe-rune`
 **Base:** `main` @ `8323516` (EasyScribe v3.2.3)
 **Version:** `4.0.1` · **Release:** `v4.0.1` pre-release (built 2026-11-10), not `Latest`
@@ -36,7 +36,10 @@ as `4.0.1` and built in run `42795767098` from `1fd3f35`; the new pre-release
 asset is recorded below. `v4.0.0` was superseded. The 2026-11-12 v4
 speed/bug audit is actioned in code (see "Audit dispositions"); the only open
 gate is the real-PC clean-PC/speed/GPU/microphone checklist and the audit's
-same-file/GPU measurements. `v3.2.3` remains `Latest`.
+same-file/GPU measurements. `v3.2.3` remains `Latest`. The Windows agent
+should start with `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md`, which records the
+fresh-build command, every remaining measurement, the A–F matrix, pass
+criteria and the results template.
 
 ## What is built
 
@@ -59,6 +62,10 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
 - [x] **Docs** — README, third-party notices, packaging/UI/backend references.
 
 ## Verification completed
+
+_This section records the v4.0.1 release-gate evidence. The current audit
+follow-up counts, timings and open Windows checks are in "Audit dispositions"
+and "Next actions" below._
 
 - [x] `cargo test --workspace`: **9 app + 62 core + 2 offline = 73 passed**,
       2 ignored (the model-backed long-silence and golden tests, run manually).
@@ -427,6 +434,9 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
 
 ## Next actions
 
+A Windows agent should start with `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md`; the
+list below is the summary.
+
 1. **Done.** `v4.0.1` from `1fd3f35` passed the full Windows pipeline
    (run `42795767098`): control 44.8 s, budget 90 s, CLI child 50.8 s,
    in-process 439.9 s, after-sherpa 425.4 s, sherpa ONNX 47.0 s, VAD 0.1 s,
@@ -460,5 +470,8 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
    Check the new `startup:`, `Speech gate took` and `Diarization compute:`
    lines in the file log. Rename `whisper-cli.exe` in a test runtime to
    confirm the visible slow-fallback reason. Record the numbers in this file.
+   **The full handoff for the Windows agent, including the fresh-build command,
+   A–F script, pass criteria and results template, is
+   `docs/rewrite/WINDOWS_AUDIT_HANDOFF.md`.**
 6. Hand over for the decision on replacing v3.2.3. Do not publish this build
    as `Latest` until the real-PC speed, clean-PC checks and GPU checks pass.
