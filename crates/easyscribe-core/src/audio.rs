@@ -395,6 +395,9 @@ mod tests {
         })
         .unwrap();
         assert_eq!(seen, 1_000);
+
+        let stopped = for_each_wav_block(&path, 1_000, |_| Err(Error::Cancelled));
+        assert!(matches!(stopped, Err(Error::Cancelled)));
     }
 
     #[test]
