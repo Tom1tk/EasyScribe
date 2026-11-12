@@ -300,7 +300,9 @@ pub fn transcribe_file(
             reporter.log(
                 "[whisper.cpp] Warning: speech detection is unavailable; decoding the whole file.",
             );
-            true
+            // Digital silence can still be rejected without a VAD; quiet but
+            // non-zero audio must reach whisper-cli instead of being dropped.
+            peak >= 0.01
         }
     };
     log::info!(

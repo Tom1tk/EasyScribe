@@ -693,8 +693,11 @@ the narrative history.
   CLI 55.6 s, sherpa 13.0 s, speech-after-silence gate 0.6 s, diarization
   5.6/5.5 s, silence 0.1 s. The release profile built in 8m35s and its
   selftest passed (release profile asserted; CLI 53.6 s, sherpa 15.0 s, gate
-  0.3 s, diarization 5.9/5.2 s, silence 0.1 s). These are Linux CPU numbers,
-  not the Windows GPU/real-PC gate.
+  0.3 s, diarization 5.9/5.2 s, silence 0.1 s). GitHub Actions run
+  `43217592692` passed Linux tests (1m5s) and the Windows `cargo check`
+  (2m21s); run `43217811088` passed Linux tests in 52s and Windows check in
+  2m14s. These are Linux CPU numbers plus Windows compilation, not the
+  Windows GPU/real-PC gate.
 - **Still open.** Real Windows cold/warm launch and update timings, the same
   10+ minute file on v3.2.3 vs this build (with and without speakers), the
   item 8 A–F GPU matrix and three clean GPU runs, the clean-PC checklist, and

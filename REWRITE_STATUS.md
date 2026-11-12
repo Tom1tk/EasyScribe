@@ -368,8 +368,10 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
   53.6 s, diarization 5.9/5.2 s). A local long-file benchmark (file kept
   outside the repository) showed the expected multi-thread speedup with
   identical turn output, and the full-file VAD pass was replaced by an
-  early-exit gate that returns in milliseconds. Real Windows cold/warm/update timings, the GPU
-  A–F matrix and the clean-PC checks remain open.
+  early-exit gate that returns in milliseconds. GitHub Actions run `43217592692` passed the Linux
+  tests and Windows `cargo check`; run `43217811088` also passed. Real
+  Windows cold/warm/update timings, the GPU A–F matrix and the clean-PC
+  checks remain open.
 
 ## Known limitations / residual risk
 

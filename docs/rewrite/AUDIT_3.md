@@ -429,7 +429,9 @@ benchmarks). The full debug selftest passed: cold CLI
 silence 0.1 s). A local long-file benchmark (file kept outside the repository)
 showed the expected multi-thread speedup with identical turn output, and the
 old full-file VAD pass became an early-exit gate that returns in
-milliseconds.
+milliseconds. CI run
+`43217592692` passed Linux tests and the Windows `cargo check`; run
+`43217811088` also passed.
 
 **These are not Windows GPU or real-PC gate results.** The owner still needs
 to run the clean-PC checklist, the fixed-file before/after comparison and the
