@@ -78,7 +78,10 @@ gh run watch <run-id> --exit-status
 Use a unique tag such as `v4.0.2` or `v4.0.2-rc.1`; it must be `v4.0.2` or start with `v4.0.2-` because
 the workspace version is `4.0.2`. In the workflow log, find the line
 `Building <sha>` and confirm it is the handoff commit or a later commit that
-contains `perf: stream the pre-whisper gate WAV in bounded blocks`.
+contains `perf: stream the pre-whisper gate WAV in bounded blocks` and
+`fix: keep cold-start timings and selftest steps in the log`. The
+`9af1e4b` build from the first Windows pass predates the logging fix; use a
+newer build for the remaining checks.
 
 Download the draft asset:
 

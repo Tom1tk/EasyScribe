@@ -11,10 +11,11 @@ template. This checklist is the clean-PC portion of that handoff.
 ## 0. Preconditions
 
 - 64-bit Windows 10/11, x86-64 CPU with AVX2, FMA, F16C and BMI2.
-- Download the fresh audit build `EasyScribe-v4.0.2.exe` (or the tag the
-  handoff agent created) and its `.sha256` from the draft pre-release; verify
-  the hash with `Get-FileHash`. Do not use the older `v4.0.1` pre-release for
-  the audit; it predates the audit fixes.
+- Download a fresh audit build from a commit at or after the logging fix
+  (`fix: keep cold-start timings and selftest steps in the log`) and its
+  `.sha256` from the draft pre-release; verify the hash with `Get-FileHash`.
+  Do not use the older `v4.0.1` pre-release or the first `9af1e4b` audit
+  build; both predate fixes.
 - Do not install anything system-wide. Keep a snapshot before the first run.
 
 ## 1. Unpack

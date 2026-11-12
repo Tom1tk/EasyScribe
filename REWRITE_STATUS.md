@@ -570,6 +570,7 @@ Checks:
   cold decode 109.0 s (in-process; this development checkout has no bundled
   `whisper-cli`), sherpa 12.2 s, VAD 0.0 s, gate 0.4 s, diarization
   6.0 / 7.8 s, silence 0.2 s. This is a logging check, not a speed comparison.
+- CI run `43258794735` passed `test-linux` and the Windows `cargo check`.
 
 The repetition A–F result narrows the cause to prompt carry-over: B (`-mc 0`)
 was clean on all three runs, but its 10% lower word count than the clean F run
