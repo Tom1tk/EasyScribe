@@ -705,9 +705,10 @@ the narrative history.
   (file kept outside the repository) showed the expected multi-thread speedup
   with identical turn output, and the full-file VAD pass became an early-exit
   gate that returns in milliseconds. GitHub Actions run `43221786609` passed
-  Linux tests and the Windows `cargo check` before the streaming change; the
-  post-streaming run is recorded below after the push. These are Linux CPU
-  numbers plus Windows compilation, not the Windows GPU/real-PC gate.
+  Linux tests and the Windows `cargo check` before the streaming change;
+  post-streaming runs `43224636495` and `43224901423` (cancellation test)
+  passed both jobs. These are Linux CPU numbers plus Windows compilation, not
+  the Windows GPU/real-PC gate.
 - **Still open.** Real Windows cold/warm launch and update timings, the same
   10+ minute file on v3.2.3 vs this build (with and without speakers), the
   item 8 A–F GPU matrix and three clean GPU runs, the clean-PC checklist, and

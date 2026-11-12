@@ -439,7 +439,8 @@ multi-thread speedup with identical turn output, and the old full-file VAD
 pass became an early-exit gate that returns in milliseconds. CI run
 `43221068673` (history cleanup), run `43221226305` (final docs) and run
 `43221786609` (pre-streaming docs) passed Linux tests and the Windows
-`cargo check`; the post-streaming run is recorded after the push.
+`cargo check`. Post-streaming runs `43224636495` and `43224901423` also passed
+both jobs.
 
 **These are not Windows GPU or real-PC gate results.** The owner still needs
 to run the clean-PC checklist, the fixed-file before/after comparison and the

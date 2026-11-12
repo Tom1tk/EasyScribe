@@ -373,8 +373,8 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
   outside the repository) showed the expected multi-thread speedup with
   identical turn output, and the full-file VAD pass was replaced by an
   early-exit gate that returns in milliseconds. GitHub Actions run
-  `43221786609` passed the Linux tests and Windows `cargo check`; the
-  post-streaming run is recorded after the push. Real Windows
+  `43221786609` passed the Linux tests and Windows `cargo check`; post-streaming
+  runs `43224636495` and `43224901423` also passed both jobs. Real Windows
   cold/warm/update timings, the GPU A–F matrix and the clean-PC checks remain
   open.
 
@@ -455,9 +455,10 @@ same-file/GPU measurements. `v3.2.3` remains `Latest`.
 5. Run the v4 audit verification on the owner's Windows PC: one fixed 10+
    minute speech file, v3.2.3 vs this build, cold/warm/update launch, Find
    speakers with 4- and 8-thread settings, and the repetition A–F GPU matrix
-   (three runs each). Check the new `startup:`, `Speech gate took` and
-   `Diarization compute:` lines in the file log. Rename `whisper-cli.exe` in a
-   test runtime to confirm the visible slow-fallback reason. Record the
-   numbers in this file.
+   (three runs each). Record the same speech through v3.2.3 and this build
+   with the same microphone to compare the new anti-alias resampler's output.
+   Check the new `startup:`, `Speech gate took` and `Diarization compute:`
+   lines in the file log. Rename `whisper-cli.exe` in a test runtime to
+   confirm the visible slow-fallback reason. Record the numbers in this file.
 6. Hand over for the decision on replacing v3.2.3. Do not publish this build
    as `Latest` until the real-PC speed, clean-PC checks and GPU checks pass.
