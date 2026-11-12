@@ -94,7 +94,6 @@ fn main() {
 
     if !headless && !first_run {
         app::startup(&paths);
-        payload::spawn_cleanup(paths.data_dir.clone(), paths.base_dir.clone());
         log::info!(
             "startup: paths ready in {:.3}s, payload prepare {:.3}s",
             process_start.elapsed().as_secs_f64(),
@@ -115,6 +114,8 @@ fn main() {
         std::process::exit(run_selftest(&paths));
     }
 
+    let cleanup_data = paths.data_dir.clone();
+    let cleanup_base = paths.base_dir.clone();
     let _ = PATHS.set(paths);
     FIRST_RUN.store(first_run, Ordering::Relaxed);
 
@@ -140,6 +141,12 @@ fn main() {
                 "startup: first window after {:.3}s",
                 process_start.elapsed().as_secs_f64()
             );
+            // Start the old-runtime cleanup only once the window exists, so
+            // deleting a previous ~1.9 GB runtime never delays the first frame.
+            static CLEANUP: std::sync::Once = std::sync::Once::new();
+            CLEANUP.call_once(|| {
+                payload::spawn_cleanup(cleanup_data.clone(), cleanup_base.clone());
+            });
         })
         .on_close(on_close)
         .run();
