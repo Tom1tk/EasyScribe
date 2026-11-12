@@ -382,7 +382,7 @@ logs are in `REWRITE_JOURNAL.md` session 19.
    confident speech, logs `Checking for speech…`, and records elapsed time at
    `log::info!`. `speech_regions` remains for the in-process path. The
    selftest now checks 30 s of silence followed by the fixture (0.4 s locally)
-   and the full gate transcribes that padded 53 s file end to end (105.3 s
+   and the full gate transcribes that padded 53 s file end to end (106.9 s
    locally); the existing silence fixture still returns no speech.
 3. **Worker priority.** `lower_thread_priority` and its three calls are gone.
 4. **Startup.** `prepare_with_progress` records its wall time; the app logs
@@ -423,17 +423,18 @@ logs are in `REWRITE_JOURNAL.md` session 19.
 --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
 `cargo test --workspace` passed (85 tests; 4 ignored: 2 model-backed, 2 manual
 benchmarks). The full debug selftest passed: cold CLI
-57.0 s, in-process 90.9 s, after-sherpa 93.3 s, diarization 5.3/6.0 s, silence
-0.2 s. The fast selftest passed with the new gate step: CLI 55.6 s, gate
-0.4 s, diarization 5.2/6.2 s, silence 0.1 s; the full-gate padded
-transcription passed in 105.3 s. The release profile built in
-8m35s and its selftest passed (CLI 53.6 s, gate 0.3 s, diarization 5.9/5.2 s,
-silence 0.1 s). A local long-file benchmark (file kept outside the repository)
-showed the expected multi-thread speedup with identical turn output, and the
-old full-file VAD pass became an early-exit gate that returns in
-milliseconds. CI run
-`43217592692` passed Linux tests and the Windows `cargo check`; run
-`43217811088` also passed.
+56.5 s, in-process 89.4 s, after-sherpa 86.3 s, diarization 5.2/5.5 s, silence
+0.1 s; the padded 30 s-silence file was transcribed end to end in 106.9 s and
+the gate found speech in 0.4 s. The fast selftest passed with the new gate
+step: CLI 55.5 s, gate 0.4 s, diarization 5.2/6.2 s, silence 0.1 s. The
+release profile built in 8m35s and its selftest passed on two runs (cold CLI
+53.6/55.1 s; the latest measured gate 0.3 s, diarization 5.9/5.3 s, silence
+0.1 s). A local long-file benchmark
+(file kept outside the repository) showed the expected multi-thread speedup
+with identical turn output, and the old full-file VAD pass became an
+early-exit gate that returns in milliseconds. CI run `43221068673` (history
+cleanup) and run `43221226305` (final docs) both passed Linux tests and the
+Windows `cargo check`.
 
 **These are not Windows GPU or real-PC gate results.** The owner still needs
 to run the clean-PC checklist, the fixed-file before/after comparison and the
