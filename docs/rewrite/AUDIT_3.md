@@ -413,7 +413,7 @@ logs are in `REWRITE_JOURNAL.md` session 19.
    absolute-offset result back. Failure or a still-repeating repair keeps the
    original. Unit tests cover the detector, normalisation and a fake CLI
    repair; the selftest fails if the golden decode loops. The A–F GPU matrix
-   and three clean GPU runs of the owner's file remain required.
+   and three clean GPU runs of the real recording remain required.
 9. **Smaller items.** UI log capped at 2,000 lines; `VecDeque` stderr tail;
    `LazyLock` ffmpeg regexes; one ffprobe per input; clear errors for
    non-UTF-8 whisper/VAD paths; live VAD high-water logging. The diarization
